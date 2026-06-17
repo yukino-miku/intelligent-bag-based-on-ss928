@@ -1,0 +1,24 @@
+# Tuned BoT-SORT config for a chest-mounted moving camera.
+# Ultralytics docs: https://docs.ultralytics.com/modes/track/
+
+tracker_type: botsort
+
+# Lower first-stage and second-stage thresholds keep weak far-object detections
+# available for association without making every weak box start a new track.
+track_high_thresh: 0.15
+track_low_thresh: 0.03
+new_track_thresh: 0.10
+
+# Keep lost tracks alive for short detection dropouts and brief occlusions.
+track_buffer: 75
+match_thresh: 0.76
+fuse_score: True
+
+# Important for body-mounted video where the camera moves between frames.
+gmc_method: sparseOptFlow
+
+# ReID improves some cases but costs CPU and requires an extra model path.
+proximity_thresh: 0.5
+appearance_thresh: 0.8
+with_reid: False
+model: auto

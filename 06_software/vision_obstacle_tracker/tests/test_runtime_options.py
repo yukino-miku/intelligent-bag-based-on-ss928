@@ -1,0 +1,133 @@
+import sys
+import unittest
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+from vision_obstacle_tracker import create_yolo_model, display_wait_ms, open_capture, parse_args, video_should_skip_frames
+
+
+class RuntimeOptionsTest(unittest.TestCase):
+    def test_default_runtime_options_use_sensitive_camera_profile(self) -> None:
+        with patch.object(sys, "argv", ["vision_obstacle_tracker.py"]):
+            args = parse_args()
+
+        self.assertEqual("camera", args.source)
+        self.assertEqual("ffmpeg", args.camera_backend)
+        self.assertEqual("balanced", args.runtime_profile)
+        self.assertEqual(1280, args.width)
+        self.assertEqual(720, args.height)
+        self.assertEqual("vehicle_botsort.yaml", args.tracker)
+        self.assertEqual(1024, args.imgsz)
+        self.assertEqual(0.02, args.conf)
+        self.assertEqual(50, args.max_det)
+        self.assertFalse(args.export_openvino)
+        self.assertEqual(1.0, args.display_scale)
+        self.assertEqual(1.2, args.camera_height)
+        self.assertEqual(120.0, args.fov)
+        self.assertEqual("diagonal", args.fov_type)
+        self.assertEqual(5.0, args.camera_pitch)
+        self.assertEqual("fused", args.distance_mode)
+        self.assertEqual("off", args.enhance)
+        self.assertIn("car", args.target_classes)
+        self.assertIn("bicycle", args.target_classes)
+
+    def test_quality_profile_can_still_be_requested_explicitly(self) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "vision_obstacle_tracker.py",
+                "--runtime-profile",
+                "quality",
+            ],
+        ):
+            args = parse_args()
+
+        self.assertEqual(1920, args.width)
+        self.assertEqual(1080, args.height)
+        self.assertEqual(1024, args.imgsz)
+        self.assertEqual(0.02, args.conf)
+        self.assertEqual(50, args.max_det)
+
+    def test_runtime_profile_can_be_overridden_by_explicit_values(self) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "vision_obstacle_tracker.py",
+                "--runtime-profile",
+                "realtime",
+                "--width",
+                "1920",
+                "--height",
+                "1080",
+                "--imgsz",
+                "864",
+            ],
+        ):
+            args = parse_args()
+
+        self.assertEqual(1920, args.width)
+        self.assertEqual(1080, args.height)
+        self.assertEqual(864, args.imgsz)
+
+    def test_openvino_export_option_reloads_exported_model(self) -> None:
+        with patch.object(sys, "argv", ["vision_obstacle_tracker.py", "--model", "yolo11n.pt", "--export-openvino"]):
+            args = parse_args()
+
+        fake_model = MagicMock()
+        fake_model.export.return_value = "yolo11n_openvino_model"
+        fake_yolo = MagicMock(side_effect=[fake_model, "openvino-model"])
+
+        model = create_yolo_model(args, yolo_cls=fake_yolo)
+
+        fake_yolo.assert_any_call("yolo11n.pt")
+        fake_model.export.assert_called_once_with(format="openvino")
+        fake_yolo.assert_any_call("yolo11n_openvino_model")
+        self.assertEqual("openvino-model", model)
+
+    def test_vehicle_botsort_keeps_weak_detections_for_fast_objects(self) -> None:
+        tracker_config = Path(__file__).resolve().parents[1] / "vehicle_botsort.yaml"
+        text = tracker_config.read_text(encoding="utf-8")
+
+        self.assertIn("track_high_thresh: 0.15", text)
+        self.assertIn("track_low_thresh: 0.03", text)
+        self.assertIn("new_track_thresh: 0.10", text)
+
+    def test_display_wait_does_not_add_video_frame_delay_after_processing(self) -> None:
+        with patch.object(sys, "argv", ["vision_obstacle_tracker.py", "--source", "video", "--video", "input.mp4"]):
+            args = parse_args()
+
+        self.assertEqual(1, display_wait_ms(args, capture_fps=30.0))
+
+    def test_video_preview_skips_stale_frames_by_default(self) -> None:
+        with patch.object(sys, "argv", ["vision_obstacle_tracker.py", "--source", "video", "--video", "input.mp4"]):
+            args = parse_args()
+
+        self.assertTrue(video_should_skip_frames(args))
+
+    def test_video_every_frame_disables_realtime_skipping(self) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            ["vision_obstacle_tracker.py", "--source", "video", "--video", "input.mp4", "--video-every-frame"],
+        ):
+            args = parse_args()
+
+        self.assertFalse(video_should_skip_frames(args))
+
+    def test_video_preview_uses_realtime_latest_frame_capture_by_default(self) -> None:
+        with patch.object(sys, "argv", ["vision_obstacle_tracker.py", "--source", "video", "--video", "input.mp4"]):
+            args = parse_args()
+        fake_capture = MagicMock()
+        fake_capture.isOpened.return_value = True
+
+        with patch("vision_obstacle_tracker.RealtimeVideoFileCapture", return_value=fake_capture) as realtime_capture:
+            capture = open_capture(args)
+
+        realtime_capture.assert_called_once_with(Path("input.mp4"))
+        self.assertIs(fake_capture, capture)
+
+
+if __name__ == "__main__":
+    unittest.main()

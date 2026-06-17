@@ -1,0 +1,22 @@
+cd D:\mywork\code\embedded-contest-project\06_software\vision_obstacle_tracker
+py vision_obstacle_tracker.py --source camera --width 2560 --height 1440 --imgsz 416
+
+ ffmpeg -y -f dshow -video_size 1920x1080 -framerate 30 -i video="USB Camera" -frames:v 1 D:\mywork\code\usb_camera_snapshot.jpg
+
+ffplay -f dshow -video_size 1920x1080 -framerate 30 -i video="USB Camera"
+
+cd D:\mywork\code\embedded-contest-project\06_software\vision_obstacle_tracker
+py vision_obstacle_tracker.py --source video --video "D:\mywork\code\embedded-contest-project\08_media\camera_data\usbcam_20260605_183928.mp4"
+ py vision_obstacle_tracker.py --source video --video "D:\mywork\code\embedded-contest-project\08_media\camera_data\红.mp4"
+
+py vision_obstacle_tracker.py --source video --video "D:\mywork\code\embedded-contest-project\08_media\camera_data\usbcam_20260605_190400.mp4"
+
+py vision_obstacle_tracker.py --source video --video "D:\mywork\code\embedded-contest-project\08_media\camera_data\usbcam_20260605_190400.mp4" --save-output "D:\mywork\code\embedded-contest-project\08_media\vision_results\video_detected5.mp4"
+
+py vision_obstacle_tracker.py --source video --video "D:\mywork\code\embedded-contest-project\08_media\camera_data\红.mp4" --runtime-profile quality
+
+
+.\build\vision_obstacle_tracker_live.exe --source video --video "D:\mywork\code\embedded-contest-project\08_media\camera_data\红.mp4"
+
+
+py vision_obstacle_tracker.py --source video --video "D:\mywork\code\embedded-contest-project\08_media\camera_data\红.mp4" --save-output "D:\mywork\code\embedded-contest-project\08_media\vision_results\video_detected7.mp4"

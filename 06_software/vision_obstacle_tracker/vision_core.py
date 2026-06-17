@@ -1,0 +1,250 @@
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass, replace
+
+from calibration import GroundPoint
+
+
+TARGET_CLASS_NAMES = {
+    "person",
+    "bicycle",
+    "car",
+    "motorcycle",
+    "bus",
+    "truck",
+    "traffic light",
+    "stop sign",
+    "parking meter",
+    "bench",
+}
+
+
+@dataclass(frozen=True)
+class DetectionObservation:
+    track_id: int
+    class_name: str
+    confidence: float
+    bbox_xyxy: tuple[float, float, float, float]
+    ground_point: GroundPoint | None
+    timestamp_s: float
+    distance_source: str = "unknown"
+
+
+@dataclass(frozen=True)
+class TrackedObject:
+    track_id: int
+    class_name: str
+    confidence: float
+    bbox_xyxy: tuple[float, float, float, float]
+    ground_point: GroundPoint | None
+    distance_m: float | None
+    vx_mps: float
+    vz_mps: float
+    speed_mps: float
+    timestamp_s: float
+    distance_source: str = "unknown"
+
+
+@dataclass
+class _StableTrackMemory:
+    stable_id: int
+    raw_track_id: int
+    class_name: str
+    ground_point: GroundPoint | None
+    timestamp_s: float
+
+
+class StableTrackIdManager:
+    def __init__(
+        self,
+        max_match_distance_m: float = 2.5,
+        max_time_gap_s: float = 1.0,
+    ) -> None:
+        self.max_match_distance_m = max_match_distance_m
+        self.max_time_gap_s = max_time_gap_s
+        self._next_stable_id = 1
+        self._raw_to_stable: dict[int, int] = {}
+        self._memory_by_stable: dict[int, _StableTrackMemory] = {}
+
+    def assign(self, observations: list[DetectionObservation]) -> list[DetectionObservation]:
+        assigned_this_frame: set[int] = set()
+        stable_observations: list[DetectionObservation] = []
+
+        for observation in observations:
+            stable_id = self._stable_id_for_raw_track(observation)
+            if stable_id is None or stable_id in assigned_this_frame:
+                stable_id = self._match_recent_track(observation, assigned_this_frame)
+            if stable_id is None:
+                stable_id = self._allocate_stable_id()
+
+            self._raw_to_stable[observation.track_id] = stable_id
+            assigned_this_frame.add(stable_id)
+            self._memory_by_stable[stable_id] = _StableTrackMemory(
+                stable_id=stable_id,
+                raw_track_id=observation.track_id,
+                class_name=observation.class_name,
+                ground_point=observation.ground_point,
+                timestamp_s=observation.timestamp_s,
+            )
+            stable_observations.append(replace(observation, track_id=stable_id))
+
+        self._prune_old_memory(observations)
+        return stable_observations
+
+    def _stable_id_for_raw_track(self, observation: DetectionObservation) -> int | None:
+        stable_id = self._raw_to_stable.get(observation.track_id)
+        if stable_id is None:
+            return None
+        memory = self._memory_by_stable.get(stable_id)
+        if memory is None:
+            return None
+        if memory.class_name != observation.class_name:
+            return None
+        return stable_id
+
+    def _match_recent_track(
+        self,
+        observation: DetectionObservation,
+        assigned_this_frame: set[int],
+    ) -> int | None:
+        if observation.ground_point is None:
+            return None
+
+        best_stable_id = None
+        best_distance = math.inf
+        for stable_id, memory in self._memory_by_stable.items():
+            if stable_id in assigned_this_frame:
+                continue
+            if memory.class_name != observation.class_name or memory.ground_point is None:
+                continue
+            time_gap = observation.timestamp_s - memory.timestamp_s
+            if time_gap < 0.0 or time_gap > self.max_time_gap_s:
+                continue
+
+            distance = math.hypot(
+                observation.ground_point.x_m - memory.ground_point.x_m,
+                observation.ground_point.z_m - memory.ground_point.z_m,
+            )
+            if distance <= self.max_match_distance_m and distance < best_distance:
+                best_distance = distance
+                best_stable_id = stable_id
+
+        return best_stable_id
+
+    def _allocate_stable_id(self) -> int:
+        stable_id = self._next_stable_id
+        self._next_stable_id += 1
+        return stable_id
+
+    def _prune_old_memory(self, observations: list[DetectionObservation]) -> None:
+        if not observations:
+            return
+        newest_timestamp = max(observation.timestamp_s for observation in observations)
+        stale_before = newest_timestamp - self.max_time_gap_s * 4.0
+        stale_ids = [
+            stable_id
+            for stable_id, memory in self._memory_by_stable.items()
+            if memory.timestamp_s < stale_before
+        ]
+        for stable_id in stale_ids:
+            del self._memory_by_stable[stable_id]
+        stale_id_set = set(stale_ids)
+        self._raw_to_stable = {
+            raw_id: stable_id
+            for raw_id, stable_id in self._raw_to_stable.items()
+            if stable_id not in stale_id_set
+        }
+
+
+class TrackState:
+    def __init__(
+        self,
+        history_seconds: float = 1.5,
+        smoothing_alpha: float = 0.35,
+        max_speed_mps: float = 40.0,
+        speed_scale: float = 1.0,
+    ) -> None:
+        self.history_seconds = history_seconds
+        self.smoothing_alpha = min(max(smoothing_alpha, 0.0), 1.0)
+        self.max_speed_mps = max_speed_mps
+        self.speed_scale = speed_scale
+        self._history_by_id: dict[int, list[tuple[GroundPoint, float]]] = {}
+        self._smoothed_ground_by_id: dict[int, GroundPoint] = {}
+
+    def update(self, observation: DetectionObservation) -> TrackedObject:
+        distance_m = observation.ground_point.distance_m if observation.ground_point is not None else None
+        vx_mps = 0.0
+        vz_mps = 0.0
+        output_point = observation.ground_point
+
+        if observation.ground_point is not None:
+            output_point = self._smooth_point(observation.track_id, observation.ground_point)
+            distance_m = output_point.distance_m
+            history = self._history_by_id.setdefault(observation.track_id, [])
+            history.append((output_point, observation.timestamp_s))
+            min_time = observation.timestamp_s - self.history_seconds
+            while len(history) > 2 and history[0][1] < min_time:
+                del history[0]
+
+            if len(history) >= 2:
+                first_point, first_time = history[0]
+                last_point, last_time = history[-1]
+                dt_s = last_time - first_time
+                if dt_s > 0:
+                    vx_mps = (last_point.x_m - first_point.x_m) / dt_s * self.speed_scale
+                    vz_mps = (last_point.z_m - first_point.z_m) / dt_s * self.speed_scale
+
+        speed_mps = math.hypot(vx_mps, vz_mps)
+        if self.max_speed_mps > 0 and speed_mps > self.max_speed_mps:
+            vx_mps = 0.0
+            vz_mps = 0.0
+            speed_mps = 0.0
+
+        return TrackedObject(
+            track_id=observation.track_id,
+            class_name=observation.class_name,
+            confidence=observation.confidence,
+            bbox_xyxy=observation.bbox_xyxy,
+            ground_point=output_point,
+            distance_m=distance_m,
+            vx_mps=vx_mps,
+            vz_mps=vz_mps,
+            speed_mps=speed_mps,
+            timestamp_s=observation.timestamp_s,
+            distance_source=observation.distance_source,
+        )
+
+    def _smooth_point(self, track_id: int, point: GroundPoint) -> GroundPoint:
+        previous = self._smoothed_ground_by_id.get(track_id)
+        if previous is None or self.smoothing_alpha >= 1.0:
+            self._smoothed_ground_by_id[track_id] = point
+            return point
+
+        alpha = self.smoothing_alpha
+        smoothed = GroundPoint(
+            x_m=previous.x_m * (1.0 - alpha) + point.x_m * alpha,
+            z_m=previous.z_m * (1.0 - alpha) + point.z_m * alpha,
+        )
+        self._smoothed_ground_by_id[track_id] = smoothed
+        return smoothed
+
+
+def parse_target_classes(value: str) -> set[str] | None:
+    cleaned = value.strip()
+    if cleaned.lower() == "all":
+        return None
+    return {item.strip() for item in cleaned.split(",") if item.strip()}
+
+
+def should_keep_class(class_name: str, target_classes: set[str] | None = TARGET_CLASS_NAMES) -> bool:
+    return target_classes is None or class_name in target_classes
+
+
+def format_overlay_label(target: TrackedObject) -> str:
+    distance = f"{target.distance_m:.1f}m" if target.distance_m is not None else "unknown"
+    return (
+        f"ID {target.track_id} {target.class_name} {target.confidence:.2f} "
+        f"d={distance}({target.distance_source}) v={target.speed_mps:.1f}m/s "
+        f"vx={target.vx_mps:+.1f} vz={target.vz_mps:+.1f}"
+    )
