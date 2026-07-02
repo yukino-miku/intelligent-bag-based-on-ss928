@@ -1,11 +1,12 @@
-# Changelog
+# 更新记录
 
-This file records GitHub-visible project updates. New functional changes should add a dated entry here before pushing.
+本文件记录已经上传到 GitHub 的项目更新。以后每次有实质功能、参数、文档或调试流程变化，都要在提交前增加对应记录。
 
 ## 2026-07-02
 
-- Rebuilt the root GitHub project homepage in `README.md` with install, video input, camera input, OpenVINO, risk logging, output-video saving, profiling, and debugging instructions.
-- Added an explicit update rule: future meaningful changes should update the relevant README and this changelog before pushing to GitHub.
-- Documented that `08_media/`, `10_archive/`, video files, generated risk logs, build outputs, and large local dependency folders are intentionally excluded from GitHub.
-- Recent visual tracker performance updates include YOLO class pre-filtering, ROI top cropping through `--roi-top-ratio`, OpenVINO preference through `--prefer-openvino`, profiling through `--profile`, and preview refresh control through `--display-every-n`.
-- Recent visual risk-debug updates include CSV risk logging, runtime profile presets, ego-motion quality reporting, confidence-aware display stabilization, distance quality flags, and clearer risk-term diagnostics.
+- 将根目录 GitHub 项目主页 `README.md` 改为中文说明，并补充安装、视频检测、摄像头实时检测、OpenVINO、风险日志、保存视频、性能剖析和调试方法。
+- 新增并改写 `CHANGELOG.md`，用于记录每次上传到 GitHub 的更新内容。
+- 明确以后每次功能更新都要同步更新相关 README 和本更新记录。
+- 明确 `08_media/`、`10_archive/`、视频文件、生成的风险日志、本地构建产物和大体积第三方依赖目录不上传 GitHub。
+- 近期视觉避障性能优化包括：YOLO 类别前置过滤、`--roi-top-ratio` ROI 顶部裁剪、`--prefer-openvino` 优先加载 OpenVINO、`--profile` 性能剖析、`--display-every-n` 窗口刷新降频。
+- 近期视觉风险调试优化包括：风险 CSV 日志、运行预设、相机自运动质量记录、显示层风险稳定器、距离质量标志、风险分项诊断。
