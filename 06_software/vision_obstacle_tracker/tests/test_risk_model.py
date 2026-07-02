@@ -15,6 +15,8 @@ def make_target(
     timestamp_s: float = 1.0,
     velocity_confidence: float = 1.0,
     distance_confidence: float = 1.0,
+    track_age_frames: int = 10,
+    motion_quality_flags: tuple[str, ...] = (),
 ) -> TrackedObject:
     point = GroundPoint(x_m=x_m, z_m=z_m)
     return TrackedObject(
@@ -31,6 +33,8 @@ def make_target(
         distance_source="fused",
         velocity_confidence=velocity_confidence,
         distance_confidence=distance_confidence,
+        track_age_frames=track_age_frames,
+        motion_quality_flags=motion_quality_flags,
     )
 
 
@@ -85,14 +89,17 @@ class RiskModelTest(unittest.TestCase):
     def test_trajectory_distance_risk_rises_fast_then_saturates(self) -> None:
         assessment = assess_collision_risk(
             make_target(class_name="car", x_m=1.5, z_m=4.0, vz_mps=-4.0),
-            RiskModelConfig(weights=RiskWeights(trajectory=1.0, ttc=0.0, drac=0.0, closing=0.0)),
+            RiskModelConfig(
+                warning_corridor_half_width_m=3.0,
+                weights=RiskWeights(trajectory=1.0, ttc=0.0, drac=0.0, closing=0.0),
+            ),
         )
 
         self.assertAlmostEqual(0.75, assessment.score, places=3)
 
     def test_ttc_risk_uses_saturating_curve_between_emergency_and_safe_time(self) -> None:
         assessment = assess_collision_risk(
-            make_target(class_name="car", x_m=0.0, z_m=13.0, vz_mps=-4.0),
+            make_target(class_name="car", x_m=0.0, z_m=5.0, vz_mps=-1.538461538),
             RiskModelConfig(weights=RiskWeights(trajectory=0.0, ttc=1.0, drac=0.0, closing=0.0)),
         )
 
@@ -100,7 +107,11 @@ class RiskModelTest(unittest.TestCase):
         self.assertAlmostEqual(0.75, assessment.score, places=3)
 
     def test_vehicle_risk_multiplier_changes_final_score_by_class(self) -> None:
-        config = RiskModelConfig(weights=RiskWeights(trajectory=1.0, ttc=0.0, drac=0.0, closing=0.0))
+        config = RiskModelConfig(
+            warning_corridor_half_width_m=3.0,
+            in_path_depth_m=0.1,
+            weights=RiskWeights(trajectory=1.0, ttc=0.0, drac=0.0, closing=0.0),
+        )
 
         car = assess_collision_risk(make_target(class_name="car", x_m=2.0, z_m=4.0, vz_mps=-4.0), config)
         truck = assess_collision_risk(make_target(class_name="truck", x_m=2.0, z_m=4.0, vz_mps=-4.0), config)
@@ -119,30 +130,30 @@ class RiskModelTest(unittest.TestCase):
         self.assertEqual(RiskLevel.SAFE, assessment.level)
         self.assertGreater(assessment.trajectory_distance_m, 3.0)
 
-    def test_non_negative_vz_with_lateral_cut_in_is_not_forced_safe(self) -> None:
+    def test_non_negative_vz_inside_front_corridor_is_not_forced_safe(self) -> None:
         assessment = assess_collision_risk(make_target(x_m=0.2, z_m=1.0, vx_mps=-2.0, vz_mps=0.0))
 
         self.assertGreaterEqual(assessment.level.value, RiskLevel.ATTENTION.value)
-        self.assertEqual(MotionPattern.LATERAL_CUT_IN, assessment.motion_pattern)
+        self.assertIn(assessment.motion_pattern, (MotionPattern.LATERAL_CUT_IN, MotionPattern.HEAD_ON_OR_CLOSING))
         self.assertGreater(assessment.closing_speed_mps, 0.0)
 
-    def test_cut_in_small_trajectory_reaches_attention_even_with_low_velocity_confidence(self) -> None:
+    def test_low_velocity_confidence_cut_in_is_downgraded_to_uncertain(self) -> None:
         assessment = assess_collision_risk(
             make_target(x_m=3.0, z_m=3.0, vx_mps=-0.7, vz_mps=-0.7, velocity_confidence=0.05)
         )
 
-        self.assertEqual(MotionPattern.LATERAL_CUT_IN, assessment.motion_pattern)
+        self.assertEqual(MotionPattern.STATIC_OR_UNCERTAIN, assessment.motion_pattern)
         self.assertLess(assessment.trajectory_distance_m, 0.5)
-        self.assertGreaterEqual(assessment.level.value, RiskLevel.ATTENTION.value)
+        self.assertLessEqual(assessment.level.value, RiskLevel.ATTENTION.value)
 
-    def test_cut_in_short_ttc_reaches_caution_even_with_low_velocity_confidence(self) -> None:
+    def test_cut_in_short_ttc_needs_stable_velocity_for_caution_floor(self) -> None:
         assessment = assess_collision_risk(
             make_target(x_m=3.0, z_m=3.0, vx_mps=-1.0, vz_mps=-1.0, velocity_confidence=0.05)
         )
 
-        self.assertEqual(MotionPattern.LATERAL_CUT_IN, assessment.motion_pattern)
+        self.assertNotEqual(MotionPattern.LATERAL_CUT_IN, assessment.motion_pattern)
         self.assertLess(assessment.ttc_s, 3.5)
-        self.assertGreaterEqual(assessment.level.value, RiskLevel.CAUTION.value)
+        self.assertLessEqual(assessment.level.value, RiskLevel.ATTENTION.value)
 
     def test_near_static_or_slow_target_has_static_obstacle_risk(self) -> None:
         assessment = assess_collision_risk(

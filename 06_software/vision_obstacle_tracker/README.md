@@ -168,6 +168,12 @@ Risk tuning with CSV diagnostics:
 py vision_obstacle_tracker.py --source video --video D:\path\input.mp4 --runtime-profile cpu_demo --roi-top-ratio 0.20 --prefer-openvino --risk-log-csv D:\path\risk_log.csv --profile
 ```
 
+Risk tuning with compact overlay plus full debug CSV:
+
+```powershell
+py vision_obstacle_tracker.py --source video --video D:\path\input.mp4 --runtime-profile cpu_demo --roi-top-ratio 0.20 --prefer-openvino --overlay-verbosity debug --risk-log-csv D:\path\risk_log.csv --profile
+```
+
 Performance profiling and CPU-load controls:
 
 ```powershell
@@ -182,6 +188,8 @@ py vision_obstacle_tracker.py --source camera --prefer-openvino --profile
 `--roi-top-ratio` crops the top part of the frame before YOLO inference. For example, `--roi-top-ratio 0.20` sends only the lower 80% of the image to YOLO, which can reduce time spent on sky, ceiling, building tops, and other upper-frame regions that are usually irrelevant for ground obstacles. The detection boxes are restored to full-frame coordinates before distance, speed, risk, overlay, and video writing. If the crop is too large, far targets that first appear near the horizon can be missed; start with `0.15` or `0.20` and compare profile output before going higher.
 
 `--display-every-n` lowers OpenCV preview refresh cost. `--display-every-n 2` refreshes the window every second processed frame, while inference, tracking, risk calculation, and optional video writing still run for every processed frame. `--no-display` still disables the window completely. `--save-output` still writes every processed frame with overlay.
+
+`--overlay-verbosity` controls how much text is drawn on each detection box. `minimal` shows class, distance, and risk level; `normal` shows ID, class, distance, speed, risk, CPA/TTC, and corridor zone; `debug` adds quality, velocity vector, trajectory, risk terms, and cap reason. The risk CSV remains detailed regardless of this display setting.
 
 Suggested comparison commands:
 
@@ -298,7 +306,7 @@ py vision_obstacle_tracker.py --source camera --enhance off
 
 ## Risk Warning Overlay
 
-Each tracked target displays distance, speed, distance quality, velocity quality, `RiskScore`, warning level, motion pattern, TTC, and trajectory distance (`TRAJ`) in the box label. Box colors are:
+Each tracked target displays distance, speed, warning level, CPA/TTC, and corridor zone in the default box label. Use `--overlay-verbosity debug` to also show distance quality, velocity quality, velocity vector, `RiskScore`, motion pattern, trajectory distance (`TRAJ`), and risk-term details. Box colors are:
 
 ```text
 SAFE: green
@@ -310,10 +318,14 @@ EMERGENCY: red
 
 To suppress one-frame warning flashes from bad distance or velocity estimates, box color uses a display-level stabilizer. ATTENTION can display on the first frame. High-quality CAUTION, especially CUTIN/CLOSING with short TTC or very small trajectory clearance, can also display immediately. DANGER/EMERGENCY still require confirmation by default, and low observation quality adds one extra confirmation frame. A very short emergency path can still display immediately when the raw assessment is EMERGENCY and `TTC <= 0.8s` or current distance is `<= 0.8m`. Downgrades are held briefly for 2 frames so colors do not flicker when scores sit near a threshold.
 
-The warning model is a calibrated rule model, not a trained crash-probability model. It prioritizes the predicted straight-line trajectory clearance over raw distance. The main indicators are:
+The warning model is a calibrated rule model, not a trained crash-probability model. It now prioritizes whether a target enters the camera-wearer's finite forward corridor within the next few seconds, rather than treating every infinite straight-line trajectory as dangerous. The main indicators are:
 
 ```text
-TRAJ: distance from the camera-wearer origin to the target's current constant-velocity trajectory line
+CPA: closest point of approach within the target's current constant-velocity motion
+CPA time: seconds until that closest approach
+CPA distance: distance from the wearer origin at closest approach
+corridor zone: PATH, SIDE, REMOTE, SIDE_STATIC, or UNK
+TRAJ: diagnostic distance from the origin to the infinite motion line
 TTC: time to collision along the radial closing line
 DRAC: deceleration required to avoid collision
 radial closing speed: speed along the target-to-camera line
@@ -340,6 +352,39 @@ bus: 1.10
 other: 1.00
 ```
 
+### Real-world Risk Semantics / 现实场景风险语义
+
+The system should not warn simply because a vehicle is visible. It combines personal safety radius, CPA time, CPA distance, the forward walking corridor, target class, speed, and track stability:
+
+```text
+SAFE:
+  Far traffic flow, roadside static objects, moving-away targets, or CPA that does not enter the safety corridor.
+
+ATTENTION:
+  A nearby side target or a possible approach that is worth noticing, but not an immediate collision path.
+
+CAUTION:
+  A target likely to enter the forward path or personal space within the next few seconds.
+
+DANGER:
+  A high-confidence target likely to collide in about 1-2 seconds, or a fast motor vehicle entering the front path.
+
+EMERGENCY:
+  Extremely short TTC, extremely small CPA distance, or current distance already inside the personal safety radius.
+```
+
+The current corridor zones are:
+
+```text
+PATH: within the main forward walking corridor
+SIDE: near-side area beside the walking corridor
+REMOTE: far-side or remote traffic area
+SIDE_STATIC: slow/static target beside the path
+UNK: unknown or missing ground position
+```
+
+Remote traffic is intentionally conservative. A target with large lateral offset and distance, such as a car crossing a far road lane, is capped to SAFE or ATTENTION unless CPA enters the personal radius very soon and the track is stable. Roadside stopped motorcycles/e-bikes are capped to SAFE when outside the path. Short-lived tracks, low velocity confidence, large position jitter, and direction reversals also cap risk to ATTENTION unless the target is already inside the personal safety radius.
+
 Risk levels:
 
 ```text
@@ -354,13 +399,13 @@ Closing speed is radial closing speed, computed along the actual line from the c
 
 Detection confidence is used only by YOLO/tracking. It is not multiplied into the warning score, because a weak detection can still describe a real obstacle and should not create or suppress risk by itself.
 
-`vz >= 0` is no longer a hard SAFE rule. The model uses radial closing speed, trajectory clearance, TTC/DRAC, and near-static distance. This prevents lateral cut-in targets and close static obstacles from being discarded just because the forward-axis velocity is non-negative.
+`vz >= 0` is not a hard SAFE rule. The model uses radial closing speed, CPA, corridor zone, TTC/DRAC, and near-static distance. This prevents true lateral cut-in targets and close static obstacles from being discarded just because the forward-axis velocity is non-negative.
 
-Trajectory distance is computed from the target's current ground position and velocity as the distance from the origin to that motion line: `abs(x * vz - z * vx) / sqrt(vx^2 + vz^2)`. If speed is too close to zero, the current ground distance is used instead.
+Trajectory distance is still logged as a diagnostic: `abs(x * vz - z * vx) / sqrt(vx^2 + vz^2)`. It is no longer enough by itself to raise a high warning. The risk model uses finite-window CPA: `t_cpa = -dot(p, v) / |v|^2` and `d_cpa = |p + v * t_cpa|`. If speed is too small, `t_cpa <= 0`, the target is too far in time, or the track is unstable, the model avoids high CUTIN/CLOSING warnings.
 
-Hard safety thresholds are applied before scoring where appropriate: targets are SAFE when `TTC > 5.0s`; bicycles are SAFE when `TRAJ > 1.5m`; motor vehicles (`car`, `motorcycle`, `truck`, `bus`) are SAFE when `TRAJ > 3.0m`, unless the target is already a near static obstacle. Targets classified as moving away are SAFE unless near-static distance risk is active.
+Hard safety thresholds are applied before scoring where appropriate: targets are SAFE when `TTC > 5.0s` and CPA does not enter the corridor; remote traffic and side-static targets are capped before they can become CAUTION/DANGER; moving-away targets are SAFE unless near-static distance risk is active.
 
-If the target remains inside those safety thresholds, the score is a weighted average of trajectory-distance risk, TTC risk, DRAC risk, radial-closing-speed risk, and optional near-static-obstacle risk, then multiplied by the vehicle risk multiplier. Trajectory-distance risk uses a saturating power curve, `1 - (TRAJ / safe_distance)^2`. TTC risk also uses a saturating power curve: `1 - ((TTC - 1.5) / (5.0 - 1.5))^2` for `1.5s < TTC < 5.0s`, with `TTC <= 1.5s` saturated at `1.0` and `TTC >= 5.0s` contributing `0.0`. Velocity confidence no longer directly multiplies these risk terms to near zero; TTC/DRAC/closing use a floor, and trajectory risk is kept independent because it is the key CUTIN signal.
+If the target remains inside those safety checks, the score is a weighted average of CPA-distance risk, TTC risk, DRAC risk, radial-closing-speed risk, and optional near-static-obstacle risk. CPA-distance risk uses a saturating power curve like `1 - (d_cpa / warning_corridor_half_width)^2` inside the prediction window. TTC risk still uses a saturating curve between `1.5s` and `5.0s`. Velocity confidence reduces unreliable velocity terms and can cap the final level, but it does not erase close front-path warnings completely.
 
 Motion pattern labels in the overlay and risk log are:
 
@@ -370,9 +415,11 @@ AWAY: moving away
 CUTIN: lateral cut-in toward the camera wearer
 CLOSING: head-on or radial closing
 NEAR: near static obstacle
+REMOTE: remote traffic
+SIDE_STATIC: static or very slow side target
 ```
 
-CUTIN and NEAR patterns have explicit score floors. A CUTIN target with very small `TRAJ` reaches at least ATTENTION, and short TTC or very small trajectory clearance reaches at least CAUTION. A near static obstacle under 1.5m reaches at least ATTENTION, with stronger floors at closer distances.
+CUTIN and NEAR patterns have explicit score floors only when CPA, corridor, and stability support the warning. A side target must be moving toward the path and reach the corridor within the finite prediction window before it becomes CUTIN. A near static obstacle outside the path is capped to SAFE, while an in-path near obstacle under 1.5m reaches at least ATTENTION with stronger floors at closer distances.
 
 Distance and velocity confidence are not global score multipliers. They reduce unreliable sub-terms and feed `observation_quality`, which controls how quickly the display-level stabilizer upgrades box color.
 
@@ -384,11 +431,20 @@ For debugging risk decisions frame by frame:
 py vision_obstacle_tracker.py --source video --video D:\path\input.mp4 --no-display --risk-log-csv D:\path\risk_log.csv --max-frames 300
 ```
 
-The CSV includes frame index, track ID, class, detection confidence, observation quality, distance components, distance/velocity confidence, quality flags, ground position, velocity, ego-motion magnitude, radial closing speed, trajectory distance, TTC, DRAC, motion pattern, raw risk score/level, displayed risk score/level, risk term breakdown (`trajectory_risk`, `ttc_risk`, `drac_risk`, `closing_risk`, `static_obstacle_risk`), and stabilizer diagnostics (`stabilizer_pending_level`, `stabilizer_pending_count`, `stabilizer_required_frames`, `stabilizer_reason`).
+The CSV includes frame index, track ID, class, detection confidence, observation quality, distance components, distance/velocity confidence, velocity stability, position jitter, quality flags, ground position, velocity, ego-motion magnitude, radial closing speed, trajectory distance, CPA time, CPA distance, CPA validity, TTC, DRAC, motion pattern, corridor zone, risk cap reason, raw risk score/level, displayed risk score/level, risk term breakdown (`trajectory_risk`, `ttc_risk`, `drac_risk`, `closing_risk`, `static_obstacle_risk`), and stabilizer diagnostics (`stabilizer_pending_level`, `stabilizer_pending_count`, `stabilizer_required_frames`, `stabilizer_reason`).
 
 ### Risk Model Tuning
 
-Start with calibration before changing risk thresholds. If distances are biased, fix `camera_matrix`, `camera_height_m`, `camera_pitch_deg`, or `distance_scale` first. If velocity is noisy, check `qV`, ego-motion flags, lighting, `--ego-motion-mode`, `--ego-motion-every-n`, and `--distance-smoothing`. Use `--risk-log-csv` to compare raw risk against displayed risk; if raw risk is correct but colors lag, inspect `stabilizer_reason` and `stabilizer_required_frames`. If raw risk itself is wrong, inspect `TRAJ`, `TTC`, `motion_pattern`, `distance_confidence`, `velocity_confidence`, and the risk term breakdown.
+Start with calibration before changing risk thresholds. If distances are biased, fix `camera_matrix`, `camera_height_m`, `camera_pitch_deg`, or `distance_scale` first. If velocity is noisy, check `qV`, `velocity_stability`, `position_jitter_m`, ego-motion flags, lighting, `--ego-motion-mode`, `--ego-motion-every-n`, and `--distance-smoothing`. Use `--risk-log-csv` to compare raw risk against displayed risk; if raw risk is correct but colors lag, inspect `stabilizer_reason` and `stabilizer_required_frames`. If raw risk itself is wrong, inspect `cpa_time_s`, `cpa_distance_m`, `corridor_zone`, `risk_cap_reason`, `TRAJ`, `TTC`, `motion_pattern`, `distance_confidence`, `velocity_confidence`, and the risk term breakdown.
+
+To judge whether the false-positive fix is working:
+
+```text
+Roadside static motorcycle/e-bike: should not become CAUTION.
+Remote lateral traffic: should not become DANGER.
+Bicycle/e-bike actually entering the front path: should become ATTENTION/CAUTION.
+risk_log.csv should contain cpa_time_s, cpa_distance_m, cpa_valid, corridor_zone, and risk_cap_reason.
+```
 
 If live FPS stays low at every requested resolution, the camera delivery path is the limit rather than YOLO. In that case, check lighting, exposure, and the camera driver settings; reducing resolution will not help until the camera actually supplies frames faster. A common cause is auto exposure in a dim scene lowering the camera to about 5-6 FPS.
 
@@ -405,7 +461,7 @@ This first version uses a single-camera ground-plane approximation:
 
 - The bottom center of each detection box is projected onto a flat ground plane.
 - Distance depends on camera height, pitch, field of view, and detection box quality.
-- Velocity is the difference between consecutive ground-plane positions for the same stable track ID.
+- Velocity is estimated from recent smoothed ground points using robust short-history motion, with position jitter and direction reversal lowering velocity confidence.
 
 The numbers are useful for early algorithm testing, but they are not final safety-grade measurements. Accurate distance/speed needs careful camera calibration and, in a later system stage, validation against additional sensors or measured ground truth.
 

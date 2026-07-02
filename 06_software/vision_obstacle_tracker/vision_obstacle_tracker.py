@@ -11,7 +11,7 @@ from pathlib import Path
 
 from camera_source import FfmpegCameraConfig, FfmpegMjpegCameraCapture
 from calibration import CameraCalibration, calibration_from_mapping, estimate_ground_point_from_bbox, load_calibration_file
-from risk_model import MotionPattern, RiskAssessment, RiskLevel, RiskModel, motion_pattern_name
+from risk_model import MotionPattern, RiskAssessment, RiskLevel, RiskModel, corridor_zone_name, motion_pattern_name
 from vision_core import DetectionObservation, StableTrackIdManager, TrackState, compute_observation_quality, format_overlay_label, parse_target_classes, should_keep_class
 
 
@@ -212,6 +212,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ego-motion-every-n", type=int, default=5, help="Run ego-motion optical flow every N processed frames. Skipped frames use neutral motion quality.")
     parser.add_argument("--display-scale", type=float, default=1.0, help="Scale display window; inference uses original frame.")
     parser.add_argument("--display-every-n", type=int, default=1, help="Refresh the OpenCV preview every N processed frames. Output video still writes every frame.")
+    parser.add_argument("--overlay-verbosity", choices=("minimal", "normal", "debug"), default="normal", help="Overlay label detail level.")
     parser.add_argument("--save-output", help="Optional output MP4 path with overlays.")
     parser.add_argument("--risk-log-csv", help="Optional CSV path for per-track risk debugging logs.")
     parser.add_argument("--profile", action="store_true", help="Print sliding-average stage timings once per second.")
@@ -560,12 +561,19 @@ class RiskCsvLogger:
         "vz_mps",
         "speed_mps",
         "velocity_confidence",
+        "velocity_stability",
+        "position_jitter_m",
         "ego_motion_magnitude",
         "radial_closing_speed_mps",
         "trajectory_distance_m",
+        "cpa_time_s",
+        "cpa_distance_m",
+        "cpa_valid",
         "ttc_s",
         "drac_mps2",
         "motion_pattern",
+        "corridor_zone",
+        "risk_cap_reason",
         "trajectory_risk",
         "ttc_risk",
         "drac_risk",
@@ -629,12 +637,19 @@ class RiskCsvLogger:
                     "vz_mps": f"{target.vz_mps:.3f}",
                     "speed_mps": f"{target.speed_mps:.3f}",
                     "velocity_confidence": f"{target.velocity_confidence:.3f}",
+                    "velocity_stability": f"{target.velocity_stability:.3f}",
+                    "position_jitter_m": f"{target.position_jitter_m:.3f}",
                     "ego_motion_magnitude": f"{target.ego_motion_magnitude:.3f}",
                     "radial_closing_speed_mps": _format_optional_float(raw.closing_speed_mps if raw else None),
                     "trajectory_distance_m": _format_optional_float(raw.trajectory_distance_m if raw else None),
+                    "cpa_time_s": _format_optional_float(raw.cpa_time_s if raw else None),
+                    "cpa_distance_m": _format_optional_float(raw.cpa_distance_m if raw else None),
+                    "cpa_valid": "1" if raw and raw.cpa_valid else "0" if raw else "",
                     "ttc_s": _format_optional_float(raw.ttc_s if raw else None),
                     "drac_mps2": _format_optional_float(raw.drac_mps2 if raw else None),
                     "motion_pattern": motion_pattern_name(raw.motion_pattern) if raw else "",
+                    "corridor_zone": corridor_zone_name(raw.corridor_zone) if raw else "",
+                    "risk_cap_reason": raw.risk_cap_reason if raw else "",
                     "trajectory_risk": f"{raw.trajectory_risk:.3f}" if raw else "",
                     "ttc_risk": f"{raw.ttc_risk:.3f}" if raw else "",
                     "drac_risk": f"{raw.drac_risk:.3f}" if raw else "",
@@ -747,17 +762,34 @@ def risk_level_name(level: RiskLevel) -> str:
     }[level]
 
 
-def format_risk_suffix(assessment: RiskAssessment | None) -> str:
+def format_risk_suffix(assessment: RiskAssessment | None, verbosity: str = "normal") -> str:
     if assessment is None:
         return "RiskScore=0.00 SAFE"
+    zone = corridor_zone_name(assessment.corridor_zone)
+    if verbosity == "minimal":
+        return risk_level_name(assessment.level)
+    cpa = (
+        f" CPA={assessment.cpa_time_s:.1f}s/{assessment.cpa_distance_m:.1f}m"
+        if assessment.cpa_time_s is not None and assessment.cpa_distance_m is not None
+        else ""
+    )
     ttc = f" TTC={assessment.ttc_s:.1f}s" if assessment.ttc_s is not None else ""
+    if verbosity == "normal":
+        time_metric = cpa if cpa else ttc
+        return f"{risk_level_name(assessment.level)} {zone}{time_metric} R={assessment.score:.2f}"
     trajectory = (
         f" TRAJ={assessment.trajectory_distance_m:.1f}m"
         if assessment.trajectory_distance_m is not None
         else ""
     )
     pattern = motion_pattern_name(assessment.motion_pattern)
-    return f"RiskScore={assessment.score:.2f} {risk_level_name(assessment.level)} {pattern}{ttc}{trajectory}"
+    cap = f" cap={assessment.risk_cap_reason}" if assessment.risk_cap_reason != "none" else ""
+    terms = (
+        f" tr={assessment.trajectory_risk:.2f}"
+        f" ttcR={assessment.ttc_risk:.2f}"
+        f" closeR={assessment.closing_risk:.2f}"
+    )
+    return f"RiskScore={assessment.score:.2f} {risk_level_name(assessment.level)} {zone} {pattern}{cpa}{ttc}{trajectory}{terms}{cap}"
 
 
 @dataclass(frozen=True)
@@ -935,8 +967,10 @@ class RiskWarningStabilizer:
             and (
                 (assessment.ttc_s is not None and assessment.ttc_s <= self.config.caution_fast_path_ttc_s)
                 or (
-                    assessment.trajectory_distance_m is not None
-                    and assessment.trajectory_distance_m <= self.config.caution_fast_path_trajectory_m
+                    assessment.cpa_distance_m is not None
+                    and assessment.cpa_time_s is not None
+                    and assessment.cpa_time_s <= self.config.caution_fast_path_ttc_s
+                    and assessment.cpa_distance_m <= self.config.caution_fast_path_trajectory_m
                 )
             )
         )
@@ -947,6 +981,12 @@ class RiskWarningStabilizer:
             assessment.level >= RiskLevel.EMERGENCY
             and (
                 (assessment.ttc_s is not None and assessment.ttc_s <= self.config.emergency_fast_path_ttc_s)
+                or (
+                    assessment.cpa_time_s is not None
+                    and assessment.cpa_distance_m is not None
+                    and assessment.cpa_time_s <= self.config.emergency_fast_path_ttc_s
+                    and assessment.cpa_distance_m <= self.config.emergency_fast_path_distance_m
+                )
                 or (distance_m is not None and distance_m <= self.config.emergency_fast_path_distance_m)
             )
         )
@@ -976,6 +1016,7 @@ def draw_overlay(
     source_text: str,
     risk_by_track_id: dict[int, RiskAssessment] | None = None,
     profile_text: str = "",
+    overlay_verbosity: str = "normal",
 ) -> None:
     import cv2
 
@@ -992,7 +1033,7 @@ def draw_overlay(
             foot_y = int(round(y2))
             cv2.circle(frame, (foot_x, foot_y), 5, color, -1)
 
-        label = f"{format_overlay_label(target)} {format_risk_suffix(assessment)}"
+        label = f"{format_overlay_label(target, overlay_verbosity)} {format_risk_suffix(assessment, overlay_verbosity)}"
         y_label = max(24, y1 - 8)
         cv2.putText(frame, label, (x1, y_label), cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2, cv2.LINE_AA)
 
@@ -1296,6 +1337,7 @@ def main() -> None:
                         source_text,
                         risk_by_track_id,
                         profiler.overlay_text(),
+                        args.overlay_verbosity,
                     )
             else:
                 profiler.record("draw", 0.0)

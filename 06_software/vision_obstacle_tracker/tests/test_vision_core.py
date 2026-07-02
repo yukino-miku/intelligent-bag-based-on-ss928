@@ -97,6 +97,58 @@ class VisionCoreTest(unittest.TestCase):
         self.assertAlmostEqual(-6.0, tracked.vz_mps, places=3)
         self.assertAlmostEqual(6.0, tracked.speed_mps, places=3)
 
+    def test_speed_estimate_uses_robust_recent_motion_not_last_position_spike(self) -> None:
+        state = TrackState(smoothing_alpha=1.0, history_seconds=3.0, max_speed_mps=40.0)
+        samples = [
+            (0.0, GroundPoint(x_m=-2.5, z_m=4.0)),
+            (0.5, GroundPoint(x_m=-2.45, z_m=4.02)),
+            (1.0, GroundPoint(x_m=-2.55, z_m=3.98)),
+            (1.5, GroundPoint(x_m=2.5, z_m=8.0)),
+        ]
+
+        tracked = None
+        for timestamp_s, point in samples:
+            tracked = state.update(
+                DetectionObservation(
+                    track_id=31,
+                    class_name="motorcycle",
+                    confidence=0.90,
+                    bbox_xyxy=(0, 0, 10, 10),
+                    ground_point=point,
+                    timestamp_s=timestamp_s,
+                    distance_confidence=0.8,
+                )
+            )
+
+        self.assertIsNotNone(tracked)
+        self.assertLess(tracked.speed_mps, 1.0)
+        self.assertLess(tracked.velocity_confidence, 0.8)
+        self.assertGreater(tracked.position_jitter_m, 0.5)
+        self.assertIn("position_jitter", tracked.motion_quality_flags)
+
+    def test_velocity_direction_reversal_lowers_confidence(self) -> None:
+        state = TrackState(smoothing_alpha=1.0, history_seconds=3.0)
+        for timestamp_s, point in [
+            (0.0, GroundPoint(x_m=0.0, z_m=5.0)),
+            (0.5, GroundPoint(x_m=0.5, z_m=5.0)),
+            (1.0, GroundPoint(x_m=0.0, z_m=5.0)),
+            (1.5, GroundPoint(x_m=0.5, z_m=5.0)),
+        ]:
+            tracked = state.update(
+                DetectionObservation(
+                    track_id=32,
+                    class_name="bicycle",
+                    confidence=0.90,
+                    bbox_xyxy=(0, 0, 10, 10),
+                    ground_point=point,
+                    timestamp_s=timestamp_s,
+                    distance_confidence=0.9,
+                )
+            )
+
+        self.assertLess(tracked.velocity_confidence, 0.7)
+        self.assertIn("velocity_reversal", tracked.motion_quality_flags)
+
     def test_distance_smoothing_reduces_single_frame_noise(self) -> None:
         state = TrackState(smoothing_alpha=0.5, history_seconds=2.0)
         state.update(
@@ -276,6 +328,35 @@ class VisionCoreTest(unittest.TestCase):
         )[0]
 
         self.assertNotEqual(car.track_id, bicycle.track_id)
+
+    def test_overlay_label_verbosity_controls_detail(self) -> None:
+        point = GroundPoint(x_m=0.3, z_m=3.0)
+        tracked = TrackedObject(
+            track_id=2,
+            class_name="car",
+            confidence=0.9,
+            bbox_xyxy=(0, 0, 10, 10),
+            ground_point=point,
+            distance_m=point.distance_m,
+            vx_mps=-0.5,
+            vz_mps=-1.0,
+            speed_mps=1.12,
+            timestamp_s=1.0,
+            distance_source="fused",
+            distance_confidence=0.8,
+            velocity_confidence=0.7,
+        )
+
+        minimal = format_overlay_label(tracked, verbosity="minimal")
+        normal = format_overlay_label(tracked, verbosity="normal")
+        debug = format_overlay_label(tracked, verbosity="debug")
+
+        self.assertIn("car", minimal)
+        self.assertNotIn("ID", minimal)
+        self.assertIn("ID 2", normal)
+        self.assertNotIn("vx=", normal)
+        self.assertIn("qV=", debug)
+        self.assertIn("vx=", debug)
 
 
 if __name__ == "__main__":

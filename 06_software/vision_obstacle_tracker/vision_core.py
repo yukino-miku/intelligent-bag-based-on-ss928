@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, replace
+from statistics import median
 
 from calibration import GroundPoint
 
@@ -62,6 +63,8 @@ class TrackedObject:
     ego_motion_magnitude: float = 0.0
     motion_quality_flags: tuple[str, ...] = ()
     track_age_frames: int = 1
+    velocity_stability: float = 1.0
+    position_jitter_m: float = 0.0
 
 
 @dataclass
@@ -196,6 +199,8 @@ class TrackState:
         distance_m = observation.ground_point.distance_m if observation.ground_point is not None else None
         vx_mps = 0.0
         vz_mps = 0.0
+        velocity_stability = 1.0
+        position_jitter_m = 0.0
         output_point = observation.ground_point
         motion_quality_flags: list[str] = []
         track_age_frames = self._track_age_by_id.get(observation.track_id, 0) + 1
@@ -211,12 +216,11 @@ class TrackState:
                 del history[0]
 
             if len(history) >= 2:
-                first_point, first_time = history[0]
-                last_point, last_time = history[-1]
-                dt_s = last_time - first_time
-                if dt_s > 0:
-                    vx_mps = (last_point.x_m - first_point.x_m) / dt_s * self.speed_scale
-                    vz_mps = (last_point.z_m - first_point.z_m) / dt_s * self.speed_scale
+                vx_mps, vz_mps, velocity_stability, position_jitter_m = self._estimate_velocity(history)
+                if velocity_stability < 0.65:
+                    motion_quality_flags.append("unstable_velocity")
+                if position_jitter_m >= 0.50:
+                    motion_quality_flags.append("position_jitter")
 
         speed_mps = math.hypot(vx_mps, vz_mps)
         if self.max_speed_mps > 0 and speed_mps > self.max_speed_mps:
@@ -230,6 +234,9 @@ class TrackState:
             speed_mps,
             ego_motion_magnitude,
             motion_quality_flags,
+            velocity_stability,
+            position_jitter_m,
+            track_age_frames,
         )
         self._previous_speed_by_id[observation.track_id] = speed_mps
         observation_quality = compute_observation_quality(
@@ -264,6 +271,8 @@ class TrackState:
             ego_motion_magnitude=ego_motion_magnitude,
             motion_quality_flags=tuple(motion_quality_flags),
             track_age_frames=track_age_frames,
+            velocity_stability=velocity_stability,
+            position_jitter_m=position_jitter_m,
         )
 
     def _smooth_point(self, track_id: int, point: GroundPoint) -> GroundPoint:
@@ -280,12 +289,81 @@ class TrackState:
         self._smoothed_ground_by_id[track_id] = smoothed
         return smoothed
 
+    def _estimate_velocity(self, history: list[tuple[GroundPoint, float]]) -> tuple[float, float, float, float]:
+        segment_velocities: list[tuple[float, float]] = []
+        for (previous_point, previous_time), (current_point, current_time) in zip(history, history[1:]):
+            dt_s = current_time - previous_time
+            if dt_s <= 1e-6:
+                continue
+            vx = (current_point.x_m - previous_point.x_m) / dt_s
+            vz = (current_point.z_m - previous_point.z_m) / dt_s
+            segment_velocities.append((vx, vz))
+
+        if not segment_velocities:
+            return 0.0, 0.0, 0.0, 0.0
+
+        usable_velocities = segment_velocities
+        if self.max_speed_mps > 0 and len(segment_velocities) >= 3:
+            filtered = [
+                (vx, vz)
+                for vx, vz in segment_velocities
+                if math.hypot(vx, vz) <= self.max_speed_mps
+            ]
+            if filtered:
+                usable_velocities = filtered
+
+        vx_mps = median(vx for vx, _vz in usable_velocities) * self.speed_scale
+        vz_mps = median(vz for _vx, vz in usable_velocities) * self.speed_scale
+        position_jitter_m = self._position_jitter_m(history, vx_mps / max(self.speed_scale, 1e-6), vz_mps / max(self.speed_scale, 1e-6))
+        reversal_count = self._velocity_reversal_count(segment_velocities)
+
+        stability = 1.0
+        if len(history) < 3:
+            stability *= 0.75
+        if reversal_count:
+            stability *= max(0.25, 1.0 - 0.35 * reversal_count)
+        if position_jitter_m >= 1.0:
+            stability *= 0.30
+        elif position_jitter_m >= 0.50:
+            stability *= 0.50
+        elif position_jitter_m >= 0.25:
+            stability *= 0.75
+        return vx_mps, vz_mps, clamp(stability), position_jitter_m
+
+    @staticmethod
+    def _position_jitter_m(history: list[tuple[GroundPoint, float]], vx_mps: float, vz_mps: float) -> float:
+        if len(history) < 3:
+            return 0.0
+        last_point, last_time = history[-1]
+        residuals: list[float] = []
+        for point, timestamp_s in history[:-1]:
+            dt_s = timestamp_s - last_time
+            expected_x = last_point.x_m + vx_mps * dt_s
+            expected_z = last_point.z_m + vz_mps * dt_s
+            residuals.append(math.hypot(point.x_m - expected_x, point.z_m - expected_z))
+        return float(median(residuals)) if residuals else 0.0
+
+    @staticmethod
+    def _velocity_reversal_count(segment_velocities: list[tuple[float, float]]) -> int:
+        reversals = 0
+        for previous, current in zip(segment_velocities, segment_velocities[1:]):
+            previous_speed = math.hypot(previous[0], previous[1])
+            current_speed = math.hypot(current[0], current[1])
+            if previous_speed <= 0.10 or current_speed <= 0.10:
+                continue
+            if previous[0] * current[0] + previous[1] * current[1] < 0.0:
+                reversals += 1
+        return reversals
+
     def _velocity_confidence(
         self,
         observation: DetectionObservation,
         speed_mps: float,
         ego_motion_magnitude: float,
         motion_quality_flags: list[str],
+        velocity_stability: float,
+        position_jitter_m: float,
+        track_age_frames: int,
     ) -> float:
         confidence = clamp(observation.distance_confidence)
         if observation.ground_point is None:
@@ -314,6 +392,33 @@ class TrackState:
         if previous_speed is not None and speed_mps - previous_speed > 8.0:
             confidence *= 0.50
             motion_quality_flags.append("speed_jump")
+
+        if track_age_frames < 3:
+            confidence *= 0.85
+            motion_quality_flags.append("short_track")
+        if velocity_stability < 0.45:
+            confidence *= 0.45
+        elif velocity_stability < 0.70:
+            confidence *= 0.70
+        if position_jitter_m >= 1.0:
+            confidence *= 0.40
+        elif position_jitter_m >= 0.50:
+            confidence *= 0.60
+        if "velocity_reversal" not in motion_quality_flags:
+            history = self._history_by_id.get(observation.track_id, [])
+            segment_velocities = []
+            for (previous_point, previous_time), (current_point, current_time) in zip(history, history[1:]):
+                dt_s = current_time - previous_time
+                if dt_s > 1e-6:
+                    segment_velocities.append(
+                        (
+                            (current_point.x_m - previous_point.x_m) / dt_s,
+                            (current_point.z_m - previous_point.z_m) / dt_s,
+                        )
+                    )
+            if self._velocity_reversal_count(segment_velocities):
+                confidence *= 0.65
+                motion_quality_flags.append("velocity_reversal")
 
         return clamp(confidence)
 
@@ -358,11 +463,16 @@ def compute_observation_quality(
     return clamp(quality)
 
 
-def format_overlay_label(target: TrackedObject) -> str:
+def format_overlay_label(target: TrackedObject, verbosity: str = "normal") -> str:
     distance = f"{target.distance_m:.1f}m" if target.distance_m is not None else "unknown"
-    return (
-        f"ID {target.track_id} {target.class_name} {target.confidence:.2f} "
-        f"d={distance}({target.distance_source},q={target.distance_confidence:.2f}) "
-        f"v={target.speed_mps:.1f}m/s qV={target.velocity_confidence:.2f} "
-        f"vx={target.vx_mps:+.1f} vz={target.vz_mps:+.1f}"
-    )
+    if verbosity == "minimal":
+        return f"{target.class_name} d={distance}"
+    if verbosity == "debug":
+        return (
+            f"ID {target.track_id} {target.class_name} {target.confidence:.2f} "
+            f"d={distance}({target.distance_source},q={target.distance_confidence:.2f}) "
+            f"v={target.speed_mps:.1f}m/s qV={target.velocity_confidence:.2f} "
+            f"vx={target.vx_mps:+.1f} vz={target.vz_mps:+.1f} "
+            f"stab={target.velocity_stability:.2f} jitter={target.position_jitter_m:.2f}"
+        )
+    return f"ID {target.track_id} {target.class_name} d={distance} v={target.speed_mps:.1f}m/s"

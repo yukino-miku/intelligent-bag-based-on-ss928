@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from calibration import GroundPoint
-from risk_model import MotionPattern, RiskAssessment, RiskLevel
+from risk_model import CorridorZone, MotionPattern, RiskAssessment, RiskLevel
 from vision_core import TrackedObject
 from vision_obstacle_tracker import RiskCsvLogger, StabilizerDebugInfo
 
@@ -43,9 +43,14 @@ class RiskLoggingTest(unittest.TestCase):
                 level=RiskLevel.DANGER,
                 ttc_s=1.5,
                 trajectory_distance_m=0.7,
+                cpa_time_s=1.2,
+                cpa_distance_m=0.4,
+                cpa_valid=True,
                 drac_mps2=4.2,
                 closing_speed_mps=2.0,
                 motion_pattern=MotionPattern.HEAD_ON_OR_CLOSING,
+                corridor_zone=CorridorZone.IN_PATH,
+                risk_cap_reason="none",
                 trajectory_risk=0.80,
                 ttc_risk=0.70,
                 drac_risk=0.30,
@@ -58,9 +63,13 @@ class RiskLoggingTest(unittest.TestCase):
                 level=RiskLevel.CAUTION,
                 ttc_s=1.5,
                 trajectory_distance_m=0.7,
+                cpa_time_s=1.2,
+                cpa_distance_m=0.4,
+                cpa_valid=True,
                 drac_mps2=4.2,
                 closing_speed_mps=2.0,
                 motion_pattern=MotionPattern.HEAD_ON_OR_CLOSING,
+                corridor_zone=CorridorZone.IN_PATH,
             )
 
             logger.write_frame(
@@ -91,6 +100,11 @@ class RiskLoggingTest(unittest.TestCase):
         self.assertEqual("0.620", row["velocity_confidence"])
         self.assertEqual("distance_disagreement", row["quality_flags"])
         self.assertEqual("CLOSING", row["motion_pattern"])
+        self.assertEqual("PATH", row["corridor_zone"])
+        self.assertEqual("1.200", row["cpa_time_s"])
+        self.assertEqual("0.400", row["cpa_distance_m"])
+        self.assertEqual("1", row["cpa_valid"])
+        self.assertEqual("none", row["risk_cap_reason"])
         self.assertEqual("0.760", row["raw_risk_score"])
         self.assertEqual("DANGER", row["raw_risk_level"])
         self.assertEqual("0.600", row["display_risk_score"])

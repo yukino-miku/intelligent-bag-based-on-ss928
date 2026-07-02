@@ -26,6 +26,7 @@ class RuntimeOptionsTest(unittest.TestCase):
         self.assertEqual(0.0, args.roi_top_ratio)
         self.assertEqual(1.0, args.display_scale)
         self.assertEqual(1, args.display_every_n)
+        self.assertEqual("normal", args.overlay_verbosity)
         self.assertFalse(args.profile)
         self.assertEqual(1.2, args.camera_height)
         self.assertEqual(120.0, args.fov)
