@@ -124,7 +124,38 @@ class DisplayEveryNTest(unittest.TestCase):
         self.assertEqual(0, imshow.call_count)
         self.assertEqual(0, wait_key.call_count)
 
-    def _run_main(self, *extra_args: str, writer=None):
+    def test_ego_motion_every_n_does_not_reduce_detection_frequency(self) -> None:
+        ego_estimator = MagicMock()
+        ego_estimator.update.return_value = SimpleNamespace(magnitude_px=0.0, quality_flags=("ok",))
+
+        _capture, model, _draw_overlay, _imshow, _wait_key, _writer = self._run_main(
+            "--no-display",
+            "--max-frames",
+            "7",
+            "--ego-motion-every-n",
+            "3",
+            ego_estimator=ego_estimator,
+        )
+
+        self.assertEqual(7, model_track_count(model))
+        self.assertEqual(3, ego_estimator.update.call_count)
+
+    def test_ego_motion_off_does_not_call_estimator(self) -> None:
+        ego_estimator = MagicMock()
+
+        _capture, model, _draw_overlay, _imshow, _wait_key, _writer = self._run_main(
+            "--no-display",
+            "--max-frames",
+            "4",
+            "--ego-motion-mode",
+            "off",
+            ego_estimator=ego_estimator,
+        )
+
+        self.assertEqual(4, model_track_count(model))
+        self.assertEqual(0, ego_estimator.update.call_count)
+
+    def _run_main(self, *extra_args: str, writer=None, ego_estimator=None):
         capture = FakeCapture()
         model = FakeModel()
         argv = [
@@ -141,6 +172,7 @@ class DisplayEveryNTest(unittest.TestCase):
             patch.object(sys, "argv", argv),
             patch("vision_obstacle_tracker.open_capture", return_value=capture),
             patch("vision_obstacle_tracker.create_yolo_model", return_value=model),
+            patch("vision_obstacle_tracker.EgoMotionEstimator", return_value=ego_estimator or MagicMock()),
             patch("vision_obstacle_tracker.create_writer", return_value=writer),
             patch("vision_obstacle_tracker.draw_overlay") as draw_overlay,
             patch("cv2.namedWindow"),

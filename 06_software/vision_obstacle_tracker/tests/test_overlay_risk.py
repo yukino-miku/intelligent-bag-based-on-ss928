@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 import unittest
 
-from risk_model import RiskAssessment, RiskLevel
+from risk_model import MotionPattern, RiskAssessment, RiskLevel
 from vision_obstacle_tracker import (
     RiskWarningStabilizer,
     RiskWarningStabilizerConfig,
@@ -10,15 +10,22 @@ from vision_obstacle_tracker import (
 )
 
 
-def make_assessment(level: RiskLevel, score: float, ttc_s: float | None = 2.0) -> RiskAssessment:
+def make_assessment(
+    level: RiskLevel,
+    score: float,
+    ttc_s: float | None = 2.0,
+    motion_pattern: MotionPattern = MotionPattern.HEAD_ON_OR_CLOSING,
+    trajectory_distance_m: float | None = 0.0,
+) -> RiskAssessment:
     return RiskAssessment(
         track_id=7,
         score=score,
         level=level,
         ttc_s=ttc_s,
-        trajectory_distance_m=0.0,
+        trajectory_distance_m=trajectory_distance_m,
         drac_mps2=4.0,
         closing_speed_mps=8.0,
+        motion_pattern=motion_pattern,
     )
 
 
@@ -49,6 +56,42 @@ class OverlayRiskTest(unittest.TestCase):
 
         self.assertEqual(RiskLevel.SAFE, display.level)
         self.assertEqual(0.0, display.score)
+
+    def test_attention_displays_on_first_frame(self) -> None:
+        stabilizer = RiskWarningStabilizer()
+        attention = make_assessment(RiskLevel.ATTENTION, 0.45)
+
+        display = stabilizer.stabilize({7: attention}, {7: make_target(quality=0.8)})[7]
+
+        self.assertEqual(RiskLevel.ATTENTION, display.level)
+
+    def test_high_quality_cut_in_caution_displays_on_first_frame(self) -> None:
+        stabilizer = RiskWarningStabilizer()
+        caution = make_assessment(
+            RiskLevel.CAUTION,
+            0.62,
+            ttc_s=3.2,
+            motion_pattern=MotionPattern.LATERAL_CUT_IN,
+            trajectory_distance_m=0.25,
+        )
+
+        display = stabilizer.stabilize({7: caution}, {7: make_target(quality=0.85)})[7]
+
+        self.assertEqual(RiskLevel.CAUTION, display.level)
+
+    def test_stabilizer_reports_pending_reason_for_risk_log(self) -> None:
+        stabilizer = RiskWarningStabilizer(
+            RiskWarningStabilizerConfig(min_confirm_frames_danger=2, low_quality_extra_frames=1)
+        )
+        danger = make_assessment(RiskLevel.DANGER, 0.72)
+
+        stabilizer.stabilize({7: danger}, {7: make_target(quality=0.2)})
+        info = stabilizer.debug_info_by_track_id()[7]
+
+        self.assertEqual(RiskLevel.DANGER, info.pending_level)
+        self.assertEqual(1, info.pending_count)
+        self.assertEqual(3, info.required_frames)
+        self.assertIn("waiting", info.reason)
 
     def test_high_quality_consecutive_danger_frames_upgrade_display(self) -> None:
         stabilizer = RiskWarningStabilizer(

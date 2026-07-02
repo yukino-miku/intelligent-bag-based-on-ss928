@@ -37,6 +37,8 @@ class RuntimeOptionsTest(unittest.TestCase):
         self.assertIsNone(args.risk_log_csv)
         self.assertEqual("fused", args.distance_mode)
         self.assertEqual("off", args.enhance)
+        self.assertEqual("light", args.ego_motion_mode)
+        self.assertEqual(5, args.ego_motion_every_n)
         self.assertIn("car", args.target_classes)
         self.assertIn("bicycle", args.target_classes)
 
@@ -57,6 +59,24 @@ class RuntimeOptionsTest(unittest.TestCase):
         self.assertEqual(1024, args.imgsz)
         self.assertEqual(0.02, args.conf)
         self.assertEqual(50, args.max_det)
+
+    def test_cpu_demo_profile_uses_smaller_yolo_settings(self) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "vision_obstacle_tracker.py",
+                "--runtime-profile",
+                "cpu_demo",
+            ],
+        ):
+            args = parse_args()
+
+        self.assertEqual(960, args.width)
+        self.assertEqual(540, args.height)
+        self.assertEqual(640, args.imgsz)
+        self.assertEqual(0.05, args.conf)
+        self.assertEqual(40, args.max_det)
 
     def test_runtime_profile_can_be_overridden_by_explicit_values(self) -> None:
         with patch.object(
@@ -134,6 +154,27 @@ class RuntimeOptionsTest(unittest.TestCase):
 
             fake_yolo.assert_called_once_with(str(model_path))
             self.assertEqual("pt-model", model)
+
+    def test_prefer_openvino_missing_export_prints_actionable_hint(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model_path = Path(temp_dir) / "bag_detector.pt"
+            model_path.write_bytes(b"placeholder")
+
+            with patch.object(
+                sys,
+                "argv",
+                ["vision_obstacle_tracker.py", "--model", str(model_path), "--prefer-openvino"],
+            ):
+                args = parse_args()
+
+            fake_yolo = MagicMock(return_value="pt-model")
+
+            with patch("builtins.print") as print_mock:
+                create_yolo_model(args, yolo_cls=fake_yolo)
+
+        printed = "\n".join(str(call.args[0]) for call in print_mock.call_args_list if call.args)
+        self.assertIn("--export-openvino", printed)
+        self.assertIn("PyTorch CPU", printed)
 
     def test_vehicle_botsort_keeps_weak_detections_for_fast_objects(self) -> None:
         tracker_config = Path(__file__).resolve().parents[1] / "vehicle_botsort.yaml"

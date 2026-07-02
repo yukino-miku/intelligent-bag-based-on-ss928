@@ -18,6 +18,15 @@ py -m pip install -r requirements.txt
 
 The first run downloads the YOLO model weights if they are not already cached.
 
+Optional packages:
+
+```powershell
+py -m pip install openvino  # CPU inference acceleration after --export-openvino
+py -m pip install PyYAML    # richer YAML calibration-file parsing
+```
+
+The code has a simple YAML fallback for calibration files, so PyYAML is optional.
+
 ## Run USB Camera
 
 ```powershell
@@ -54,13 +63,16 @@ Runtime profiles:
 
 ```powershell
 py vision_obstacle_tracker.py --source camera --runtime-profile realtime
+py vision_obstacle_tracker.py --source camera --runtime-profile cpu_demo
 py vision_obstacle_tracker.py --source camera --runtime-profile balanced
 py vision_obstacle_tracker.py --source camera --runtime-profile quality
 ```
 
-`realtime` requests `960x540`, `imgsz=512`, `conf=0.03`, and `max_det=50`; `balanced` requests `1280x720`, `imgsz=1024`, `conf=0.02`, and `max_det=50`; `quality` requests `1920x1080`, `imgsz=1024`, `conf=0.02`, and `max_det=50`. Explicit `--width`, `--height`, `--imgsz`, `--conf`, and `--max-det` values override the selected profile.
+`realtime` requests `960x540`, `imgsz=512`, `conf=0.03`, and `max_det=50`; `cpu_demo` requests `960x540`, `imgsz=640`, `conf=0.05`, and `max_det=40`; `balanced` requests `1280x720`, `imgsz=1024`, `conf=0.02`, and `max_det=50`; `quality` requests `1920x1080`, `imgsz=1024`, `conf=0.02`, and `max_det=50`. Explicit `--width`, `--height`, `--imgsz`, `--conf`, and `--max-det` values override the selected profile.
 
-For better CPU inference speed on supported Intel/CPU systems, export the YOLO model to OpenVINO and reload the exported model:
+PyTorch CPU with `imgsz=1024` is usually slow. For local demos, start with `--runtime-profile cpu_demo --roi-top-ratio 0.20`, then compare OpenVINO.
+
+For better CPU inference speed on supported Intel/CPU systems, optionally install OpenVINO, export the YOLO model, and reload the exported model:
 
 ```powershell
 py -m pip install openvino
@@ -73,7 +85,7 @@ The first `--export-openvino` run creates an OpenVINO model folder beside the or
 py vision_obstacle_tracker.py --source camera --model yolo11n.pt --prefer-openvino
 ```
 
-`--prefer-openvino` does not export automatically. If `yolo11n_openvino_model` already exists beside `yolo11n.pt`, it loads that folder and prints `Loading OpenVINO model`; otherwise it falls back to the original model and prints the selected backend.
+`--prefer-openvino` does not export automatically. If `yolo11n_openvino_model` already exists beside `yolo11n.pt`, it loads that folder and prints `Loading OpenVINO model`; otherwise it falls back to the original model and prints a hint to run `--export-openvino` first. OpenVINO is optional and is not required by `requirements.txt`.
 
 If you need to show every COCO class instead of only traffic-related targets:
 
@@ -134,6 +146,26 @@ py vision_obstacle_tracker.py --source video --video D:\path\input.mp4 --max-fra
 
 ```powershell
 py vision_obstacle_tracker.py --source video --video D:\path\input.mp4 --imgsz 960 --conf 0.10 --display-scale 1.0
+```
+
+## Recommended CPU Demo Commands
+
+PyTorch CPU quick test:
+
+```powershell
+py vision_obstacle_tracker.py --source video --video D:\path\input.mp4 --runtime-profile cpu_demo --roi-top-ratio 0.20 --profile
+```
+
+OpenVINO recommended path after one explicit `--export-openvino` run:
+
+```powershell
+py vision_obstacle_tracker.py --source video --video D:\path\input.mp4 --runtime-profile cpu_demo --roi-top-ratio 0.20 --prefer-openvino --profile
+```
+
+Risk tuning with CSV diagnostics:
+
+```powershell
+py vision_obstacle_tracker.py --source video --video D:\path\input.mp4 --runtime-profile cpu_demo --roi-top-ratio 0.20 --prefer-openvino --risk-log-csv D:\path\risk_log.csv --profile
 ```
 
 Performance profiling and CPU-load controls:
@@ -218,16 +250,16 @@ Use `--pitch-adjust-step 0.25` and optional `--pitch-smoothing 0.5` for slower v
 Distance and speed tuning:
 
 ```powershell
-py vision_obstacle_tracker.py --source camera --distance-mode fused --size-weight 0.75
+py vision_obstacle_tracker.py --source camera --distance-mode fused
 py vision_obstacle_tracker.py --source camera --distance-scale 1.25 --speed-scale 1.25
 py vision_obstacle_tracker.py --source camera --camera-pitch 3
 ```
 
-If measured distance is consistently too small, first lower `--camera-pitch` or raise `--distance-scale`. If distance jitters, lower `--distance-smoothing` toward `0.25`; if speed reacts too slowly, raise it toward `0.6`. `--distance-mode size` uses vehicle/bicycle typical dimensions only, while `--distance-mode ground` uses only the ground-plane projection.
+If measured distance is consistently too small, first lower `--camera-pitch` or raise `--distance-scale`. If distance jitters, lower `--distance-smoothing` toward `0.25`; if speed reacts too slowly, raise it toward `0.6`. `--distance-mode size` uses vehicle/bicycle typical dimensions only, while `--distance-mode ground` uses only the ground-plane projection. In fused mode, ground/size weighting is adaptive; `--size-weight` is now only a fallback/debug value used when confidence data is unavailable.
 
 ### Adaptive Distance Fusion
 
-`--distance-mode fused` now adapts its ground-vs-size weighting using detection quality. It lowers ground confidence for boxes near the image edge, truncated boxes, boxes whose bottom point is too high in the frame, and very small far boxes. It lowers size confidence for weak class-size assumptions and for large disagreement between size distance and ground-projection distance.
+`--distance-mode fused` adapts its ground-vs-size weighting using detection quality. It lowers ground confidence for boxes near the image edge, truncated boxes, boxes whose bottom point is too high in the frame, and very small far boxes. It also rejects unreliable ground projection near the horizon using `min_ground_angle_deg`, `max_reliable_ground_distance_m`, and `max_reliable_distance_m` from calibration settings. Quality flags such as `near_horizon`, `ground_too_far`, and `distance_clamped` are written to the CSV log.
 
 Overlay labels show the selected distance source and distance quality:
 
@@ -239,7 +271,7 @@ d=8.3m(fused,q=0.72)
 
 ### Ego Motion Quality
 
-The tracker estimates lightweight global image motion with OpenCV optical flow. Strong camera shake or coherent body motion does not stop detection, but it lowers `velocity_confidence`, which reduces velocity-dependent risk terms and makes the display stabilizer require more evidence before upgrading warning color.
+The tracker can estimate lightweight global image motion with OpenCV optical flow. Strong camera shake or coherent body motion does not stop detection, but it lowers `velocity_confidence` moderately. Risk scoring keeps a confidence floor so a real CUTIN/CLOSING target is not multiplied down to SAFE only because camera motion was noisy.
 
 Overlay labels include velocity quality:
 
@@ -250,8 +282,11 @@ qV=0.62
 Use profile output to see ego-motion cost:
 
 ```powershell
-py vision_obstacle_tracker.py --source camera --profile
+py vision_obstacle_tracker.py --source camera --ego-motion-mode light --ego-motion-every-n 5 --profile
+py vision_obstacle_tracker.py --source camera --ego-motion-mode off --profile
 ```
+
+`--ego-motion-mode light` runs optical flow on a downscaled frame. `--ego-motion-every-n 5` runs it every fifth processed frame and uses neutral motion quality on skipped frames. `--ego-motion-mode off` disables this extra optical-flow pass; BoT-SORT may still use its own tracker-side GMC from `vehicle_botsort.yaml`.
 
 Optional low-light enhancement:
 
@@ -273,7 +308,7 @@ DANGER: orange-red
 EMERGENCY: red
 ```
 
-To suppress one-frame warning flashes from bad distance or velocity estimates, box color uses a display-level stabilizer. ATTENTION/CAUTION need 2 confirming frames; DANGER/EMERGENCY need 3 confirming frames. Low observation quality adds extra confirmation frames. A very short emergency path can still display immediately when the raw assessment is EMERGENCY and `TTC <= 0.8s` or current distance is `<= 0.8m`. Downgrades are held briefly for 2 frames so colors do not flicker when scores sit near a threshold.
+To suppress one-frame warning flashes from bad distance or velocity estimates, box color uses a display-level stabilizer. ATTENTION can display on the first frame. High-quality CAUTION, especially CUTIN/CLOSING with short TTC or very small trajectory clearance, can also display immediately. DANGER/EMERGENCY still require confirmation by default, and low observation quality adds one extra confirmation frame. A very short emergency path can still display immediately when the raw assessment is EMERGENCY and `TTC <= 0.8s` or current distance is `<= 0.8m`. Downgrades are held briefly for 2 frames so colors do not flicker when scores sit near a threshold.
 
 The warning model is a calibrated rule model, not a trained crash-probability model. It prioritizes the predicted straight-line trajectory clearance over raw distance. The main indicators are:
 
@@ -325,7 +360,7 @@ Trajectory distance is computed from the target's current ground position and ve
 
 Hard safety thresholds are applied before scoring where appropriate: targets are SAFE when `TTC > 5.0s`; bicycles are SAFE when `TRAJ > 1.5m`; motor vehicles (`car`, `motorcycle`, `truck`, `bus`) are SAFE when `TRAJ > 3.0m`, unless the target is already a near static obstacle. Targets classified as moving away are SAFE unless near-static distance risk is active.
 
-If the target remains inside those safety thresholds, the score is a weighted average of trajectory-distance risk, TTC risk, DRAC risk, radial-closing-speed risk, and optional near-static-obstacle risk, then multiplied by the vehicle risk multiplier. Trajectory-distance risk uses a saturating power curve, `1 - (TRAJ / safe_distance)^2`. TTC risk also uses a saturating power curve: `1 - ((TTC - 1.5) / (5.0 - 1.5))^2` for `1.5s < TTC < 5.0s`, with `TTC <= 1.5s` saturated at `1.0` and `TTC >= 5.0s` contributing `0.0`.
+If the target remains inside those safety thresholds, the score is a weighted average of trajectory-distance risk, TTC risk, DRAC risk, radial-closing-speed risk, and optional near-static-obstacle risk, then multiplied by the vehicle risk multiplier. Trajectory-distance risk uses a saturating power curve, `1 - (TRAJ / safe_distance)^2`. TTC risk also uses a saturating power curve: `1 - ((TTC - 1.5) / (5.0 - 1.5))^2` for `1.5s < TTC < 5.0s`, with `TTC <= 1.5s` saturated at `1.0` and `TTC >= 5.0s` contributing `0.0`. Velocity confidence no longer directly multiplies these risk terms to near zero; TTC/DRAC/closing use a floor, and trajectory risk is kept independent because it is the key CUTIN signal.
 
 Motion pattern labels in the overlay and risk log are:
 
@@ -337,7 +372,9 @@ CLOSING: head-on or radial closing
 NEAR: near static obstacle
 ```
 
-Distance and velocity confidence are not direct score multipliers. They reduce unreliable sub-terms and feed `observation_quality`, which controls how quickly the display-level stabilizer upgrades box color.
+CUTIN and NEAR patterns have explicit score floors. A CUTIN target with very small `TRAJ` reaches at least ATTENTION, and short TTC or very small trajectory clearance reaches at least CAUTION. A near static obstacle under 1.5m reaches at least ATTENTION, with stronger floors at closer distances.
+
+Distance and velocity confidence are not global score multipliers. They reduce unreliable sub-terms and feed `observation_quality`, which controls how quickly the display-level stabilizer upgrades box color.
 
 ### Risk Logging
 
@@ -347,11 +384,11 @@ For debugging risk decisions frame by frame:
 py vision_obstacle_tracker.py --source video --video D:\path\input.mp4 --no-display --risk-log-csv D:\path\risk_log.csv --max-frames 300
 ```
 
-The CSV includes frame index, track ID, class, detection confidence, observation quality, distance components, distance/velocity confidence, quality flags, ground position, velocity, ego-motion magnitude, radial closing speed, trajectory distance, TTC, DRAC, motion pattern, raw risk score/level, and displayed risk score/level.
+The CSV includes frame index, track ID, class, detection confidence, observation quality, distance components, distance/velocity confidence, quality flags, ground position, velocity, ego-motion magnitude, radial closing speed, trajectory distance, TTC, DRAC, motion pattern, raw risk score/level, displayed risk score/level, risk term breakdown (`trajectory_risk`, `ttc_risk`, `drac_risk`, `closing_risk`, `static_obstacle_risk`), and stabilizer diagnostics (`stabilizer_pending_level`, `stabilizer_pending_count`, `stabilizer_required_frames`, `stabilizer_reason`).
 
 ### Risk Model Tuning
 
-Start with calibration before changing risk thresholds. If distances are biased, fix `camera_matrix`, `camera_height_m`, `camera_pitch_deg`, or `distance_scale` first. If velocity is noisy, check `qV`, ego-motion flags, lighting, and `--distance-smoothing`. Use `--risk-log-csv` to compare raw risk against displayed risk; if raw risk is correct but colors lag, tune the stabilizer. If raw risk itself is wrong, inspect `TRAJ`, `TTC`, `motion_pattern`, `distance_confidence`, and `velocity_confidence`.
+Start with calibration before changing risk thresholds. If distances are biased, fix `camera_matrix`, `camera_height_m`, `camera_pitch_deg`, or `distance_scale` first. If velocity is noisy, check `qV`, ego-motion flags, lighting, `--ego-motion-mode`, `--ego-motion-every-n`, and `--distance-smoothing`. Use `--risk-log-csv` to compare raw risk against displayed risk; if raw risk is correct but colors lag, inspect `stabilizer_reason` and `stabilizer_required_frames`. If raw risk itself is wrong, inspect `TRAJ`, `TTC`, `motion_pattern`, `distance_confidence`, `velocity_confidence`, and the risk term breakdown.
 
 If live FPS stays low at every requested resolution, the camera delivery path is the limit rather than YOLO. In that case, check lighting, exposure, and the camera driver settings; reducing resolution will not help until the camera actually supplies frames faster. A common cause is auto exposure in a dim scene lowering the camera to about 5-6 FPS.
 

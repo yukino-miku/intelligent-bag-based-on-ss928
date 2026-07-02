@@ -188,7 +188,8 @@ class VisionCoreTest(unittest.TestCase):
             ego_motion_magnitude=16.0,
         )
 
-        self.assertLess(tracked.velocity_confidence, 0.5)
+        self.assertLess(tracked.velocity_confidence, 0.9)
+        self.assertGreater(tracked.velocity_confidence, 0.5)
         self.assertIn("strong_ego_motion", tracked.motion_quality_flags)
 
     def test_low_distance_confidence_reduces_observation_quality(self) -> None:

@@ -13,6 +13,8 @@ def make_target(
     vz_mps: float = 0.0,
     confidence: float = 0.9,
     timestamp_s: float = 1.0,
+    velocity_confidence: float = 1.0,
+    distance_confidence: float = 1.0,
 ) -> TrackedObject:
     point = GroundPoint(x_m=x_m, z_m=z_m)
     return TrackedObject(
@@ -27,6 +29,8 @@ def make_target(
         speed_mps=(vx_mps**2 + vz_mps**2) ** 0.5,
         timestamp_s=timestamp_s,
         distance_source="fused",
+        velocity_confidence=velocity_confidence,
+        distance_confidence=distance_confidence,
     )
 
 
@@ -122,6 +126,24 @@ class RiskModelTest(unittest.TestCase):
         self.assertEqual(MotionPattern.LATERAL_CUT_IN, assessment.motion_pattern)
         self.assertGreater(assessment.closing_speed_mps, 0.0)
 
+    def test_cut_in_small_trajectory_reaches_attention_even_with_low_velocity_confidence(self) -> None:
+        assessment = assess_collision_risk(
+            make_target(x_m=3.0, z_m=3.0, vx_mps=-0.7, vz_mps=-0.7, velocity_confidence=0.05)
+        )
+
+        self.assertEqual(MotionPattern.LATERAL_CUT_IN, assessment.motion_pattern)
+        self.assertLess(assessment.trajectory_distance_m, 0.5)
+        self.assertGreaterEqual(assessment.level.value, RiskLevel.ATTENTION.value)
+
+    def test_cut_in_short_ttc_reaches_caution_even_with_low_velocity_confidence(self) -> None:
+        assessment = assess_collision_risk(
+            make_target(x_m=3.0, z_m=3.0, vx_mps=-1.0, vz_mps=-1.0, velocity_confidence=0.05)
+        )
+
+        self.assertEqual(MotionPattern.LATERAL_CUT_IN, assessment.motion_pattern)
+        self.assertLess(assessment.ttc_s, 3.5)
+        self.assertGreaterEqual(assessment.level.value, RiskLevel.CAUTION.value)
+
     def test_near_static_or_slow_target_has_static_obstacle_risk(self) -> None:
         assessment = assess_collision_risk(
             make_target(x_m=0.0, z_m=0.5, vx_mps=0.0, vz_mps=1.0),
@@ -130,6 +152,20 @@ class RiskModelTest(unittest.TestCase):
 
         self.assertGreaterEqual(assessment.level.value, RiskLevel.ATTENTION.value)
         self.assertGreater(assessment.static_obstacle_risk, 0.0)
+
+    def test_near_static_target_under_two_meters_is_not_safe(self) -> None:
+        assessment = assess_collision_risk(make_target(x_m=0.0, z_m=1.4, vx_mps=0.0, vz_mps=0.0))
+
+        self.assertEqual(MotionPattern.NEAR_STATIC_OBSTACLE, assessment.motion_pattern)
+        self.assertGreaterEqual(assessment.level.value, RiskLevel.ATTENTION.value)
+
+    def test_low_velocity_confidence_does_not_zero_closing_risk(self) -> None:
+        assessment = assess_collision_risk(
+            make_target(x_m=1.0, z_m=4.0, vx_mps=0.0, vz_mps=-4.0, velocity_confidence=0.05)
+        )
+
+        self.assertGreaterEqual(assessment.level.value, RiskLevel.ATTENTION.value)
+        self.assertGreater(assessment.score, 0.0)
 
     def test_slow_head_on_bicycle_does_not_become_red(self) -> None:
         assessment = assess_collision_risk(make_target(class_name="bicycle", z_m=3.2, vz_mps=-0.45))

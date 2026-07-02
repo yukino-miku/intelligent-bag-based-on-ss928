@@ -6,7 +6,7 @@ from pathlib import Path
 from calibration import GroundPoint
 from risk_model import MotionPattern, RiskAssessment, RiskLevel
 from vision_core import TrackedObject
-from vision_obstacle_tracker import RiskCsvLogger
+from vision_obstacle_tracker import RiskCsvLogger, StabilizerDebugInfo
 
 
 class RiskLoggingTest(unittest.TestCase):
@@ -46,6 +46,11 @@ class RiskLoggingTest(unittest.TestCase):
                 drac_mps2=4.2,
                 closing_speed_mps=2.0,
                 motion_pattern=MotionPattern.HEAD_ON_OR_CLOSING,
+                trajectory_risk=0.80,
+                ttc_risk=0.70,
+                drac_risk=0.30,
+                closing_risk=0.20,
+                static_obstacle_risk=0.10,
             )
             display = RiskAssessment(
                 track_id=7,
@@ -58,7 +63,20 @@ class RiskLoggingTest(unittest.TestCase):
                 motion_pattern=MotionPattern.HEAD_ON_OR_CLOSING,
             )
 
-            logger.write_frame(42, [target], {7: raw}, {7: display})
+            logger.write_frame(
+                42,
+                [target],
+                {7: raw},
+                {7: display},
+                {
+                    7: StabilizerDebugInfo(
+                        pending_level=RiskLevel.DANGER,
+                        pending_count=1,
+                        required_frames=2,
+                        reason="waiting_confirmation",
+                    )
+                },
+            )
             logger.close()
 
             with log_path.open(newline="", encoding="utf-8") as csv_file:
@@ -77,6 +95,13 @@ class RiskLoggingTest(unittest.TestCase):
         self.assertEqual("DANGER", row["raw_risk_level"])
         self.assertEqual("0.600", row["display_risk_score"])
         self.assertEqual("CAUTION", row["display_risk_level"])
+        self.assertEqual("0.800", row["trajectory_risk"])
+        self.assertEqual("0.700", row["ttc_risk"])
+        self.assertEqual("0.200", row["closing_risk"])
+        self.assertEqual("DANGER", row["stabilizer_pending_level"])
+        self.assertEqual("1", row["stabilizer_pending_count"])
+        self.assertEqual("2", row["stabilizer_required_frames"])
+        self.assertEqual("waiting_confirmation", row["stabilizer_reason"])
 
 
 if __name__ == "__main__":

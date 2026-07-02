@@ -69,6 +69,19 @@ class RiskModelConfig:
     static_obstacle_emergency_m: float = 0.60
     trajectory_risk_exponent: float = 2.0
     ttc_risk_exponent: float = 2.0
+    velocity_risk_confidence_floor: float = 0.65
+    cut_in_attention_trajectory_ratio: float = 0.50
+    cut_in_caution_trajectory_ratio: float = 0.30
+    cut_in_caution_trajectory_m: float = 0.50
+    cut_in_caution_ttc_s: float = 3.50
+    cut_in_attention_score_floor: float = 0.40
+    cut_in_caution_score_floor: float = 0.60
+    near_static_attention_distance_m: float = 1.50
+    near_static_caution_distance_m: float = 1.00
+    near_static_danger_distance_m: float = 0.60
+    near_static_attention_score_floor: float = 0.40
+    near_static_caution_score_floor: float = 0.60
+    near_static_danger_score_floor: float = 0.70
     vehicle_risk_multipliers: dict[str, float] = field(
         default_factory=lambda: DEFAULT_VEHICLE_RISK_MULTIPLIERS.copy()
     )
@@ -86,6 +99,10 @@ class RiskAssessment:
     closing_speed_mps: float
     motion_pattern: MotionPattern = MotionPattern.STATIC_OR_UNCERTAIN
     static_obstacle_risk: float = 0.0
+    trajectory_risk: float = 0.0
+    ttc_risk: float = 0.0
+    drac_risk: float = 0.0
+    closing_risk: float = 0.0
 
 
 MOTOR_VEHICLE_CLASSES = {"car", "motorcycle", "truck", "bus"}
@@ -205,6 +222,41 @@ def _near_static_obstacle_risk(distance_m: float | None, config: RiskModelConfig
     return clamp(1.0 - normalized)
 
 
+def _apply_motion_pattern_score_floor(
+    score: float,
+    target: TrackedObject,
+    motion_pattern: MotionPattern,
+    trajectory_distance: float,
+    safe_trajectory_distance: float,
+    ttc_s: float | None,
+    config: RiskModelConfig,
+) -> float:
+    if motion_pattern == MotionPattern.LATERAL_CUT_IN:
+        trajectory_ratio = trajectory_distance / max(safe_trajectory_distance, 1e-6)
+        lateral_speed = abs(target.vx_mps)
+        if (
+            trajectory_ratio <= config.cut_in_attention_trajectory_ratio
+            and lateral_speed >= config.lateral_cut_in_speed_mps
+        ):
+            score = max(score, config.cut_in_attention_score_floor)
+        if (
+            trajectory_ratio <= config.cut_in_caution_trajectory_ratio
+            or trajectory_distance <= config.cut_in_caution_trajectory_m
+            or (ttc_s is not None and ttc_s <= config.cut_in_caution_ttc_s)
+        ) and lateral_speed >= config.lateral_cut_in_speed_mps:
+            score = max(score, config.cut_in_caution_score_floor)
+
+    if motion_pattern == MotionPattern.NEAR_STATIC_OBSTACLE and target.distance_m is not None:
+        if target.distance_m <= config.near_static_danger_distance_m:
+            score = max(score, config.near_static_danger_score_floor)
+        elif target.distance_m <= config.near_static_caution_distance_m:
+            score = max(score, config.near_static_caution_score_floor)
+        elif target.distance_m <= config.near_static_attention_distance_m:
+            score = max(score, config.near_static_attention_score_floor)
+
+    return clamp(score)
+
+
 def assess_collision_risk(
     target: TrackedObject,
     config: RiskModelConfig | None = None,
@@ -283,10 +335,10 @@ def assess_collision_risk(
     closing_risk = clamp(closing_speed / config.max_closing_speed_mps)
     velocity_confidence = clamp(target.velocity_confidence if hasattr(target, "velocity_confidence") else 1.0)
     distance_confidence = clamp(target.distance_confidence if hasattr(target, "distance_confidence") else 1.0)
-    ttc_risk *= velocity_confidence
-    drac_risk *= velocity_confidence
-    closing_risk *= velocity_confidence
-    trajectory_risk *= max(0.45, velocity_confidence)
+    velocity_risk_scale = max(config.velocity_risk_confidence_floor, velocity_confidence)
+    ttc_risk *= velocity_risk_scale
+    drac_risk *= velocity_risk_scale
+    closing_risk *= velocity_risk_scale
     static_obstacle_risk *= max(0.35, distance_confidence)
 
     weights = config.weights
@@ -304,6 +356,15 @@ def assess_collision_risk(
         / total_weight
     )
     score = clamp(base_score * vehicle_risk_multiplier(target.class_name, config))
+    score = _apply_motion_pattern_score_floor(
+        score,
+        target,
+        motion_pattern,
+        trajectory_distance,
+        safe_trajectory_distance,
+        ttc,
+        config,
+    )
     return RiskAssessment(
         track_id=target.track_id,
         score=score,
@@ -314,6 +375,10 @@ def assess_collision_risk(
         closing_speed_mps=closing_speed,
         motion_pattern=motion_pattern,
         static_obstacle_risk=static_obstacle_risk,
+        trajectory_risk=trajectory_risk,
+        ttc_risk=ttc_risk,
+        drac_risk=drac_risk,
+        closing_risk=closing_risk,
     )
 
 

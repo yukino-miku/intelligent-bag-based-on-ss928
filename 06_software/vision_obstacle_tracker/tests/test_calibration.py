@@ -198,6 +198,34 @@ camera_pitch_deg: 5.0
         self.assertIn("distance_disagreement", estimate.quality_flags)
         self.assertLess(estimate.distance_confidence, 0.9)
 
+    def test_near_horizon_ground_projection_is_not_used_for_fused_distance(self) -> None:
+        calibration = CameraCalibration(
+            image_width=1920,
+            image_height=1080,
+            fov_deg=120.0,
+            fov_type="diagonal",
+            camera_height_m=1.2,
+            camera_pitch_deg=1.0,
+            min_ground_angle_deg=2.0,
+            max_reliable_ground_distance_m=40.0,
+            max_reliable_distance_m=80.0,
+        )
+
+        estimate = estimate_ground_point_from_bbox(
+            (900, 470, 1020, 545),
+            "car",
+            calibration,
+            mode="fused",
+        )
+
+        self.assertIsNotNone(estimate)
+        assert estimate is not None
+        self.assertEqual("size", estimate.source)
+        self.assertEqual(0.0, estimate.ground_confidence)
+        self.assertIn("near_horizon", estimate.quality_flags)
+        self.assertIsNone(estimate.ground_distance_m)
+        self.assertLess(estimate.point.z_m, 80.0)
+
 
 if __name__ == "__main__":
     unittest.main()

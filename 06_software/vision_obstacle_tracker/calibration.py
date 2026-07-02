@@ -18,6 +18,9 @@ class CameraCalibration:
     camera_height_m: float = 1.1
     camera_pitch_deg: float = 5.0
     distance_scale: float = 1.0
+    min_ground_angle_deg: float = 1.0
+    max_reliable_ground_distance_m: float = 80.0
+    max_reliable_distance_m: float = 120.0
     principal_x_px: float | None = None
     principal_y_px: float | None = None
     camera_matrix: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]] | None = None
@@ -189,6 +192,11 @@ def calibration_from_mapping(mapping: dict[str, Any], fallback: CameraCalibratio
         camera_height_m=float(mapping.get("camera_height_m", fallback.camera_height_m)),
         camera_pitch_deg=float(mapping.get("camera_pitch_deg", fallback.camera_pitch_deg)),
         distance_scale=float(mapping.get("distance_scale", fallback.distance_scale)),
+        min_ground_angle_deg=float(mapping.get("min_ground_angle_deg", fallback.min_ground_angle_deg)),
+        max_reliable_ground_distance_m=float(
+            mapping.get("max_reliable_ground_distance_m", fallback.max_reliable_ground_distance_m)
+        ),
+        max_reliable_distance_m=float(mapping.get("max_reliable_distance_m", fallback.max_reliable_distance_m)),
         principal_x_px=_optional_float(mapping.get("principal_x_px", fallback.principal_x_px)),
         principal_y_px=_optional_float(mapping.get("principal_y_px", fallback.principal_y_px)),
         camera_matrix=camera_matrix,
@@ -276,8 +284,7 @@ def _optional_float(value) -> float | None:
 def pixel_to_ground(x_px: float, y_px: float, calibration: CameraCalibration) -> GroundPoint | None:
     undistorted_x, undistorted_y = calibration.undistort_pixel(x_px, y_px)
     horizontal_angle = math.atan((undistorted_x - calibration.cx) / calibration.fx)
-    vertical_angle_down = math.atan((undistorted_y - calibration.cy) / calibration.fy)
-    ground_angle_down = math.radians(calibration.camera_pitch_deg) + vertical_angle_down
+    ground_angle_down = math.radians(ground_angle_down_deg(x_px, y_px, calibration))
 
     if ground_angle_down <= 0:
         return None
@@ -289,6 +296,12 @@ def pixel_to_ground(x_px: float, y_px: float, calibration: CameraCalibration) ->
     z_m *= calibration.distance_scale
     x_m = z_m * math.tan(horizontal_angle)
     return GroundPoint(x_m=x_m, z_m=z_m)
+
+
+def ground_angle_down_deg(x_px: float, y_px: float, calibration: CameraCalibration) -> float:
+    _undistorted_x, undistorted_y = calibration.undistort_pixel(x_px, y_px)
+    vertical_angle_down = math.atan((undistorted_y - calibration.cy) / calibration.fy)
+    return calibration.camera_pitch_deg + math.degrees(vertical_angle_down)
 
 
 def bbox_bottom_center(bbox_xyxy: tuple[float, float, float, float]) -> tuple[float, float]:
@@ -364,6 +377,7 @@ def estimate_distance_reliability(
     bbox_width_px, bbox_height_px = bbox_size_px(bbox_xyxy)
     center_x = (x1 + x2) / 2.0
     bottom_y = y2
+    bottom_x = center_x
     flags: list[str] = []
 
     truncated = bbox_is_truncated(bbox_xyxy, calibration)
@@ -379,15 +393,31 @@ def estimate_distance_reliability(
     if ground_region_quality < 0.3:
         flags.append("high_bbox")
 
+    ground_angle = ground_angle_down_deg(bottom_x, bottom_y, calibration)
+    ground_is_unreliable = False
+    if ground_distance_m is not None and ground_angle < calibration.min_ground_angle_deg:
+        ground_is_unreliable = True
+        flags.append("near_horizon")
+    if (
+        ground_distance_m is not None
+        and ground_distance_m > calibration.max_reliable_ground_distance_m
+    ):
+        ground_is_unreliable = True
+        flags.append("ground_too_far")
+
     ground_confidence = 0.0
-    if ground_distance_m is not None:
+    if ground_distance_m is not None and not ground_is_unreliable:
         ground_confidence = 0.30 + 0.45 * ground_region_quality + 0.25 * edge_quality
         if truncated:
             ground_confidence *= 0.55
 
     dimensions = OBJECT_DIMENSIONS_BY_CLASS.get(class_name)
     size_confidence = 0.0
-    if size_distance_m is not None and dimensions is not None:
+    size_is_unreliable = size_distance_m is not None and size_distance_m > calibration.max_reliable_distance_m
+    if size_is_unreliable:
+        flags.append("distance_clamped")
+
+    if size_distance_m is not None and dimensions is not None and not size_is_unreliable:
         area_ratio = (bbox_width_px * bbox_height_px) / max(calibration.image_width * calibration.image_height, 1)
         pixel_size_quality = clamp(math.sqrt(max(area_ratio, 0.0) * 300.0))
         aspect_ratio = bbox_width_px / max(bbox_height_px, 1.0)
@@ -436,6 +466,15 @@ def estimate_ground_point_from_bbox(
         ground_distance_m,
         size_distance_m,
     )
+    flags = reliability.quality_flags
+    invalid_ground = "near_horizon" in flags or "ground_too_far" in flags
+    invalid_size = "distance_clamped" in flags
+    if invalid_ground:
+        ground_point = None
+        ground_distance_m = None
+    if invalid_size:
+        size_point = None
+        size_distance_m = None
 
     mode = mode.lower()
     if mode == "ground":

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from camera_source import FfmpegCameraConfig, FfmpegMjpegCameraCapture
 from calibration import CameraCalibration, calibration_from_mapping, estimate_ground_point_from_bbox, load_calibration_file
-from risk_model import MotionPattern, RiskAssessment, RiskLevel, RiskModel, motion_pattern_name, risk_level_from_score
+from risk_model import MotionPattern, RiskAssessment, RiskLevel, RiskModel, motion_pattern_name
 from vision_core import DetectionObservation, StableTrackIdManager, TrackState, compute_observation_quality, format_overlay_label, parse_target_classes, should_keep_class
 
 
@@ -25,6 +25,13 @@ RUNTIME_PROFILES = {
         "imgsz": 512,
         "conf": 0.03,
         "max_det": 50,
+    },
+    "cpu_demo": {
+        "width": 960,
+        "height": 540,
+        "imgsz": 640,
+        "conf": 0.05,
+        "max_det": 40,
     },
     "balanced": {
         "width": 1280,
@@ -89,15 +96,35 @@ class PitchController:
 
 
 class EgoMotionEstimator:
-    def __init__(self, max_corners: int = 160, quality_level: float = 0.01, min_distance: int = 12) -> None:
+    def __init__(
+        self,
+        mode: str = "light",
+        max_corners: int = 120,
+        quality_level: float = 0.01,
+        min_distance: int = 12,
+        light_max_dimension_px: int = 320,
+    ) -> None:
+        self.mode = mode
         self.max_corners = max_corners
         self.quality_level = quality_level
         self.min_distance = min_distance
+        self.light_max_dimension_px = light_max_dimension_px
         self._previous_gray = None
 
     def update(self, frame) -> EgoMotionEstimate:
         import cv2
         import numpy as np
+
+        if self.mode == "off":
+            self._previous_gray = None
+            return EgoMotionEstimate(quality_flags=("disabled",))
+
+        if self.mode == "light":
+            height, width = frame.shape[:2]
+            max_dimension = max(height, width)
+            if max_dimension > self.light_max_dimension_px:
+                scale = self.light_max_dimension_px / max_dimension
+                frame = cv2.resize(frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         if self._previous_gray is None:
@@ -126,17 +153,19 @@ class EgoMotionEstimator:
         deltas = next_points.reshape(-1, 2)[valid] - points.reshape(-1, 2)[valid]
         magnitudes = np.linalg.norm(deltas, axis=1)
         median_magnitude = float(np.median(magnitudes))
+        image_diagonal_px = float(np.hypot(gray.shape[0], gray.shape[1]))
+        normalized_magnitude = median_magnitude / max(image_diagonal_px, 1.0)
         mean_delta = deltas.mean(axis=0)
         direction_consistency = float(np.linalg.norm(mean_delta) / max(float(magnitudes.mean()), 1e-6))
         flags: list[str] = []
-        if median_magnitude >= 14.0:
+        if normalized_magnitude >= 0.030:
             flags.append("strong_ego_motion")
-        elif median_magnitude >= 7.0:
+        elif normalized_magnitude >= 0.015:
             flags.append("ego_motion")
-        if direction_consistency >= 0.70 and median_magnitude >= 4.0:
+        if direction_consistency >= 0.70 and normalized_magnitude >= 0.008:
             flags.append("coherent_flow")
         return EgoMotionEstimate(
-            magnitude_px=median_magnitude,
+            magnitude_px=normalized_magnitude,
             direction_consistency=direction_consistency,
             quality_flags=tuple(flags),
         )
@@ -149,7 +178,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--camera-index", type=int, default=1, help="OpenCV camera index. USB Camera is usually 1 on this PC.")
     parser.add_argument("--camera-backend", choices=("ffmpeg", "opencv"), default="ffmpeg", help="Live camera backend.")
     parser.add_argument("--camera-name", default="USB Camera", help="DirectShow camera device name for --camera-backend ffmpeg.")
-    parser.add_argument("--runtime-profile", choices=tuple(RUNTIME_PROFILES), default="balanced", help="Runtime preset: realtime prioritizes FPS, balanced is default, quality favors far-object recognition.")
+    parser.add_argument("--runtime-profile", choices=tuple(RUNTIME_PROFILES), default="balanced", help="Runtime preset: cpu_demo is recommended for PyTorch CPU demos; quality favors far-object recognition.")
     parser.add_argument("--width", type=int, default=None, help="Requested camera width. Defaults come from --runtime-profile.")
     parser.add_argument("--height", type=int, default=None, help="Requested camera height. Defaults come from --runtime-profile.")
     parser.add_argument("--fps", type=float, default=30.0, help="Requested camera FPS or fallback video FPS.")
@@ -172,13 +201,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fov-type", choices=("diagonal", "horizontal", "vertical"), default="diagonal", help="How --fov is specified.")
     parser.add_argument("--horizontal-fov", type=float, default=None, help="Legacy override for horizontal FOV in degrees.")
     parser.add_argument("--distance-mode", choices=("fused", "ground", "size"), default="fused", help="Distance estimate mode.")
-    parser.add_argument("--size-weight", type=float, default=0.75, help="Weight of vehicle-size distance in fused mode.")
+    parser.add_argument("--size-weight", type=float, default=0.75, help="Fallback/debug vehicle-size weight used only when adaptive fused confidence is unavailable.")
     parser.add_argument("--distance-scale", type=float, default=1.0, help="Multiplier for estimated distances after field calibration.")
     parser.add_argument("--speed-scale", type=float, default=1.0, help="Multiplier for estimated relative speed.")
     parser.add_argument("--speed-window", type=float, default=1.5, help="Seconds of track history used for speed estimation.")
     parser.add_argument("--distance-smoothing", type=float, default=0.35, help="EMA alpha for distance smoothing. 1 disables smoothing.")
     parser.add_argument("--max-speed", type=float, default=40.0, help="Reject velocity spikes above this m/s. 0 disables rejection.")
     parser.add_argument("--enhance", choices=("off", "auto", "clahe"), default="off", help="Optional lightweight contrast enhancement before YOLO.")
+    parser.add_argument("--ego-motion-mode", choices=("off", "light", "full"), default="light", help="Estimate camera motion quality with optical flow: off, light downscaled, or full resolution.")
+    parser.add_argument("--ego-motion-every-n", type=int, default=5, help="Run ego-motion optical flow every N processed frames. Skipped frames use neutral motion quality.")
     parser.add_argument("--display-scale", type=float, default=1.0, help="Scale display window; inference uses original frame.")
     parser.add_argument("--display-every-n", type=int, default=1, help="Refresh the OpenCV preview every N processed frames. Output video still writes every frame.")
     parser.add_argument("--save-output", help="Optional output MP4 path with overlays.")
@@ -204,6 +235,8 @@ def apply_runtime_profile_defaults(args: argparse.Namespace) -> argparse.Namespa
         raise SystemExit("--pitch-adjust-step must be >= 0.")
     if not 0.0 <= args.pitch_smoothing <= 1.0:
         raise SystemExit("--pitch-smoothing must be between 0 and 1.")
+    if args.ego_motion_every_n < 1:
+        raise SystemExit("--ego-motion-every-n must be >= 1.")
     return args
 
 
@@ -478,6 +511,18 @@ def create_yolo_model(args: argparse.Namespace, yolo_cls=None):
         yolo_cls = YOLO
 
     model_path, backend_label = select_model_path_for_loading(args)
+    if args.prefer_openvino and backend_label == "PyTorch":
+        openvino_dir = openvino_export_dir_for_model(args.model)
+        if openvino_dir is not None and not openvino_dir.exists():
+            print(
+                f"OpenVINO export not found at {openvino_dir}. "
+                "Run once with --export-openvino, then rerun with --prefer-openvino."
+            )
+    if backend_label == "PyTorch" and (args.device is None or str(args.device).lower() == "cpu"):
+        print(
+            "PyTorch CPU inference may be slow. For demos, try "
+            "--runtime-profile cpu_demo --imgsz 640 --prefer-openvino."
+        )
     print(f"Loading {backend_label} model: {model_path}")
     model = yolo_cls(model_path)
     if args.export_openvino:
@@ -521,10 +566,19 @@ class RiskCsvLogger:
         "ttc_s",
         "drac_mps2",
         "motion_pattern",
+        "trajectory_risk",
+        "ttc_risk",
+        "drac_risk",
+        "closing_risk",
+        "static_obstacle_risk",
         "raw_risk_score",
         "raw_risk_level",
         "display_risk_score",
         "display_risk_level",
+        "stabilizer_pending_level",
+        "stabilizer_pending_count",
+        "stabilizer_required_frames",
+        "stabilizer_reason",
     ]
 
     def __init__(self, path: str | None) -> None:
@@ -543,12 +597,15 @@ class RiskCsvLogger:
         targets,
         raw_risk_by_track_id: dict[int, RiskAssessment],
         display_risk_by_track_id: dict[int, RiskAssessment],
+        stabilizer_debug_by_track_id: dict[int, "StabilizerDebugInfo"] | None = None,
     ) -> None:
         if self._writer is None:
             return
+        stabilizer_debug_by_track_id = stabilizer_debug_by_track_id or {}
         for target in targets:
             raw = raw_risk_by_track_id.get(target.track_id)
             display = display_risk_by_track_id.get(target.track_id)
+            debug = stabilizer_debug_by_track_id.get(target.track_id)
             point = target.ground_point
             self._writer.writerow(
                 {
@@ -578,10 +635,19 @@ class RiskCsvLogger:
                     "ttc_s": _format_optional_float(raw.ttc_s if raw else None),
                     "drac_mps2": _format_optional_float(raw.drac_mps2 if raw else None),
                     "motion_pattern": motion_pattern_name(raw.motion_pattern) if raw else "",
+                    "trajectory_risk": f"{raw.trajectory_risk:.3f}" if raw else "",
+                    "ttc_risk": f"{raw.ttc_risk:.3f}" if raw else "",
+                    "drac_risk": f"{raw.drac_risk:.3f}" if raw else "",
+                    "closing_risk": f"{raw.closing_risk:.3f}" if raw else "",
+                    "static_obstacle_risk": f"{raw.static_obstacle_risk:.3f}" if raw else "",
                     "raw_risk_score": f"{raw.score:.3f}" if raw else "",
                     "raw_risk_level": risk_level_name(raw.level) if raw else "",
                     "display_risk_score": f"{display.score:.3f}" if display else "",
                     "display_risk_level": risk_level_name(display.level) if display else "",
+                    "stabilizer_pending_level": risk_level_name(debug.pending_level) if debug else "",
+                    "stabilizer_pending_count": str(debug.pending_count) if debug else "",
+                    "stabilizer_required_frames": str(debug.required_frames) if debug else "",
+                    "stabilizer_reason": debug.reason if debug else "",
                 }
             )
 
@@ -696,13 +762,25 @@ def format_risk_suffix(assessment: RiskAssessment | None) -> str:
 
 @dataclass(frozen=True)
 class RiskWarningStabilizerConfig:
-    min_confirm_frames_attention: int = 2
-    min_confirm_frames_danger: int = 3
-    low_quality_extra_frames: int = 2
+    min_confirm_frames_attention: int = 1
+    min_confirm_frames_caution: int = 1
+    min_confirm_frames_danger: int = 2
+    low_quality_extra_frames: int = 1
     low_quality_threshold: float = 0.55
+    high_quality_fast_path_threshold: float = 0.70
+    caution_fast_path_ttc_s: float = 3.50
+    caution_fast_path_trajectory_m: float = 0.50
     emergency_fast_path_ttc_s: float = 0.80
     emergency_fast_path_distance_m: float = 0.80
     downgrade_hold_frames: int = 2
+
+
+@dataclass(frozen=True)
+class StabilizerDebugInfo:
+    pending_level: RiskLevel = RiskLevel.SAFE
+    pending_count: int = 0
+    required_frames: int = 0
+    reason: str = "none"
 
 
 @dataclass
@@ -719,10 +797,12 @@ class RiskWarningStabilizer:
         if config is None and min_warning_frames is not None:
             config = RiskWarningStabilizerConfig(
                 min_confirm_frames_attention=max(1, min_warning_frames),
+                min_confirm_frames_caution=max(1, min_warning_frames),
                 min_confirm_frames_danger=max(1, min_warning_frames),
             )
         self.config = config or RiskWarningStabilizerConfig()
         self._state_by_track_id: dict[int, _RiskDisplayState] = {}
+        self._debug_by_track_id: dict[int, StabilizerDebugInfo] = {}
 
     def stabilize(
         self,
@@ -744,13 +824,19 @@ class RiskWarningStabilizer:
                 state.pending_level = assessment.level
                 state.pending_count = 0
                 state.downgrade_count = 0
+                self._debug_by_track_id[track_id] = StabilizerDebugInfo(
+                    pending_level=assessment.level,
+                    pending_count=0,
+                    required_frames=1,
+                    reason="fast_path",
+                )
                 stabilized[track_id] = assessment
                 continue
 
             if assessment.level > state.displayed_level:
-                display = self._handle_upgrade(state, assessment, observation_quality)
+                display, debug = self._handle_upgrade(state, assessment, observation_quality)
             elif assessment.level < state.displayed_level:
-                display = self._handle_downgrade(state, assessment)
+                display, debug = self._handle_downgrade(state, assessment)
             else:
                 state.displayed_level = assessment.level
                 state.displayed_score = assessment.score
@@ -758,21 +844,32 @@ class RiskWarningStabilizer:
                 state.pending_count = 0
                 state.downgrade_count = 0
                 display = assessment
+                debug = StabilizerDebugInfo(
+                    pending_level=assessment.level,
+                    pending_count=0,
+                    required_frames=0,
+                    reason="same_level",
+                )
 
+            self._debug_by_track_id[track_id] = debug
             stabilized[track_id] = display
 
         for track_id in list(self._state_by_track_id):
             if track_id not in active_track_ids:
                 del self._state_by_track_id[track_id]
+                self._debug_by_track_id.pop(track_id, None)
 
         return stabilized
+
+    def debug_info_by_track_id(self) -> dict[int, StabilizerDebugInfo]:
+        return dict(self._debug_by_track_id)
 
     def _handle_upgrade(
         self,
         state: _RiskDisplayState,
         assessment: RiskAssessment,
         observation_quality: float,
-    ) -> RiskAssessment:
+    ) -> tuple[RiskAssessment, StabilizerDebugInfo]:
         if state.pending_level != assessment.level:
             state.pending_level = assessment.level
             state.pending_count = 1
@@ -780,15 +877,25 @@ class RiskWarningStabilizer:
             state.pending_count += 1
         state.downgrade_count = 0
 
-        required_frames = self._required_confirm_frames(assessment.level, observation_quality)
+        required_frames = self._required_confirm_frames(assessment, observation_quality)
         if state.pending_count >= required_frames:
             state.displayed_level = assessment.level
             state.displayed_score = assessment.score
-            return assessment
+            return assessment, StabilizerDebugInfo(
+                pending_level=assessment.level,
+                pending_count=state.pending_count,
+                required_frames=required_frames,
+                reason="upgraded",
+            )
 
-        return self._display_assessment_from_state(assessment, state)
+        return self._display_assessment_from_state(assessment, state), StabilizerDebugInfo(
+            pending_level=assessment.level,
+            pending_count=state.pending_count,
+            required_frames=required_frames,
+            reason="waiting_confirmation",
+        )
 
-    def _handle_downgrade(self, state: _RiskDisplayState, assessment: RiskAssessment) -> RiskAssessment:
+    def _handle_downgrade(self, state: _RiskDisplayState, assessment: RiskAssessment) -> tuple[RiskAssessment, StabilizerDebugInfo]:
         state.pending_level = assessment.level
         state.pending_count = 0
         state.downgrade_count += 1
@@ -796,16 +903,43 @@ class RiskWarningStabilizer:
             state.downgrade_count = 0
             state.displayed_level = RiskLevel(max(int(state.displayed_level) - 1, int(assessment.level)))
             state.displayed_score = max(assessment.score, risk_score_for_display_level(state.displayed_level))
-        return self._display_assessment_from_state(assessment, state)
-
-    def _required_confirm_frames(self, level: RiskLevel, observation_quality: float) -> int:
-        if level >= RiskLevel.DANGER:
-            frames = self.config.min_confirm_frames_danger
+            reason = "downgraded"
         else:
+            reason = "holding_downgrade"
+        return self._display_assessment_from_state(assessment, state), StabilizerDebugInfo(
+            pending_level=assessment.level,
+            pending_count=state.downgrade_count,
+            required_frames=self.config.downgrade_hold_frames,
+            reason=reason,
+        )
+
+    def _required_confirm_frames(self, assessment: RiskAssessment, observation_quality: float) -> int:
+        level = assessment.level
+        if level <= RiskLevel.ATTENTION:
             frames = self.config.min_confirm_frames_attention
-        if observation_quality < self.config.low_quality_threshold:
+        elif level == RiskLevel.CAUTION:
+            frames = self.config.min_confirm_frames_caution
+        else:
+            frames = self.config.min_confirm_frames_danger
+        if self._is_caution_fast_path(assessment, observation_quality):
+            frames = 1
+        if level > RiskLevel.ATTENTION and observation_quality < self.config.low_quality_threshold:
             frames += self.config.low_quality_extra_frames
         return max(1, frames)
+
+    def _is_caution_fast_path(self, assessment: RiskAssessment, observation_quality: float) -> bool:
+        return (
+            assessment.level == RiskLevel.CAUTION
+            and observation_quality >= self.config.high_quality_fast_path_threshold
+            and assessment.motion_pattern in (MotionPattern.LATERAL_CUT_IN, MotionPattern.HEAD_ON_OR_CLOSING)
+            and (
+                (assessment.ttc_s is not None and assessment.ttc_s <= self.config.caution_fast_path_ttc_s)
+                or (
+                    assessment.trajectory_distance_m is not None
+                    and assessment.trajectory_distance_m <= self.config.caution_fast_path_trajectory_m
+                )
+            )
+        )
 
     def _is_fast_path(self, assessment: RiskAssessment, target) -> bool:
         distance_m = getattr(target, "distance_m", None)
@@ -1050,7 +1184,7 @@ def main() -> None:
     stable_track_ids = StableTrackIdManager()
     risk_model = RiskModel()
     risk_stabilizer = RiskWarningStabilizer()
-    ego_motion_estimator = EgoMotionEstimator()
+    ego_motion_estimator = EgoMotionEstimator(mode=args.ego_motion_mode)
     risk_logger = RiskCsvLogger(args.risk_log_csv)
 
     start_time = time.monotonic()
@@ -1088,7 +1222,12 @@ def main() -> None:
             with profiler.stage("enhance"):
                 inference_frame = enhance_frame_for_detection(inference_view.image, args.enhance)
             with profiler.stage("ego-motion"):
-                ego_motion = ego_motion_estimator.update(frame)
+                if args.ego_motion_mode == "off":
+                    ego_motion = EgoMotionEstimate(quality_flags=("disabled",))
+                elif processed_frames % args.ego_motion_every_n == 0:
+                    ego_motion = ego_motion_estimator.update(frame)
+                else:
+                    ego_motion = EgoMotionEstimate(quality_flags=("skipped",))
 
             track_kwargs = {
                 "persist": True,
@@ -1128,6 +1267,7 @@ def main() -> None:
                     tracked_objects,
                     raw_risk_by_track_id,
                     risk_by_track_id,
+                    risk_stabilizer.debug_info_by_track_id(),
                 )
 
             now = time.monotonic()

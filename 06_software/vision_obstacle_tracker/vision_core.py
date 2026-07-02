@@ -292,11 +292,22 @@ class TrackState:
             motion_quality_flags.append("no_ground_point")
             return 0.0
 
-        if ego_motion_magnitude >= 14.0:
-            confidence *= 0.35
+        strong_ego_motion = (
+            ego_motion_magnitude >= 0.030
+            if ego_motion_magnitude <= 1.0
+            else ego_motion_magnitude >= 14.0
+        )
+        moderate_ego_motion = (
+            ego_motion_magnitude >= 0.015
+            if ego_motion_magnitude <= 1.0
+            else ego_motion_magnitude >= 7.0
+        )
+
+        if strong_ego_motion:
+            confidence *= 0.70
             motion_quality_flags.append("strong_ego_motion")
-        elif ego_motion_magnitude >= 7.0:
-            confidence *= 0.60
+        elif moderate_ego_motion:
+            confidence *= 0.85
             motion_quality_flags.append("ego_motion")
 
         previous_speed = self._previous_speed_by_id.get(observation.track_id)
