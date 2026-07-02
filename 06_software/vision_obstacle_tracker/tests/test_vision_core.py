@@ -1,7 +1,15 @@
 import unittest
 
 from calibration import GroundPoint
-from vision_core import DetectionObservation, StableTrackIdManager, TrackState, format_overlay_label, parse_target_classes
+from vision_core import (
+    DetectionObservation,
+    StableTrackIdManager,
+    TrackState,
+    TrackedObject,
+    compute_observation_quality,
+    format_overlay_label,
+    parse_target_classes,
+)
 
 
 class VisionCoreTest(unittest.TestCase):
@@ -132,6 +140,73 @@ class VisionCoreTest(unittest.TestCase):
         self.assertIsNone(tracked.distance_m)
         self.assertEqual(0.0, tracked.speed_mps)
         self.assertIn("d=unknown", format_overlay_label(tracked))
+
+    def test_manual_tracked_object_defaults_use_neutral_quality_confidence(self) -> None:
+        point = GroundPoint(x_m=0.0, z_m=4.0)
+
+        tracked = TrackedObject(
+            track_id=1,
+            class_name="car",
+            confidence=0.9,
+            bbox_xyxy=(0, 0, 10, 10),
+            ground_point=point,
+            distance_m=point.distance_m,
+            vx_mps=0.0,
+            vz_mps=-2.0,
+            speed_mps=2.0,
+            timestamp_s=1.0,
+        )
+
+        self.assertEqual(1.0, tracked.distance_confidence)
+        self.assertEqual(1.0, tracked.ground_confidence)
+        self.assertEqual(1.0, tracked.size_confidence)
+
+    def test_strong_ego_motion_lowers_velocity_confidence(self) -> None:
+        state = TrackState(smoothing_alpha=1.0, history_seconds=2.0)
+        state.update(
+            DetectionObservation(
+                track_id=12,
+                class_name="car",
+                confidence=0.90,
+                bbox_xyxy=(0, 0, 10, 10),
+                ground_point=GroundPoint(x_m=0.0, z_m=10.0),
+                timestamp_s=0.0,
+                distance_confidence=0.9,
+            )
+        )
+
+        tracked = state.update(
+            DetectionObservation(
+                track_id=12,
+                class_name="car",
+                confidence=0.90,
+                bbox_xyxy=(0, 0, 10, 10),
+                ground_point=GroundPoint(x_m=0.0, z_m=9.0),
+                timestamp_s=1.0,
+                distance_confidence=0.9,
+            ),
+            ego_motion_magnitude=16.0,
+        )
+
+        self.assertLess(tracked.velocity_confidence, 0.5)
+        self.assertIn("strong_ego_motion", tracked.motion_quality_flags)
+
+    def test_low_distance_confidence_reduces_observation_quality(self) -> None:
+        high_quality = compute_observation_quality(
+            detection_confidence=0.9,
+            distance_confidence=0.9,
+            velocity_confidence=0.9,
+            track_age_frames=5,
+        )
+        low_distance_quality = compute_observation_quality(
+            detection_confidence=0.9,
+            distance_confidence=0.2,
+            velocity_confidence=0.9,
+            track_age_frames=5,
+        )
+
+        self.assertLess(low_distance_quality, high_quality)
+        self.assertLess(low_distance_quality, 0.65)
 
     def test_parse_target_classes_keeps_vehicle_and_bicycle_names(self) -> None:
         classes = parse_target_classes("car,bicycle,motorcycle,bus,truck")

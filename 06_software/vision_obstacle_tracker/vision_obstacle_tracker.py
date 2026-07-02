@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import os
 import threading
 import time
-from dataclasses import replace
+from collections import deque
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from camera_source import FfmpegCameraConfig, FfmpegMjpegCameraCapture
-from calibration import CameraCalibration, estimate_ground_point_from_bbox
-from risk_model import RiskAssessment, RiskLevel, RiskModel, risk_level_from_score
-from vision_core import DetectionObservation, StableTrackIdManager, TrackState, format_overlay_label, parse_target_classes, should_keep_class
+from calibration import CameraCalibration, calibration_from_mapping, estimate_ground_point_from_bbox, load_calibration_file
+from risk_model import MotionPattern, RiskAssessment, RiskLevel, RiskModel, motion_pattern_name, risk_level_from_score
+from vision_core import DetectionObservation, StableTrackIdManager, TrackState, compute_observation_quality, format_overlay_label, parse_target_classes, should_keep_class
 
 
 WINDOW_NAME = "YOLO Tracking Distance Speed"
@@ -41,6 +43,105 @@ RUNTIME_PROFILES = {
 }
 
 
+@dataclass(frozen=True)
+class InferenceFrame:
+    image: object
+    y_offset_px: int = 0
+
+
+@dataclass(frozen=True)
+class FrameVisualizationPlan:
+    should_draw_for_output: bool
+    should_show_window: bool
+
+    @property
+    def should_draw_overlay(self) -> bool:
+        return self.should_draw_for_output or self.should_show_window
+
+
+@dataclass(frozen=True)
+class EgoMotionEstimate:
+    magnitude_px: float = 0.0
+    direction_consistency: float = 0.0
+    quality_flags: tuple[str, ...] = ()
+
+
+class PitchController:
+    def __init__(self, initial_pitch_deg: float, step_deg: float = 0.25, smoothing: float = 1.0) -> None:
+        self.target_pitch_deg = initial_pitch_deg
+        self.current_pitch_deg = initial_pitch_deg
+        self.step_deg = max(step_deg, 0.0)
+        self.smoothing = min(max(smoothing, 0.0), 1.0)
+
+    def adjust(self, delta_steps: int) -> float:
+        self.target_pitch_deg += delta_steps * self.step_deg
+        self.current_pitch_deg = self._next_pitch()
+        return self.current_pitch_deg
+
+    def update(self) -> float:
+        self.current_pitch_deg = self._next_pitch()
+        return self.current_pitch_deg
+
+    def _next_pitch(self) -> float:
+        if self.smoothing >= 1.0:
+            return self.target_pitch_deg
+        return self.current_pitch_deg * (1.0 - self.smoothing) + self.target_pitch_deg * self.smoothing
+
+
+class EgoMotionEstimator:
+    def __init__(self, max_corners: int = 160, quality_level: float = 0.01, min_distance: int = 12) -> None:
+        self.max_corners = max_corners
+        self.quality_level = quality_level
+        self.min_distance = min_distance
+        self._previous_gray = None
+
+    def update(self, frame) -> EgoMotionEstimate:
+        import cv2
+        import numpy as np
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if self._previous_gray is None:
+            self._previous_gray = gray
+            return EgoMotionEstimate(quality_flags=("first_frame",))
+
+        points = cv2.goodFeaturesToTrack(
+            self._previous_gray,
+            maxCorners=self.max_corners,
+            qualityLevel=self.quality_level,
+            minDistance=self.min_distance,
+        )
+        if points is None or len(points) < 12:
+            self._previous_gray = gray
+            return EgoMotionEstimate(quality_flags=("insufficient_features",))
+
+        next_points, status, _error = cv2.calcOpticalFlowPyrLK(self._previous_gray, gray, points, None)
+        self._previous_gray = gray
+        if next_points is None or status is None:
+            return EgoMotionEstimate(quality_flags=("flow_failed",))
+
+        valid = status.reshape(-1) == 1
+        if int(valid.sum()) < 8:
+            return EgoMotionEstimate(quality_flags=("insufficient_flow",))
+
+        deltas = next_points.reshape(-1, 2)[valid] - points.reshape(-1, 2)[valid]
+        magnitudes = np.linalg.norm(deltas, axis=1)
+        median_magnitude = float(np.median(magnitudes))
+        mean_delta = deltas.mean(axis=0)
+        direction_consistency = float(np.linalg.norm(mean_delta) / max(float(magnitudes.mean()), 1e-6))
+        flags: list[str] = []
+        if median_magnitude >= 14.0:
+            flags.append("strong_ego_motion")
+        elif median_magnitude >= 7.0:
+            flags.append("ego_motion")
+        if direction_consistency >= 0.70 and median_magnitude >= 4.0:
+            flags.append("coherent_flow")
+        return EgoMotionEstimate(
+            magnitude_px=median_magnitude,
+            direction_consistency=direction_consistency,
+            quality_flags=tuple(flags),
+        )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="PC-side YOLO tracking, distance, and speed visualization.")
     parser.add_argument("--source", choices=("camera", "video"), default="camera", help="Input source type.")
@@ -58,10 +159,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--imgsz", type=int, default=None, help="YOLO inference image size. Defaults come from --runtime-profile.")
     parser.add_argument("--max-det", type=int, default=None, help="Maximum detections per frame passed to YOLO.")
     parser.add_argument("--export-openvino", action="store_true", help="Export --model to OpenVINO format, then use the exported model for CPU inference.")
+    parser.add_argument("--prefer-openvino", action="store_true", help="Prefer an existing OpenVINO export next to a .pt model without exporting automatically.")
     parser.add_argument("--target-classes", default="car,bicycle,motorcycle,bus,truck", help="Comma-separated COCO class names to display, or all.")
+    parser.add_argument("--roi-top-ratio", type=float, default=0.0, help="Crop this top fraction of each frame before YOLO inference. 0 keeps full-frame inference.")
     parser.add_argument("--device", default=None, help="Ultralytics device, for example cpu, 0, cuda:0. Default: auto.")
     parser.add_argument("--camera-height", type=float, default=1.2, help="Camera height above ground in meters. Default approximates chest mounting.")
     parser.add_argument("--camera-pitch", type=float, default=5.0, help="Camera downward pitch in degrees. Smaller values increase forward distance.")
+    parser.add_argument("--calibration-file", help="Optional JSON/YAML camera calibration file with camera_matrix and dist_coeffs.")
+    parser.add_argument("--pitch-adjust-step", type=float, default=0.25, help="Pitch adjustment step in degrees for [ and ] display hotkeys.")
+    parser.add_argument("--pitch-smoothing", type=float, default=1.0, help="EMA alpha for runtime pitch updates. 1 applies changes immediately.")
     parser.add_argument("--fov", type=float, default=120.0, help="Camera field of view in degrees.")
     parser.add_argument("--fov-type", choices=("diagonal", "horizontal", "vertical"), default="diagonal", help="How --fov is specified.")
     parser.add_argument("--horizontal-fov", type=float, default=None, help="Legacy override for horizontal FOV in degrees.")
@@ -74,7 +180,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-speed", type=float, default=40.0, help="Reject velocity spikes above this m/s. 0 disables rejection.")
     parser.add_argument("--enhance", choices=("off", "auto", "clahe"), default="off", help="Optional lightweight contrast enhancement before YOLO.")
     parser.add_argument("--display-scale", type=float, default=1.0, help="Scale display window; inference uses original frame.")
+    parser.add_argument("--display-every-n", type=int, default=1, help="Refresh the OpenCV preview every N processed frames. Output video still writes every frame.")
     parser.add_argument("--save-output", help="Optional output MP4 path with overlays.")
+    parser.add_argument("--risk-log-csv", help="Optional CSV path for per-track risk debugging logs.")
+    parser.add_argument("--profile", action="store_true", help="Print sliding-average stage timings once per second.")
     parser.add_argument("--max-frames", type=int, default=0, help="Stop after N processed frames. 0 means no limit.")
     parser.add_argument("--no-display", action="store_true", help="Process without opening an OpenCV window.")
     parser.add_argument("--video-every-frame", action="store_true", help="For video files, process every frame instead of skipping stale frames during preview.")
@@ -87,7 +196,200 @@ def apply_runtime_profile_defaults(args: argparse.Namespace) -> argparse.Namespa
     for name, value in profile.items():
         if getattr(args, name) is None:
             setattr(args, name, value)
+    if not 0.0 <= args.roi_top_ratio < 1.0:
+        raise SystemExit("--roi-top-ratio must be >= 0.0 and < 1.0.")
+    if args.display_every_n < 1:
+        raise SystemExit("--display-every-n must be >= 1.")
+    if args.pitch_adjust_step < 0.0:
+        raise SystemExit("--pitch-adjust-step must be >= 0.")
+    if not 0.0 <= args.pitch_smoothing <= 1.0:
+        raise SystemExit("--pitch-smoothing must be between 0 and 1.")
     return args
+
+
+def openvino_export_dir_for_model(model_path: str | os.PathLike[str]) -> Path | None:
+    path = Path(model_path)
+    if path.suffix.lower() != ".pt":
+        return None
+    return path.with_name(f"{path.stem}_openvino_model")
+
+
+def model_backend_label(model_path: str | os.PathLike[str]) -> str:
+    path = Path(model_path)
+    if path.suffix.lower() == ".pt":
+        return "PyTorch"
+    if path.name.endswith("_openvino_model"):
+        return "OpenVINO"
+    return path.suffix[1:].upper() if path.suffix else "YOLO"
+
+
+def select_model_path_for_loading(args: argparse.Namespace) -> tuple[str, str]:
+    if args.export_openvino:
+        return str(args.model), "PyTorch"
+
+    if args.prefer_openvino:
+        openvino_dir = openvino_export_dir_for_model(args.model)
+        if openvino_dir is not None and openvino_dir.exists():
+            return str(openvino_dir), "OpenVINO"
+
+    return str(args.model), model_backend_label(args.model)
+
+
+def _model_name_items(model_names) -> list[tuple[int, str]]:
+    if model_names is None:
+        return []
+
+    raw_items = model_names.items() if isinstance(model_names, dict) else enumerate(model_names)
+    items: list[tuple[int, str]] = []
+    for class_id, class_name in raw_items:
+        try:
+            normalized_class_id = int(class_id)
+        except (TypeError, ValueError):
+            continue
+        items.append((normalized_class_id, str(class_name).strip()))
+    return sorted(items)
+
+
+def target_class_ids_from_model_names(model_names, target_classes: set[str] | None) -> list[int] | None:
+    if target_classes is None:
+        return None
+    items = _model_name_items(model_names)
+    if not items:
+        return None
+    return [
+        class_id
+        for class_id, class_name in items
+        if class_name in target_classes
+    ]
+
+
+def crop_frame_for_inference(frame, roi_top_ratio: float) -> InferenceFrame:
+    if not 0.0 <= roi_top_ratio < 1.0:
+        raise ValueError("roi_top_ratio must be >= 0.0 and < 1.0")
+    if roi_top_ratio <= 0.0:
+        return InferenceFrame(image=frame, y_offset_px=0)
+
+    height = int(frame.shape[0])
+    y_offset = min(max(int(height * roi_top_ratio), 0), max(height - 1, 0))
+    if y_offset <= 0:
+        return InferenceFrame(image=frame, y_offset_px=0)
+    return InferenceFrame(image=frame[y_offset:, :], y_offset_px=y_offset)
+
+
+def restore_result_boxes_to_full_frame(result, y_offset_px: int):
+    if y_offset_px <= 0:
+        return result
+
+    boxes = getattr(result, "boxes", None)
+    if boxes is None:
+        return result
+    try:
+        if len(boxes) == 0:
+            return result
+    except TypeError:
+        pass
+
+    data = getattr(boxes, "data", None)
+    if data is not None:
+        if hasattr(data, "clone"):
+            adjusted_data = data.clone()
+        elif hasattr(data, "copy"):
+            adjusted_data = data.copy()
+        else:
+            adjusted_data = data
+        adjusted_data[:, 1] = adjusted_data[:, 1] + float(y_offset_px)
+        adjusted_data[:, 3] = adjusted_data[:, 3] + float(y_offset_px)
+        result.boxes = boxes.__class__(adjusted_data, boxes.orig_shape)
+        return result
+
+    xyxy = getattr(boxes, "xyxy", None)
+    if xyxy is not None:
+        xyxy[:, [1, 3]] += float(y_offset_px)
+    return result
+
+
+class _StageTimer:
+    def __init__(self, profiler: "StageProfiler", stage_name: str) -> None:
+        self.profiler = profiler
+        self.stage_name = stage_name
+        self.started_at_s: float | None = None
+
+    def __enter__(self):
+        if self.profiler.enabled:
+            self.started_at_s = time.perf_counter()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> bool:
+        if self.started_at_s is not None:
+            self.profiler.record(self.stage_name, time.perf_counter() - self.started_at_s)
+        return False
+
+
+class StageProfiler:
+    STAGE_ORDER = (
+        "capture",
+        "roi/crop",
+        "enhance",
+        "ego-motion",
+        "infer+track",
+        "postprocess",
+        "risk",
+        "draw",
+        "display/write",
+    )
+
+    def __init__(self, enabled: bool = False, report_interval_s: float = 1.0, max_samples: int = 120) -> None:
+        self.enabled = enabled
+        self.report_interval_s = max(report_interval_s, 0.1)
+        self.max_samples = max(max_samples, 1)
+        self._samples_by_stage: dict[str, deque[float]] = {}
+        self._last_report_s = time.perf_counter()
+        self.last_report_text = ""
+
+    def stage(self, stage_name: str) -> _StageTimer:
+        return _StageTimer(self, stage_name)
+
+    def record(self, stage_name: str, elapsed_s: float) -> None:
+        if not self.enabled:
+            return
+        samples = self._samples_by_stage.setdefault(stage_name, deque(maxlen=self.max_samples))
+        samples.append(max(0.0, elapsed_s))
+
+    def average_ms(self, stage_name: str) -> float | None:
+        samples = self._samples_by_stage.get(stage_name)
+        if not samples:
+            return None
+        return sum(samples) / len(samples) * 1000.0
+
+    def summary_text(self) -> str:
+        parts: list[str] = []
+        total_ms = 0.0
+        for stage_name in self.STAGE_ORDER:
+            average_ms = self.average_ms(stage_name)
+            if average_ms is None:
+                continue
+            total_ms += average_ms
+            parts.append(f"{stage_name}={average_ms:.1f}ms")
+        if not parts:
+            return ""
+        parts.append(f"total~={total_ms:.1f}ms")
+        return "profile avg: " + " | ".join(parts)
+
+    def maybe_report(self, now_s: float | None = None) -> str | None:
+        if not self.enabled:
+            return None
+        now_s = time.perf_counter() if now_s is None else now_s
+        if now_s - self._last_report_s < self.report_interval_s:
+            return None
+        self._last_report_s = now_s
+        text = self.summary_text()
+        if text:
+            self.last_report_text = text
+            print(text)
+        return text
+
+    def overlay_text(self) -> str:
+        return self.last_report_text if self.enabled else ""
 
 
 def open_capture(args: argparse.Namespace):
@@ -144,16 +446,44 @@ def create_writer(args: argparse.Namespace, frame_shape: tuple[int, int, int], f
     return writer
 
 
+def create_camera_calibration(args: argparse.Namespace, frame_width: int, frame_height: int) -> CameraCalibration:
+    fallback = CameraCalibration(
+        image_width=frame_width,
+        image_height=frame_height,
+        fov_deg=args.fov,
+        fov_type=args.fov_type,
+        horizontal_fov_deg=args.horizontal_fov,
+        camera_height_m=args.camera_height,
+        camera_pitch_deg=args.camera_pitch,
+        distance_scale=args.distance_scale,
+    )
+    if not args.calibration_file:
+        return fallback
+
+    mapping = load_calibration_file(args.calibration_file)
+    calibration = calibration_from_mapping(mapping, fallback)
+    calibration = calibration.scaled_to_image_size(frame_width, frame_height)
+    print(
+        "Loaded camera calibration: "
+        f"{'intrinsics' if calibration.has_intrinsics else 'FOV fallback'} "
+        f"{calibration.image_width}x{calibration.image_height} pitch={calibration.camera_pitch_deg:.2f}"
+    )
+    return calibration
+
+
 def create_yolo_model(args: argparse.Namespace, yolo_cls=None):
     if yolo_cls is None:
         from ultralytics import YOLO
 
         yolo_cls = YOLO
 
-    model = yolo_cls(args.model)
+    model_path, backend_label = select_model_path_for_loading(args)
+    print(f"Loading {backend_label} model: {model_path}")
+    model = yolo_cls(model_path)
     if args.export_openvino:
         exported_model_path = model.export(format="openvino")
-        model = yolo_cls(exported_model_path)
+        print(f"Loading OpenVINO model: {exported_model_path}")
+        model = yolo_cls(str(exported_model_path))
     return model
 
 
@@ -161,6 +491,109 @@ def frame_timestamp(args: argparse.Namespace, start_time: float, frame_index: in
     if args.source == "video":
         return frame_index / max(fps, 1.0)
     return time.monotonic() - start_time
+
+
+class RiskCsvLogger:
+    FIELDNAMES = [
+        "frame_index",
+        "timestamp_s",
+        "track_id",
+        "class_name",
+        "confidence",
+        "observation_quality",
+        "distance_m",
+        "distance_confidence",
+        "ground_distance_m",
+        "size_distance_m",
+        "ground_confidence",
+        "size_confidence",
+        "distance_source",
+        "quality_flags",
+        "x_m",
+        "z_m",
+        "vx_mps",
+        "vz_mps",
+        "speed_mps",
+        "velocity_confidence",
+        "ego_motion_magnitude",
+        "radial_closing_speed_mps",
+        "trajectory_distance_m",
+        "ttc_s",
+        "drac_mps2",
+        "motion_pattern",
+        "raw_risk_score",
+        "raw_risk_level",
+        "display_risk_score",
+        "display_risk_level",
+    ]
+
+    def __init__(self, path: str | None) -> None:
+        self._file = None
+        self._writer = None
+        if path:
+            output_path = Path(path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            self._file = output_path.open("w", newline="", encoding="utf-8")
+            self._writer = csv.DictWriter(self._file, fieldnames=self.FIELDNAMES)
+            self._writer.writeheader()
+
+    def write_frame(
+        self,
+        frame_index: int,
+        targets,
+        raw_risk_by_track_id: dict[int, RiskAssessment],
+        display_risk_by_track_id: dict[int, RiskAssessment],
+    ) -> None:
+        if self._writer is None:
+            return
+        for target in targets:
+            raw = raw_risk_by_track_id.get(target.track_id)
+            display = display_risk_by_track_id.get(target.track_id)
+            point = target.ground_point
+            self._writer.writerow(
+                {
+                    "frame_index": frame_index,
+                    "timestamp_s": f"{target.timestamp_s:.3f}",
+                    "track_id": target.track_id,
+                    "class_name": target.class_name,
+                    "confidence": f"{target.confidence:.3f}",
+                    "observation_quality": f"{target.observation_quality:.3f}",
+                    "distance_m": _format_optional_float(target.distance_m),
+                    "distance_confidence": f"{target.distance_confidence:.3f}",
+                    "ground_distance_m": _format_optional_float(target.ground_distance_m),
+                    "size_distance_m": _format_optional_float(target.size_distance_m),
+                    "ground_confidence": f"{target.ground_confidence:.3f}",
+                    "size_confidence": f"{target.size_confidence:.3f}",
+                    "distance_source": target.distance_source,
+                    "quality_flags": "|".join(target.quality_flags),
+                    "x_m": _format_optional_float(point.x_m if point is not None else None),
+                    "z_m": _format_optional_float(point.z_m if point is not None else None),
+                    "vx_mps": f"{target.vx_mps:.3f}",
+                    "vz_mps": f"{target.vz_mps:.3f}",
+                    "speed_mps": f"{target.speed_mps:.3f}",
+                    "velocity_confidence": f"{target.velocity_confidence:.3f}",
+                    "ego_motion_magnitude": f"{target.ego_motion_magnitude:.3f}",
+                    "radial_closing_speed_mps": _format_optional_float(raw.closing_speed_mps if raw else None),
+                    "trajectory_distance_m": _format_optional_float(raw.trajectory_distance_m if raw else None),
+                    "ttc_s": _format_optional_float(raw.ttc_s if raw else None),
+                    "drac_mps2": _format_optional_float(raw.drac_mps2 if raw else None),
+                    "motion_pattern": motion_pattern_name(raw.motion_pattern) if raw else "",
+                    "raw_risk_score": f"{raw.score:.3f}" if raw else "",
+                    "raw_risk_level": risk_level_name(raw.level) if raw else "",
+                    "display_risk_score": f"{display.score:.3f}" if display else "",
+                    "display_risk_level": risk_level_name(display.level) if display else "",
+                }
+            )
+
+    def close(self) -> None:
+        if self._file is not None:
+            self._file.close()
+            self._file = None
+            self._writer = None
+
+
+def _format_optional_float(value: float | None) -> str:
+    return "" if value is None else f"{value:.3f}"
 
 
 def result_to_observations(
@@ -197,6 +630,15 @@ def result_to_observations(
         )
         ground_point = distance_estimate.point if distance_estimate is not None else None
         distance_source = distance_estimate.source if distance_estimate is not None else "unknown"
+        distance_confidence = distance_estimate.distance_confidence if distance_estimate is not None else 0.0
+        quality_flags = distance_estimate.quality_flags if distance_estimate is not None else ("no_distance",)
+        observation_quality = compute_observation_quality(
+            detection_confidence=confidence,
+            distance_confidence=distance_confidence,
+            velocity_confidence=0.5,
+            track_age_frames=1,
+            quality_flags=quality_flags,
+        )
         observations.append(
             DetectionObservation(
                 track_id=int(box.id[0].item()),
@@ -206,6 +648,13 @@ def result_to_observations(
                 ground_point=ground_point,
                 timestamp_s=timestamp_s,
                 distance_source=distance_source,
+                ground_distance_m=distance_estimate.ground_distance_m if distance_estimate is not None else None,
+                size_distance_m=distance_estimate.size_distance_m if distance_estimate is not None else None,
+                distance_confidence=distance_confidence,
+                ground_confidence=distance_estimate.ground_confidence if distance_estimate is not None else 0.0,
+                size_confidence=distance_estimate.size_confidence if distance_estimate is not None else 0.0,
+                quality_flags=quality_flags,
+                observation_quality=observation_quality,
             )
         )
 
@@ -241,60 +690,149 @@ def format_risk_suffix(assessment: RiskAssessment | None) -> str:
         if assessment.trajectory_distance_m is not None
         else ""
     )
-    return f"RiskScore={assessment.score:.2f} {risk_level_name(assessment.level)}{ttc}{trajectory}"
+    pattern = motion_pattern_name(assessment.motion_pattern)
+    return f"RiskScore={assessment.score:.2f} {risk_level_name(assessment.level)} {pattern}{ttc}{trajectory}"
+
+
+@dataclass(frozen=True)
+class RiskWarningStabilizerConfig:
+    min_confirm_frames_attention: int = 2
+    min_confirm_frames_danger: int = 3
+    low_quality_extra_frames: int = 2
+    low_quality_threshold: float = 0.55
+    emergency_fast_path_ttc_s: float = 0.80
+    emergency_fast_path_distance_m: float = 0.80
+    downgrade_hold_frames: int = 2
+
+
+@dataclass
+class _RiskDisplayState:
+    displayed_level: RiskLevel = RiskLevel.SAFE
+    displayed_score: float = 0.0
+    pending_level: RiskLevel = RiskLevel.SAFE
+    pending_count: int = 0
+    downgrade_count: int = 0
 
 
 class RiskWarningStabilizer:
-    def __init__(self, min_warning_frames: int = 3) -> None:
-        self.min_warning_frames = max(1, min_warning_frames)
-        self.score_window_frames = self.min_warning_frames + 1
-        self._recent_scores_by_track_id: dict[int, list[float]] = {}
+    def __init__(self, config: RiskWarningStabilizerConfig | None = None, min_warning_frames: int | None = None) -> None:
+        if config is None and min_warning_frames is not None:
+            config = RiskWarningStabilizerConfig(
+                min_confirm_frames_attention=max(1, min_warning_frames),
+                min_confirm_frames_danger=max(1, min_warning_frames),
+            )
+        self.config = config or RiskWarningStabilizerConfig()
+        self._state_by_track_id: dict[int, _RiskDisplayState] = {}
 
-    def stabilize(self, risk_by_track_id: dict[int, RiskAssessment]) -> dict[int, RiskAssessment]:
+    def stabilize(
+        self,
+        risk_by_track_id: dict[int, RiskAssessment],
+        tracked_objects_by_id: dict[int, object] | None = None,
+    ) -> dict[int, RiskAssessment]:
+        tracked_objects_by_id = tracked_objects_by_id or {}
         stabilized: dict[int, RiskAssessment] = {}
         active_track_ids = set(risk_by_track_id)
 
         for track_id, assessment in risk_by_track_id.items():
-            recent_scores = self._recent_scores_by_track_id.setdefault(track_id, [])
-            recent_scores.append(assessment.score)
-            while len(recent_scores) > self.score_window_frames:
-                del recent_scores[0]
+            state = self._state_by_track_id.setdefault(track_id, _RiskDisplayState())
+            target = tracked_objects_by_id.get(track_id)
+            observation_quality = float(getattr(target, "observation_quality", 1.0))
 
-            if len(recent_scores) < self.score_window_frames:
-                stabilized[track_id] = replace(assessment, score=0.0, level=RiskLevel.SAFE)
+            if self._is_fast_path(assessment, target):
+                state.displayed_level = assessment.level
+                state.displayed_score = assessment.score
+                state.pending_level = assessment.level
+                state.pending_count = 0
+                state.downgrade_count = 0
+                stabilized[track_id] = assessment
                 continue
 
-            display_score = self._display_score_from_recent_scores(recent_scores)
-            display_level = risk_level_from_score(display_score)
-            if display_level <= RiskLevel.SAFE:
-                stabilized[track_id] = replace(assessment, score=0.0, level=RiskLevel.SAFE)
+            if assessment.level > state.displayed_level:
+                display = self._handle_upgrade(state, assessment, observation_quality)
+            elif assessment.level < state.displayed_level:
+                display = self._handle_downgrade(state, assessment)
             else:
-                stabilized[track_id] = replace(assessment, score=display_score, level=display_level)
+                state.displayed_level = assessment.level
+                state.displayed_score = assessment.score
+                state.pending_level = assessment.level
+                state.pending_count = 0
+                state.downgrade_count = 0
+                display = assessment
 
-        for track_id in list(self._recent_scores_by_track_id):
+            stabilized[track_id] = display
+
+        for track_id in list(self._state_by_track_id):
             if track_id not in active_track_ids:
-                del self._recent_scores_by_track_id[track_id]
+                del self._state_by_track_id[track_id]
 
         return stabilized
 
+    def _handle_upgrade(
+        self,
+        state: _RiskDisplayState,
+        assessment: RiskAssessment,
+        observation_quality: float,
+    ) -> RiskAssessment:
+        if state.pending_level != assessment.level:
+            state.pending_level = assessment.level
+            state.pending_count = 1
+        else:
+            state.pending_count += 1
+        state.downgrade_count = 0
+
+        required_frames = self._required_confirm_frames(assessment.level, observation_quality)
+        if state.pending_count >= required_frames:
+            state.displayed_level = assessment.level
+            state.displayed_score = assessment.score
+            return assessment
+
+        return self._display_assessment_from_state(assessment, state)
+
+    def _handle_downgrade(self, state: _RiskDisplayState, assessment: RiskAssessment) -> RiskAssessment:
+        state.pending_level = assessment.level
+        state.pending_count = 0
+        state.downgrade_count += 1
+        if state.downgrade_count >= self.config.downgrade_hold_frames:
+            state.downgrade_count = 0
+            state.displayed_level = RiskLevel(max(int(state.displayed_level) - 1, int(assessment.level)))
+            state.displayed_score = max(assessment.score, risk_score_for_display_level(state.displayed_level))
+        return self._display_assessment_from_state(assessment, state)
+
+    def _required_confirm_frames(self, level: RiskLevel, observation_quality: float) -> int:
+        if level >= RiskLevel.DANGER:
+            frames = self.config.min_confirm_frames_danger
+        else:
+            frames = self.config.min_confirm_frames_attention
+        if observation_quality < self.config.low_quality_threshold:
+            frames += self.config.low_quality_extra_frames
+        return max(1, frames)
+
+    def _is_fast_path(self, assessment: RiskAssessment, target) -> bool:
+        distance_m = getattr(target, "distance_m", None)
+        return (
+            assessment.level >= RiskLevel.EMERGENCY
+            and (
+                (assessment.ttc_s is not None and assessment.ttc_s <= self.config.emergency_fast_path_ttc_s)
+                or (distance_m is not None and distance_m <= self.config.emergency_fast_path_distance_m)
+            )
+        )
+
     @staticmethod
-    def _display_score_from_recent_scores(recent_scores: list[float]) -> float:
-        selected_count = max(1, len(recent_scores) - 1)
-        if len(recent_scores) <= selected_count:
-            return min(recent_scores, default=0.0)
+    def _display_assessment_from_state(assessment: RiskAssessment, state: _RiskDisplayState) -> RiskAssessment:
+        if state.displayed_level <= RiskLevel.SAFE:
+            return replace(assessment, score=0.0, level=RiskLevel.SAFE)
+        display_score = max(state.displayed_score, risk_score_for_display_level(state.displayed_level))
+        return replace(assessment, score=display_score, level=state.displayed_level)
 
-        sorted_scores = sorted(recent_scores)
-        best_group = sorted_scores[:selected_count]
-        best_span = best_group[-1] - best_group[0]
 
-        for start in range(1, len(sorted_scores) - selected_count + 1):
-            group = sorted_scores[start : start + selected_count]
-            span = group[-1] - group[0]
-            if span < best_span or (span == best_span and group[0] > best_group[0]):
-                best_group = group
-                best_span = span
-
-        return best_group[0]
+def risk_score_for_display_level(level: RiskLevel) -> float:
+    return {
+        RiskLevel.SAFE: 0.0,
+        RiskLevel.ATTENTION: 0.40,
+        RiskLevel.CAUTION: 0.60,
+        RiskLevel.DANGER: 0.70,
+        RiskLevel.EMERGENCY: 0.80,
+    }[level]
 
 
 def draw_overlay(
@@ -303,6 +841,7 @@ def draw_overlay(
     fps_text: str,
     source_text: str,
     risk_by_track_id: dict[int, RiskAssessment] | None = None,
+    profile_text: str = "",
 ) -> None:
     import cv2
 
@@ -326,6 +865,8 @@ def draw_overlay(
     cv2.putText(frame, source_text, (24, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2, cv2.LINE_AA)
     cv2.putText(frame, fps_text, (24, 72), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2, cv2.LINE_AA)
     cv2.putText(frame, "q/Esc: exit  Space: pause", (24, 108), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (220, 220, 220), 2, cv2.LINE_AA)
+    if profile_text:
+        cv2.putText(frame, profile_text[:130], (24, 144), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (220, 220, 220), 2, cv2.LINE_AA)
 
 
 def maybe_resize_for_display(frame, scale: float):
@@ -338,6 +879,22 @@ def maybe_resize_for_display(frame, scale: float):
 
 def display_wait_ms(args: argparse.Namespace, capture_fps: float) -> int:
     return 1
+
+
+def visualization_plan_for_frame(
+    processed_frame_index: int,
+    display_every_n: int,
+    no_display: bool,
+    has_writer: bool,
+) -> FrameVisualizationPlan:
+    if display_every_n < 1:
+        raise ValueError("display_every_n must be >= 1")
+    should_show_window = not no_display and processed_frame_index % display_every_n == 0
+    should_draw_for_output = has_writer
+    return FrameVisualizationPlan(
+        should_draw_for_output=should_draw_for_output,
+        should_show_window=should_show_window,
+    )
 
 
 def video_should_skip_frames(args: argparse.Namespace) -> bool:
@@ -454,27 +1011,36 @@ def main() -> None:
     import cv2
 
     args = parse_args()
+    profiler = StageProfiler(enabled=args.profile)
     capture = open_capture(args)
     capture_fps = float(capture.get(cv2.CAP_PROP_FPS) or args.fps or 30.0) if hasattr(capture, "get") else float(args.fps or 30.0)
 
-    ok, first_frame = capture.read()
+    with profiler.stage("capture"):
+        ok, first_frame = capture.read()
     if not ok:
         raise SystemExit("Input opened but no frame could be read.")
 
     frame_height, frame_width = first_frame.shape[:2]
-    calibration = CameraCalibration(
-        image_width=frame_width,
-        image_height=frame_height,
-        fov_deg=args.fov,
-        fov_type=args.fov_type,
-        horizontal_fov_deg=args.horizontal_fov,
-        camera_height_m=args.camera_height,
-        camera_pitch_deg=args.camera_pitch,
-        distance_scale=args.distance_scale,
+    calibration = create_camera_calibration(args, frame_width, frame_height)
+    pitch_controller = PitchController(
+        initial_pitch_deg=calibration.camera_pitch_deg,
+        step_deg=args.pitch_adjust_step,
+        smoothing=args.pitch_smoothing,
     )
 
     writer = create_writer(args, first_frame.shape, capture_fps)
+    target_classes = parse_target_classes(args.target_classes)
     model = create_yolo_model(args)
+    target_class_ids = target_class_ids_from_model_names(getattr(model, "names", None), target_classes)
+    if target_classes is None:
+        print("YOLO class prefilter: all classes")
+    elif target_class_ids is None:
+        print("YOLO class prefilter unavailable; using post-processing class filter only.")
+    elif target_class_ids:
+        print(f"YOLO class prefilter IDs: {target_class_ids}")
+    else:
+        print("YOLO class prefilter IDs: none matched; YOLO tracking will receive an empty class filter.")
+
     track_state = TrackState(
         history_seconds=args.speed_window,
         smoothing_alpha=args.distance_smoothing,
@@ -484,7 +1050,8 @@ def main() -> None:
     stable_track_ids = StableTrackIdManager()
     risk_model = RiskModel()
     risk_stabilizer = RiskWarningStabilizer()
-    target_classes = parse_target_classes(args.target_classes)
+    ego_motion_estimator = EgoMotionEstimator()
+    risk_logger = RiskCsvLogger(args.risk_log_csv)
 
     start_time = time.monotonic()
     processed_frames = 0
@@ -504,7 +1071,8 @@ def main() -> None:
             if processed_frames == 0:
                 frame = current_frame
             else:
-                ok, frame = capture.read()
+                with profiler.stage("capture"):
+                    ok, frame = capture.read()
                 if not ok:
                     break
             current_frame = frame
@@ -514,29 +1082,53 @@ def main() -> None:
                 source_frame_index += 1
 
             timestamp_s = frame_timestamp(args, start_time, source_frame_index, capture_fps)
-            inference_frame = enhance_frame_for_detection(frame, args.enhance)
-            results = model.track(
-                inference_frame,
-                persist=True,
-                tracker=args.tracker,
-                conf=args.conf,
-                imgsz=args.imgsz,
-                verbose=False,
-                device=args.device,
-                max_det=args.max_det,
-            )
-            observations = result_to_observations(
-                results[0],
-                timestamp_s,
-                calibration,
-                target_classes,
-                args.distance_mode,
-                args.size_weight,
-            )
-            observations = stable_track_ids.assign(observations)
-            tracked_objects = [track_state.update(observation) for observation in observations]
-            raw_risk_by_track_id = {target.track_id: risk_model.assess(target) for target in tracked_objects}
-            risk_by_track_id = risk_stabilizer.stabilize(raw_risk_by_track_id)
+            calibration = calibration.with_pitch(pitch_controller.update())
+            with profiler.stage("roi/crop"):
+                inference_view = crop_frame_for_inference(frame, args.roi_top_ratio)
+            with profiler.stage("enhance"):
+                inference_frame = enhance_frame_for_detection(inference_view.image, args.enhance)
+            with profiler.stage("ego-motion"):
+                ego_motion = ego_motion_estimator.update(frame)
+
+            track_kwargs = {
+                "persist": True,
+                "tracker": args.tracker,
+                "conf": args.conf,
+                "imgsz": args.imgsz,
+                "verbose": False,
+                "device": args.device,
+                "max_det": args.max_det,
+            }
+            if target_class_ids is not None:
+                track_kwargs["classes"] = target_class_ids
+
+            with profiler.stage("infer+track"):
+                results = model.track(inference_frame, **track_kwargs)
+            with profiler.stage("postprocess"):
+                result = restore_result_boxes_to_full_frame(results[0], inference_view.y_offset_px)
+                observations = result_to_observations(
+                    result,
+                    timestamp_s,
+                    calibration,
+                    target_classes,
+                    args.distance_mode,
+                    args.size_weight,
+                )
+                observations = stable_track_ids.assign(observations)
+                tracked_objects = [
+                    track_state.update(observation, ego_motion_magnitude=ego_motion.magnitude_px)
+                    for observation in observations
+                ]
+            with profiler.stage("risk"):
+                raw_risk_by_track_id = {target.track_id: risk_model.assess(target) for target in tracked_objects}
+                tracked_objects_by_id = {target.track_id: target for target in tracked_objects}
+                risk_by_track_id = risk_stabilizer.stabilize(raw_risk_by_track_id, tracked_objects_by_id)
+                risk_logger.write_frame(
+                    source_frame_index,
+                    tracked_objects,
+                    raw_risk_by_track_id,
+                    risk_by_track_id,
+                )
 
             now = time.monotonic()
             loop_dt = max(now - last_loop, 1e-6)
@@ -545,30 +1137,64 @@ def main() -> None:
             source_text = f"source: {args.source}"
             if args.source == "video" and args.video:
                 source_text += f" {Path(args.video).name}"
+            source_text += f" pitch={calibration.camera_pitch_deg:.2f}"
 
-            display_frame = frame.copy()
-            draw_overlay(display_frame, tracked_objects, fps_text, source_text, risk_by_track_id)
-            if writer is not None:
-                writer.write(display_frame)
+            visualization_plan = visualization_plan_for_frame(
+                processed_frame_index=processed_frames,
+                display_every_n=args.display_every_n,
+                no_display=args.no_display,
+                has_writer=writer is not None,
+            )
+            display_frame = None
+            if visualization_plan.should_draw_overlay:
+                with profiler.stage("draw"):
+                    display_frame = frame.copy()
+                    draw_overlay(
+                        display_frame,
+                        tracked_objects,
+                        fps_text,
+                        source_text,
+                        risk_by_track_id,
+                        profiler.overlay_text(),
+                    )
+            else:
+                profiler.record("draw", 0.0)
+
+            with profiler.stage("display/write"):
+                if visualization_plan.should_draw_for_output and writer is not None and display_frame is not None:
+                    writer.write(display_frame)
+
+                if visualization_plan.should_show_window and display_frame is not None:
+                    cv2.imshow(WINDOW_NAME, maybe_resize_for_display(display_frame, args.display_scale))
+                    key = cv2.waitKey(display_wait_ms(args, capture_fps)) & 0xFF
+                else:
+                    key = -1
 
             processed_frames += 1
         else:
             display_frame = current_frame.copy()
             cv2.putText(display_frame, "PAUSED", (24, 36), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0, 220, 255), 2, cv2.LINE_AA)
+            if args.no_display:
+                key = -1
+            else:
+                with profiler.stage("display/write"):
+                    cv2.imshow(WINDOW_NAME, maybe_resize_for_display(display_frame, args.display_scale))
+                    key = cv2.waitKey(display_wait_ms(args, capture_fps)) & 0xFF
 
-        if args.no_display:
-            key = -1
-        else:
-            cv2.imshow(WINDOW_NAME, maybe_resize_for_display(display_frame, args.display_scale))
-            key = cv2.waitKey(display_wait_ms(args, capture_fps)) & 0xFF
-            if key in (27, ord("q")):
-                break
-            if key == ord(" "):
-                paused = not paused
+        if key in (27, ord("q")):
+            break
+        if key == ord(" "):
+            paused = not paused
+        if not args.no_display and key in (ord("["), ord("]")):
+            delta = -1 if key == ord("[") else 1
+            pitch = pitch_controller.adjust(delta)
+            print(f"camera pitch: {pitch:.2f} deg")
+        profiler.maybe_report()
 
     capture.release()
     if writer is not None:
         writer.release()
+    risk_logger.close()
     if not args.no_display:
         cv2.destroyAllWindows()
 

@@ -1,7 +1,7 @@
 import unittest
 
 from calibration import GroundPoint
-from risk_model import RiskLevel, RiskModel, RiskModelConfig, RiskWeights, assess_collision_risk
+from risk_model import MotionPattern, RiskLevel, RiskModel, RiskModelConfig, RiskWeights, assess_collision_risk
 from vision_core import TrackedObject
 
 
@@ -115,21 +115,21 @@ class RiskModelTest(unittest.TestCase):
         self.assertEqual(RiskLevel.SAFE, assessment.level)
         self.assertGreater(assessment.trajectory_distance_m, 3.0)
 
-    def test_non_negative_vz_is_safe_even_inside_1_5m(self) -> None:
+    def test_non_negative_vz_with_lateral_cut_in_is_not_forced_safe(self) -> None:
         assessment = assess_collision_risk(make_target(x_m=0.2, z_m=1.0, vx_mps=-2.0, vz_mps=0.0))
 
-        self.assertEqual(RiskLevel.SAFE, assessment.level)
-        self.assertEqual(0.0, assessment.closing_speed_mps)
+        self.assertGreaterEqual(assessment.level.value, RiskLevel.ATTENTION.value)
+        self.assertEqual(MotionPattern.LATERAL_CUT_IN, assessment.motion_pattern)
+        self.assertGreater(assessment.closing_speed_mps, 0.0)
 
-    def test_positive_vz_is_forced_safe_even_when_trajectory_score_would_be_high(self) -> None:
+    def test_near_static_or_slow_target_has_static_obstacle_risk(self) -> None:
         assessment = assess_collision_risk(
             make_target(x_m=0.0, z_m=0.5, vx_mps=0.0, vz_mps=1.0),
             RiskModelConfig(weights=RiskWeights(trajectory=1.0, ttc=0.0, drac=0.0, closing=0.0)),
         )
 
-        self.assertEqual(RiskLevel.SAFE, assessment.level)
-        self.assertEqual(0.0, assessment.score)
-        self.assertEqual(0.0, assessment.closing_speed_mps)
+        self.assertGreaterEqual(assessment.level.value, RiskLevel.ATTENTION.value)
+        self.assertGreater(assessment.static_obstacle_risk, 0.0)
 
     def test_slow_head_on_bicycle_does_not_become_red(self) -> None:
         assessment = assess_collision_risk(make_target(class_name="bicycle", z_m=3.2, vz_mps=-0.45))

@@ -35,6 +35,8 @@ YOLO imgsz: 1024
 YOLO confidence: 0.02
 YOLO max detections: 50
 Displayed classes: car,bicycle,motorcycle,bus,truck
+ROI top crop: 0.0
+Display every N frames: 1
 Display scale: 1.0
 Camera height: 1.2m
 FOV: 120 degrees diagonal
@@ -65,13 +67,21 @@ py -m pip install openvino
 py vision_obstacle_tracker.py --source camera --export-openvino
 ```
 
-The first `--export-openvino` run creates an OpenVINO model folder beside the original YOLO weights. Later runs can use that exported folder directly with `--model`.
+The first `--export-openvino` run creates an OpenVINO model folder beside the original YOLO weights. Later runs can use that exported folder directly with `--model`, or keep using the `.pt` path and ask the program to prefer the existing OpenVINO export:
+
+```powershell
+py vision_obstacle_tracker.py --source camera --model yolo11n.pt --prefer-openvino
+```
+
+`--prefer-openvino` does not export automatically. If `yolo11n_openvino_model` already exists beside `yolo11n.pt`, it loads that folder and prints `Loading OpenVINO model`; otherwise it falls back to the original model and prints the selected backend.
 
 If you need to show every COCO class instead of only traffic-related targets:
 
 ```powershell
 py vision_obstacle_tracker.py --source camera --target-classes all
 ```
+
+`--target-classes` is now applied before Ultralytics YOLO tracking through the `classes=` argument when possible, and the existing post-processing filter is still kept as a safety check.
 
 Manual high-quality requests are still available, but they are usually too slow for live tracking on this CPU-only path:
 
@@ -126,6 +136,37 @@ py vision_obstacle_tracker.py --source video --video D:\path\input.mp4 --max-fra
 py vision_obstacle_tracker.py --source video --video D:\path\input.mp4 --imgsz 960 --conf 0.10 --display-scale 1.0
 ```
 
+Performance profiling and CPU-load controls:
+
+```powershell
+py vision_obstacle_tracker.py --source camera --profile
+py vision_obstacle_tracker.py --source camera --roi-top-ratio 0.20 --profile
+py vision_obstacle_tracker.py --source camera --display-every-n 3 --profile
+py vision_obstacle_tracker.py --source camera --prefer-openvino --profile
+```
+
+`--profile` prints a sliding average about once per second for `capture`, `roi/crop`, `enhance`, `ego-motion`, `infer+track`, `postprocess`, `risk`, `draw`, and `display/write`. Use it to see whether the current bottleneck is camera capture, optical-flow ego-motion estimation, YOLO inference/tracking, contrast enhancement, overlay drawing, display refresh, or video writing.
+
+`--roi-top-ratio` crops the top part of the frame before YOLO inference. For example, `--roi-top-ratio 0.20` sends only the lower 80% of the image to YOLO, which can reduce time spent on sky, ceiling, building tops, and other upper-frame regions that are usually irrelevant for ground obstacles. The detection boxes are restored to full-frame coordinates before distance, speed, risk, overlay, and video writing. If the crop is too large, far targets that first appear near the horizon can be missed; start with `0.15` or `0.20` and compare profile output before going higher.
+
+`--display-every-n` lowers OpenCV preview refresh cost. `--display-every-n 2` refreshes the window every second processed frame, while inference, tracking, risk calculation, and optional video writing still run for every processed frame. `--no-display` still disables the window completely. `--save-output` still writes every processed frame with overlay.
+
+Suggested comparison commands:
+
+```powershell
+py vision_obstacle_tracker.py --source camera --runtime-profile balanced --profile
+py vision_obstacle_tracker.py --source camera --runtime-profile balanced --roi-top-ratio 0.20 --profile
+py vision_obstacle_tracker.py --source camera --runtime-profile balanced --roi-top-ratio 0.20 --display-every-n 3 --profile
+py vision_obstacle_tracker.py --source camera --runtime-profile balanced --prefer-openvino --roi-top-ratio 0.20 --profile
+```
+
+For recorded video, compare full offline processing without display overhead:
+
+```powershell
+py vision_obstacle_tracker.py --source video --video D:\path\input.mp4 --video-every-frame --no-display --profile --max-frames 300
+py vision_obstacle_tracker.py --source video --video D:\path\input.mp4 --video-every-frame --no-display --roi-top-ratio 0.20 --prefer-openvino --profile --max-frames 300
+```
+
 For faster CPU processing:
 
 ```powershell
@@ -139,6 +180,41 @@ Calibration settings:
 --camera-height 1.2 --camera-pitch 5 --fov 120 --fov-type diagonal
 ```
 
+### Camera Calibration
+
+For better distance accuracy, pass a real calibration file:
+
+```powershell
+py vision_obstacle_tracker.py --source camera --calibration-file D:\path\camera_calibration.json
+```
+
+Supported JSON/YAML fields:
+
+```json
+{
+  "image_width": 1280,
+  "image_height": 720,
+  "camera_matrix": [[920.0, 0.0, 640.0], [0.0, 918.0, 360.0], [0.0, 0.0, 1.0]],
+  "dist_coeffs": [-0.12, 0.04, 0.0, 0.0, 0.0],
+  "camera_height_m": 1.2,
+  "camera_pitch_deg": 5.0,
+  "distance_scale": 1.0
+}
+```
+
+When `camera_matrix` is present, the tracker uses independent `fx/fy/cx/cy` values and undistorts detection foot-points with OpenCV before ground projection. If no calibration file is given, it keeps the old FOV-based fallback using `--camera-height`, `--camera-pitch`, `--fov`, and `--fov-type`.
+
+If the calibration file was created at a different image size, intrinsics are scaled to the runtime frame size. This is useful when a camera was calibrated at 1920x1080 but the live profile runs at 1280x720.
+
+Runtime pitch adjustment is available only when the display window is open:
+
+```text
+[: decrease pitch by --pitch-adjust-step degrees
+]: increase pitch by --pitch-adjust-step degrees
+```
+
+Use `--pitch-adjust-step 0.25` and optional `--pitch-smoothing 0.5` for slower visual tuning. In `--no-display` mode there are no hotkeys, so set pitch from the command line or calibration file.
+
 Distance and speed tuning:
 
 ```powershell
@@ -148,6 +224,34 @@ py vision_obstacle_tracker.py --source camera --camera-pitch 3
 ```
 
 If measured distance is consistently too small, first lower `--camera-pitch` or raise `--distance-scale`. If distance jitters, lower `--distance-smoothing` toward `0.25`; if speed reacts too slowly, raise it toward `0.6`. `--distance-mode size` uses vehicle/bicycle typical dimensions only, while `--distance-mode ground` uses only the ground-plane projection.
+
+### Adaptive Distance Fusion
+
+`--distance-mode fused` now adapts its ground-vs-size weighting using detection quality. It lowers ground confidence for boxes near the image edge, truncated boxes, boxes whose bottom point is too high in the frame, and very small far boxes. It lowers size confidence for weak class-size assumptions and for large disagreement between size distance and ground-projection distance.
+
+Overlay labels show the selected distance source and distance quality:
+
+```text
+d=8.3m(fused,q=0.72)
+```
+
+`q` here is distance confidence. It is also written to the optional CSV risk log as `distance_confidence`, with `ground_confidence`, `size_confidence`, and `quality_flags`.
+
+### Ego Motion Quality
+
+The tracker estimates lightweight global image motion with OpenCV optical flow. Strong camera shake or coherent body motion does not stop detection, but it lowers `velocity_confidence`, which reduces velocity-dependent risk terms and makes the display stabilizer require more evidence before upgrading warning color.
+
+Overlay labels include velocity quality:
+
+```text
+qV=0.62
+```
+
+Use profile output to see ego-motion cost:
+
+```powershell
+py vision_obstacle_tracker.py --source camera --profile
+```
 
 Optional low-light enhancement:
 
@@ -159,7 +263,7 @@ py vision_obstacle_tracker.py --source camera --enhance off
 
 ## Risk Warning Overlay
 
-Each tracked target now displays `RiskScore`, warning level, TTC, and trajectory distance (`TRAJ`) in the box label. Box colors are:
+Each tracked target displays distance, speed, distance quality, velocity quality, `RiskScore`, warning level, motion pattern, TTC, and trajectory distance (`TRAJ`) in the box label. Box colors are:
 
 ```text
 SAFE: green
@@ -169,7 +273,7 @@ DANGER: orange-red
 EMERGENCY: red
 ```
 
-To suppress one-frame warning flashes from bad distance or velocity estimates, box color uses a display-level stabilizer: the same track must remain non-SAFE for 3 consecutive processed frames before the box changes to a warning color. A SAFE frame resets that confirmation count.
+To suppress one-frame warning flashes from bad distance or velocity estimates, box color uses a display-level stabilizer. ATTENTION/CAUTION need 2 confirming frames; DANGER/EMERGENCY need 3 confirming frames. Low observation quality adds extra confirmation frames. A very short emergency path can still display immediately when the raw assessment is EMERGENCY and `TTC <= 0.8s` or current distance is `<= 0.8m`. Downgrades are held briefly for 2 frames so colors do not flicker when scores sit near a threshold.
 
 The warning model is a calibrated rule model, not a trained crash-probability model. It prioritizes the predicted straight-line trajectory clearance over raw distance. The main indicators are:
 
@@ -187,13 +291,14 @@ trajectory distance: 4.00
 TTC: 2.00
 DRAC: 1.50
 radial closing speed: 1.50
+near static obstacle: 1.40
 ```
 
 Vehicle risk multipliers are applied after the weighted average and before the final clamp:
 
 ```text
-bicycle: 0.85
-motorcycle: 0.95
+bicycle: 0.92
+motorcycle: 0.96
 car: 1.00
 truck: 1.10
 bus: 1.10
@@ -210,15 +315,43 @@ DANGER: 0.70-0.80
 EMERGENCY: >= 0.80
 ```
 
-Closing speed is now radial closing speed, computed along the actual line from the camera wearer to the target. A target moving sideways with only a small negative `vz` is no longer treated as strongly closing unless its full motion vector points toward the wearer.
+Closing speed is radial closing speed, computed along the actual line from the camera wearer to the target. A target moving sideways with only a small negative `vz` is no longer treated as strongly closing unless its full motion vector points toward the wearer.
 
 Detection confidence is used only by YOLO/tracking. It is not multiplied into the warning score, because a weak detection can still describe a real obstacle and should not create or suppress risk by itself.
 
-If `vz >= 0`, the target is treated as SAFE regardless of distance. Trajectory distance is computed from the target's current ground position and velocity as the distance from the origin to that motion line: `abs(x * vz - z * vx) / sqrt(vx^2 + vz^2)`. If speed is too close to zero, the current ground distance is used instead.
+`vz >= 0` is no longer a hard SAFE rule. The model uses radial closing speed, trajectory clearance, TTC/DRAC, and near-static distance. This prevents lateral cut-in targets and close static obstacles from being discarded just because the forward-axis velocity is non-negative.
 
-Hard safety thresholds are applied before scoring: targets are SAFE when `TTC > 5.0s`; bicycles are SAFE when `TRAJ > 1.5m`; motor vehicles (`car`, `motorcycle`, `truck`, `bus`) are SAFE when `TRAJ > 3.0m`. If the target remains inside those hard safety thresholds, the score is a weighted average of trajectory-distance risk, TTC risk, DRAC risk, and radial-closing-speed risk, then multiplied by the vehicle risk multiplier. Trajectory-distance risk uses a saturating power curve, `1 - (TRAJ / safe_distance)^2`. TTC risk also uses a saturating power curve: `1 - ((TTC - 1.5) / (5.0 - 1.5))^2` for `1.5s < TTC < 5.0s`, with `TTC <= 1.5s` saturated at `1.0` and `TTC >= 5.0s` contributing `0.0`. No separate hard-boost or cross-frame danger/emergency hold is applied.
+Trajectory distance is computed from the target's current ground position and velocity as the distance from the origin to that motion line: `abs(x * vz - z * vx) / sqrt(vx^2 + vz^2)`. If speed is too close to zero, the current ground distance is used instead.
 
-Overlay warning colors use the latest four raw frames for the same stable track. Once four frames are available, the display logic chooses the three closest scores among those four frames, then uses the lowest score of that closest trio as the displayed `RiskScore`; the displayed color is chosen from that score. For example, `0.50, 0.80, 0.55, 0.54` displays ATTENTION from the `0.50/0.54/0.55` trio, while `0.10, 0.90, 0.91, 0.89` displays EMERGENCY from the `0.89/0.90/0.91` trio. If two trios are equally close, the higher trio is used. Emergency red requires the closest-trio minimum score to reach `0.80`; there are no separate hard-boost rules.
+Hard safety thresholds are applied before scoring where appropriate: targets are SAFE when `TTC > 5.0s`; bicycles are SAFE when `TRAJ > 1.5m`; motor vehicles (`car`, `motorcycle`, `truck`, `bus`) are SAFE when `TRAJ > 3.0m`, unless the target is already a near static obstacle. Targets classified as moving away are SAFE unless near-static distance risk is active.
+
+If the target remains inside those safety thresholds, the score is a weighted average of trajectory-distance risk, TTC risk, DRAC risk, radial-closing-speed risk, and optional near-static-obstacle risk, then multiplied by the vehicle risk multiplier. Trajectory-distance risk uses a saturating power curve, `1 - (TRAJ / safe_distance)^2`. TTC risk also uses a saturating power curve: `1 - ((TTC - 1.5) / (5.0 - 1.5))^2` for `1.5s < TTC < 5.0s`, with `TTC <= 1.5s` saturated at `1.0` and `TTC >= 5.0s` contributing `0.0`.
+
+Motion pattern labels in the overlay and risk log are:
+
+```text
+STATIC: static or uncertain motion
+AWAY: moving away
+CUTIN: lateral cut-in toward the camera wearer
+CLOSING: head-on or radial closing
+NEAR: near static obstacle
+```
+
+Distance and velocity confidence are not direct score multipliers. They reduce unreliable sub-terms and feed `observation_quality`, which controls how quickly the display-level stabilizer upgrades box color.
+
+### Risk Logging
+
+For debugging risk decisions frame by frame:
+
+```powershell
+py vision_obstacle_tracker.py --source video --video D:\path\input.mp4 --no-display --risk-log-csv D:\path\risk_log.csv --max-frames 300
+```
+
+The CSV includes frame index, track ID, class, detection confidence, observation quality, distance components, distance/velocity confidence, quality flags, ground position, velocity, ego-motion magnitude, radial closing speed, trajectory distance, TTC, DRAC, motion pattern, raw risk score/level, and displayed risk score/level.
+
+### Risk Model Tuning
+
+Start with calibration before changing risk thresholds. If distances are biased, fix `camera_matrix`, `camera_height_m`, `camera_pitch_deg`, or `distance_scale` first. If velocity is noisy, check `qV`, ego-motion flags, lighting, and `--distance-smoothing`. Use `--risk-log-csv` to compare raw risk against displayed risk; if raw risk is correct but colors lag, tune the stabilizer. If raw risk itself is wrong, inspect `TRAJ`, `TTC`, `motion_pattern`, `distance_confidence`, and `velocity_confidence`.
 
 If live FPS stays low at every requested resolution, the camera delivery path is the limit rather than YOLO. In that case, check lighting, exposure, and the camera driver settings; reducing resolution will not help until the camera actually supplies frames faster. A common cause is auto exposure in a dim scene lowering the camera to about 5-6 FPS.
 
@@ -226,6 +359,8 @@ If live FPS stays low at every requested resolution, the camera delivery path is
 
 - `q` or `Esc`: exit
 - `Space`: pause/resume
+- `[`: decrease runtime camera pitch by `--pitch-adjust-step`
+- `]`: increase runtime camera pitch by `--pitch-adjust-step`
 
 ## Distance And Speed Limits
 
@@ -235,7 +370,7 @@ This first version uses a single-camera ground-plane approximation:
 - Distance depends on camera height, pitch, field of view, and detection box quality.
 - Velocity is the difference between consecutive ground-plane positions for the same stable track ID.
 
-The numbers are useful for early algorithm testing, but they are not final safety-grade measurements. Accurate distance/speed needs careful camera calibration and should later be fused with radar.
+The numbers are useful for early algorithm testing, but they are not final safety-grade measurements. Accurate distance/speed needs careful camera calibration and, in a later system stage, validation against additional sensors or measured ground truth.
 
 ## Tests
 

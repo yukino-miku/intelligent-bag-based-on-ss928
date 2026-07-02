@@ -14,6 +14,8 @@
 *.h264
 *.yuv
 *.bag
+risk_log.csv
+*_risk_log.csv
 
 # Generated build outputs and dependency downloads
 build/

@@ -1,19 +1,29 @@
+from types import SimpleNamespace
 import unittest
 
 from risk_model import RiskAssessment, RiskLevel
-from vision_obstacle_tracker import RiskWarningStabilizer, risk_color_bgr, risk_level_name
+from vision_obstacle_tracker import (
+    RiskWarningStabilizer,
+    RiskWarningStabilizerConfig,
+    risk_color_bgr,
+    risk_level_name,
+)
 
 
-def make_assessment(level: RiskLevel, score: float) -> RiskAssessment:
+def make_assessment(level: RiskLevel, score: float, ttc_s: float | None = 2.0) -> RiskAssessment:
     return RiskAssessment(
         track_id=7,
         score=score,
         level=level,
-        ttc_s=0.5,
+        ttc_s=ttc_s,
         trajectory_distance_m=0.0,
         drac_mps2=4.0,
         closing_speed_mps=8.0,
     )
+
+
+def make_target(quality: float = 1.0, distance_m: float = 5.0):
+    return SimpleNamespace(track_id=7, observation_quality=quality, distance_m=distance_m)
 
 
 class OverlayRiskTest(unittest.TestCase):
@@ -29,74 +39,64 @@ class OverlayRiskTest(unittest.TestCase):
         self.assertEqual("DANGER", risk_level_name(RiskLevel.DANGER))
         self.assertEqual("EMERGENCY", risk_level_name(RiskLevel.EMERGENCY))
 
-    def test_warning_level_waits_for_four_recent_frames_before_displaying_warning(self) -> None:
-        stabilizer = RiskWarningStabilizer(min_warning_frames=3)
-        warning = make_assessment(RiskLevel.EMERGENCY, 0.92)
+    def test_low_quality_high_risk_single_frame_does_not_immediately_display_danger(self) -> None:
+        stabilizer = RiskWarningStabilizer(
+            RiskWarningStabilizerConfig(min_confirm_frames_danger=2, low_quality_extra_frames=2)
+        )
+        danger = make_assessment(RiskLevel.DANGER, 0.72)
 
-        first = stabilizer.stabilize({7: warning})[7]
-        second = stabilizer.stabilize({7: warning})[7]
-        third = stabilizer.stabilize({7: warning})[7]
-        fourth = stabilizer.stabilize({7: warning})[7]
+        display = stabilizer.stabilize({7: danger}, {7: make_target(quality=0.2)})[7]
+
+        self.assertEqual(RiskLevel.SAFE, display.level)
+        self.assertEqual(0.0, display.score)
+
+    def test_high_quality_consecutive_danger_frames_upgrade_display(self) -> None:
+        stabilizer = RiskWarningStabilizer(
+            RiskWarningStabilizerConfig(min_confirm_frames_danger=2, low_quality_extra_frames=2)
+        )
+        danger = make_assessment(RiskLevel.DANGER, 0.72)
+
+        first = stabilizer.stabilize({7: danger}, {7: make_target(quality=0.95)})[7]
+        second = stabilizer.stabilize({7: danger}, {7: make_target(quality=0.95)})[7]
 
         self.assertEqual(RiskLevel.SAFE, first.level)
-        self.assertEqual(RiskLevel.SAFE, second.level)
-        self.assertEqual(RiskLevel.SAFE, third.level)
-        self.assertEqual(RiskLevel.EMERGENCY, fourth.level)
-        self.assertEqual(0.0, first.score)
-        self.assertEqual(0.92, fourth.score)
+        self.assertEqual(RiskLevel.DANGER, second.level)
+        self.assertEqual(0.72, second.score)
 
-    def test_warning_level_uses_minimum_score_from_closest_three_of_last_four_frames(self) -> None:
-        stabilizer = RiskWarningStabilizer(min_warning_frames=3)
-        first = make_assessment(RiskLevel.ATTENTION, 0.50)
-        second = make_assessment(RiskLevel.EMERGENCY, 0.80)
-        third = make_assessment(RiskLevel.ATTENTION, 0.55)
-        fourth = make_assessment(RiskLevel.ATTENTION, 0.54)
+    def test_low_quality_danger_needs_extra_confirmation_frames(self) -> None:
+        stabilizer = RiskWarningStabilizer(
+            RiskWarningStabilizerConfig(min_confirm_frames_danger=2, low_quality_extra_frames=2)
+        )
+        danger = make_assessment(RiskLevel.DANGER, 0.72)
 
-        first_display = stabilizer.stabilize({7: first})[7]
-        second_display = stabilizer.stabilize({7: second})[7]
-        third_display = stabilizer.stabilize({7: third})[7]
-        fourth_display = stabilizer.stabilize({7: fourth})[7]
+        for _ in range(3):
+            display = stabilizer.stabilize({7: danger}, {7: make_target(quality=0.2)})[7]
+            self.assertEqual(RiskLevel.SAFE, display.level)
+        fourth = stabilizer.stabilize({7: danger}, {7: make_target(quality=0.2)})[7]
 
-        self.assertEqual(RiskLevel.SAFE, first_display.level)
-        self.assertEqual(RiskLevel.SAFE, second_display.level)
-        self.assertEqual(RiskLevel.SAFE, third_display.level)
-        self.assertEqual(RiskLevel.ATTENTION, fourth_display.level)
-        self.assertEqual(0.50, fourth_display.score)
+        self.assertEqual(RiskLevel.DANGER, fourth.level)
 
-    def test_single_safe_outlier_does_not_force_safe_when_three_closest_scores_are_dangerous(self) -> None:
-        stabilizer = RiskWarningStabilizer(min_warning_frames=3)
+    def test_fast_path_emergency_can_display_immediately_for_short_ttc(self) -> None:
+        stabilizer = RiskWarningStabilizer()
+        emergency = make_assessment(RiskLevel.EMERGENCY, 0.92, ttc_s=0.4)
 
-        stabilizer.stabilize({7: make_assessment(RiskLevel.SAFE, 0.10)})
-        stabilizer.stabilize({7: make_assessment(RiskLevel.EMERGENCY, 0.90)})
-        stabilizer.stabilize({7: make_assessment(RiskLevel.EMERGENCY, 0.91)})
-        fourth = stabilizer.stabilize({7: make_assessment(RiskLevel.EMERGENCY, 0.89)})[7]
+        display = stabilizer.stabilize({7: emergency}, {7: make_target(quality=0.3)})[7]
 
-        self.assertEqual(RiskLevel.EMERGENCY, fourth.level)
-        self.assertEqual(0.89, fourth.score)
+        self.assertEqual(RiskLevel.EMERGENCY, display.level)
+        self.assertEqual(0.92, display.score)
 
-    def test_warning_level_can_jump_to_emergency_when_last_three_scores_all_support_it(self) -> None:
-        stabilizer = RiskWarningStabilizer(min_warning_frames=3)
-
-        stabilizer.stabilize({7: make_assessment(RiskLevel.EMERGENCY, 0.90)})
-        stabilizer.stabilize({7: make_assessment(RiskLevel.EMERGENCY, 0.91)})
-        stabilizer.stabilize({7: make_assessment(RiskLevel.EMERGENCY, 0.88)})
-        fourth = stabilizer.stabilize({7: make_assessment(RiskLevel.EMERGENCY, 0.89)})[7]
-
-        self.assertEqual(RiskLevel.EMERGENCY, fourth.level)
-        self.assertEqual(0.89, fourth.score)
-
-    def test_two_safe_scores_keep_display_safe_against_one_warning_score(self) -> None:
-        stabilizer = RiskWarningStabilizer(min_warning_frames=3)
-        warning = make_assessment(RiskLevel.DANGER, 0.72)
+    def test_one_safe_frame_does_not_drop_danger_to_safe_immediately(self) -> None:
+        stabilizer = RiskWarningStabilizer(
+            RiskWarningStabilizerConfig(min_confirm_frames_danger=1, downgrade_hold_frames=2)
+        )
+        danger = make_assessment(RiskLevel.DANGER, 0.72)
         safe = make_assessment(RiskLevel.SAFE, 0.0)
 
-        stabilizer.stabilize({7: warning})
-        stabilizer.stabilize({7: safe})
-        stabilizer.stabilize({7: safe})
-        fourth = stabilizer.stabilize({7: safe})[7]
+        stabilizer.stabilize({7: danger}, {7: make_target(quality=1.0)})
+        first_safe_display = stabilizer.stabilize({7: safe}, {7: make_target(quality=1.0)})[7]
 
-        self.assertEqual(RiskLevel.SAFE, fourth.level)
-        self.assertEqual(0.0, fourth.score)
+        self.assertEqual(RiskLevel.DANGER, first_safe_display.level)
+        self.assertGreaterEqual(first_safe_display.score, 0.70)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -21,11 +22,19 @@ class RuntimeOptionsTest(unittest.TestCase):
         self.assertEqual(0.02, args.conf)
         self.assertEqual(50, args.max_det)
         self.assertFalse(args.export_openvino)
+        self.assertFalse(args.prefer_openvino)
+        self.assertEqual(0.0, args.roi_top_ratio)
         self.assertEqual(1.0, args.display_scale)
+        self.assertEqual(1, args.display_every_n)
+        self.assertFalse(args.profile)
         self.assertEqual(1.2, args.camera_height)
         self.assertEqual(120.0, args.fov)
         self.assertEqual("diagonal", args.fov_type)
         self.assertEqual(5.0, args.camera_pitch)
+        self.assertIsNone(args.calibration_file)
+        self.assertEqual(0.25, args.pitch_adjust_step)
+        self.assertEqual(1.0, args.pitch_smoothing)
+        self.assertIsNone(args.risk_log_csv)
         self.assertEqual("fused", args.distance_mode)
         self.assertEqual("off", args.enhance)
         self.assertIn("car", args.target_classes)
@@ -85,6 +94,46 @@ class RuntimeOptionsTest(unittest.TestCase):
         fake_model.export.assert_called_once_with(format="openvino")
         fake_yolo.assert_any_call("yolo11n_openvino_model")
         self.assertEqual("openvino-model", model)
+
+    def test_prefer_openvino_loads_existing_export_without_exporting(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model_path = Path(temp_dir) / "bag_detector.pt"
+            openvino_dir = Path(temp_dir) / "bag_detector_openvino_model"
+            model_path.write_bytes(b"placeholder")
+            openvino_dir.mkdir()
+
+            with patch.object(
+                sys,
+                "argv",
+                ["vision_obstacle_tracker.py", "--model", str(model_path), "--prefer-openvino"],
+            ):
+                args = parse_args()
+
+            fake_yolo = MagicMock(return_value="openvino-model")
+
+            model = create_yolo_model(args, yolo_cls=fake_yolo)
+
+            fake_yolo.assert_called_once_with(str(openvino_dir))
+            self.assertEqual("openvino-model", model)
+
+    def test_prefer_openvino_falls_back_to_pt_when_export_dir_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model_path = Path(temp_dir) / "bag_detector.pt"
+            model_path.write_bytes(b"placeholder")
+
+            with patch.object(
+                sys,
+                "argv",
+                ["vision_obstacle_tracker.py", "--model", str(model_path), "--prefer-openvino"],
+            ):
+                args = parse_args()
+
+            fake_yolo = MagicMock(return_value="pt-model")
+
+            model = create_yolo_model(args, yolo_cls=fake_yolo)
+
+            fake_yolo.assert_called_once_with(str(model_path))
+            self.assertEqual("pt-model", model)
 
     def test_vehicle_botsort_keeps_weak_detections_for_fast_objects(self) -> None:
         tracker_config = Path(__file__).resolve().parents[1] / "vehicle_botsort.yaml"

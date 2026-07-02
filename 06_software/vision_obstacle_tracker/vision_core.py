@@ -29,6 +29,13 @@ class DetectionObservation:
     ground_point: GroundPoint | None
     timestamp_s: float
     distance_source: str = "unknown"
+    ground_distance_m: float | None = None
+    size_distance_m: float | None = None
+    distance_confidence: float = 1.0
+    ground_confidence: float = 1.0
+    size_confidence: float = 1.0
+    quality_flags: tuple[str, ...] = ()
+    observation_quality: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -44,6 +51,17 @@ class TrackedObject:
     speed_mps: float
     timestamp_s: float
     distance_source: str = "unknown"
+    ground_distance_m: float | None = None
+    size_distance_m: float | None = None
+    distance_confidence: float = 1.0
+    ground_confidence: float = 1.0
+    size_confidence: float = 1.0
+    quality_flags: tuple[str, ...] = ()
+    observation_quality: float = 0.5
+    velocity_confidence: float = 1.0
+    ego_motion_magnitude: float = 0.0
+    motion_quality_flags: tuple[str, ...] = ()
+    track_age_frames: int = 1
 
 
 @dataclass
@@ -171,12 +189,17 @@ class TrackState:
         self.speed_scale = speed_scale
         self._history_by_id: dict[int, list[tuple[GroundPoint, float]]] = {}
         self._smoothed_ground_by_id: dict[int, GroundPoint] = {}
+        self._track_age_by_id: dict[int, int] = {}
+        self._previous_speed_by_id: dict[int, float] = {}
 
-    def update(self, observation: DetectionObservation) -> TrackedObject:
+    def update(self, observation: DetectionObservation, ego_motion_magnitude: float = 0.0) -> TrackedObject:
         distance_m = observation.ground_point.distance_m if observation.ground_point is not None else None
         vx_mps = 0.0
         vz_mps = 0.0
         output_point = observation.ground_point
+        motion_quality_flags: list[str] = []
+        track_age_frames = self._track_age_by_id.get(observation.track_id, 0) + 1
+        self._track_age_by_id[observation.track_id] = track_age_frames
 
         if observation.ground_point is not None:
             output_point = self._smooth_point(observation.track_id, observation.ground_point)
@@ -200,6 +223,23 @@ class TrackState:
             vx_mps = 0.0
             vz_mps = 0.0
             speed_mps = 0.0
+            motion_quality_flags.append("speed_spike")
+
+        velocity_confidence = self._velocity_confidence(
+            observation,
+            speed_mps,
+            ego_motion_magnitude,
+            motion_quality_flags,
+        )
+        self._previous_speed_by_id[observation.track_id] = speed_mps
+        observation_quality = compute_observation_quality(
+            detection_confidence=observation.confidence,
+            distance_confidence=observation.distance_confidence,
+            velocity_confidence=velocity_confidence,
+            track_age_frames=track_age_frames,
+            quality_flags=observation.quality_flags,
+            motion_quality_flags=tuple(motion_quality_flags),
+        )
 
         return TrackedObject(
             track_id=observation.track_id,
@@ -213,6 +253,17 @@ class TrackState:
             speed_mps=speed_mps,
             timestamp_s=observation.timestamp_s,
             distance_source=observation.distance_source,
+            ground_distance_m=observation.ground_distance_m,
+            size_distance_m=observation.size_distance_m,
+            distance_confidence=observation.distance_confidence,
+            ground_confidence=observation.ground_confidence,
+            size_confidence=observation.size_confidence,
+            quality_flags=observation.quality_flags,
+            observation_quality=observation_quality,
+            velocity_confidence=velocity_confidence,
+            ego_motion_magnitude=ego_motion_magnitude,
+            motion_quality_flags=tuple(motion_quality_flags),
+            track_age_frames=track_age_frames,
         )
 
     def _smooth_point(self, track_id: int, point: GroundPoint) -> GroundPoint:
@@ -229,6 +280,32 @@ class TrackState:
         self._smoothed_ground_by_id[track_id] = smoothed
         return smoothed
 
+    def _velocity_confidence(
+        self,
+        observation: DetectionObservation,
+        speed_mps: float,
+        ego_motion_magnitude: float,
+        motion_quality_flags: list[str],
+    ) -> float:
+        confidence = clamp(observation.distance_confidence)
+        if observation.ground_point is None:
+            motion_quality_flags.append("no_ground_point")
+            return 0.0
+
+        if ego_motion_magnitude >= 14.0:
+            confidence *= 0.35
+            motion_quality_flags.append("strong_ego_motion")
+        elif ego_motion_magnitude >= 7.0:
+            confidence *= 0.60
+            motion_quality_flags.append("ego_motion")
+
+        previous_speed = self._previous_speed_by_id.get(observation.track_id)
+        if previous_speed is not None and speed_mps - previous_speed > 8.0:
+            confidence *= 0.50
+            motion_quality_flags.append("speed_jump")
+
+        return clamp(confidence)
+
 
 def parse_target_classes(value: str) -> set[str] | None:
     cleaned = value.strip()
@@ -241,10 +318,40 @@ def should_keep_class(class_name: str, target_classes: set[str] | None = TARGET_
     return target_classes is None or class_name in target_classes
 
 
+def clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
+    return min(max(value, low), high)
+
+
+def compute_observation_quality(
+    detection_confidence: float,
+    distance_confidence: float,
+    velocity_confidence: float,
+    track_age_frames: int,
+    quality_flags: tuple[str, ...] = (),
+    motion_quality_flags: tuple[str, ...] = (),
+) -> float:
+    detection_quality = clamp((detection_confidence - 0.05) / 0.45)
+    track_quality = clamp(track_age_frames / 5.0)
+    quality = (
+        0.15 * detection_quality
+        + 0.55 * clamp(distance_confidence)
+        + 0.15 * clamp(velocity_confidence)
+        + 0.15 * track_quality
+    )
+    if "truncated" in quality_flags:
+        quality *= 0.80
+    if "distance_disagreement" in quality_flags:
+        quality *= 0.75
+    if "strong_ego_motion" in motion_quality_flags:
+        quality *= 0.70
+    return clamp(quality)
+
+
 def format_overlay_label(target: TrackedObject) -> str:
     distance = f"{target.distance_m:.1f}m" if target.distance_m is not None else "unknown"
     return (
         f"ID {target.track_id} {target.class_name} {target.confidence:.2f} "
-        f"d={distance}({target.distance_source}) v={target.speed_mps:.1f}m/s "
+        f"d={distance}({target.distance_source},q={target.distance_confidence:.2f}) "
+        f"v={target.speed_mps:.1f}m/s qV={target.velocity_confidence:.2f} "
         f"vx={target.vx_mps:+.1f} vz={target.vz_mps:+.1f}"
     )
