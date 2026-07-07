@@ -574,6 +574,11 @@ class RiskCsvLogger:
         "motion_pattern",
         "corridor_zone",
         "risk_cap_reason",
+        "severity_class",
+        "warning_action",
+        "warning_time_horizon_s",
+        "warning_radius_m",
+        "risk_action_reason",
         "trajectory_risk",
         "ttc_risk",
         "drac_risk",
@@ -650,6 +655,11 @@ class RiskCsvLogger:
                     "motion_pattern": motion_pattern_name(raw.motion_pattern) if raw else "",
                     "corridor_zone": corridor_zone_name(raw.corridor_zone) if raw else "",
                     "risk_cap_reason": raw.risk_cap_reason if raw else "",
+                    "severity_class": raw.severity_class if raw else "",
+                    "warning_action": raw.warning_action if raw else "",
+                    "warning_time_horizon_s": _format_optional_float(raw.warning_time_horizon_s if raw else None),
+                    "warning_radius_m": _format_optional_float(raw.warning_radius_m if raw else None),
+                    "risk_action_reason": raw.risk_action_reason if raw else "",
                     "trajectory_risk": f"{raw.trajectory_risk:.3f}" if raw else "",
                     "ttc_risk": f"{raw.ttc_risk:.3f}" if raw else "",
                     "drac_risk": f"{raw.drac_risk:.3f}" if raw else "",
@@ -784,24 +794,25 @@ def format_risk_suffix(assessment: RiskAssessment | None, verbosity: str = "norm
     )
     pattern = motion_pattern_name(assessment.motion_pattern)
     cap = f" cap={assessment.risk_cap_reason}" if assessment.risk_cap_reason != "none" else ""
+    action = f" action={assessment.risk_action_reason}" if assessment.risk_action_reason != "none" else ""
+    severity = f" sev={assessment.severity_class}" if assessment.severity_class else ""
     terms = (
         f" tr={assessment.trajectory_risk:.2f}"
         f" ttcR={assessment.ttc_risk:.2f}"
         f" closeR={assessment.closing_risk:.2f}"
     )
-    return f"RiskScore={assessment.score:.2f} {risk_level_name(assessment.level)} {zone} {pattern}{cpa}{ttc}{trajectory}{terms}{cap}"
+    return f"RiskScore={assessment.score:.2f} {risk_level_name(assessment.level)} {zone} {pattern}{severity}{cpa}{ttc}{trajectory}{terms}{action}{cap}"
 
 
 @dataclass(frozen=True)
 class RiskWarningStabilizerConfig:
     min_confirm_frames_attention: int = 1
-    min_confirm_frames_caution: int = 1
-    min_confirm_frames_danger: int = 2
+    min_confirm_frames_caution: int = 2
+    min_confirm_frames_danger: int = 3
+    min_confirm_frames_emergency: int = 2
     low_quality_extra_frames: int = 1
     low_quality_threshold: float = 0.55
-    high_quality_fast_path_threshold: float = 0.70
-    caution_fast_path_ttc_s: float = 3.50
-    caution_fast_path_trajectory_m: float = 0.50
+    high_quality_fast_path_threshold: float = 0.80
     emergency_fast_path_ttc_s: float = 0.80
     emergency_fast_path_distance_m: float = 0.80
     downgrade_hold_frames: int = 2
@@ -831,6 +842,7 @@ class RiskWarningStabilizer:
                 min_confirm_frames_attention=max(1, min_warning_frames),
                 min_confirm_frames_caution=max(1, min_warning_frames),
                 min_confirm_frames_danger=max(1, min_warning_frames),
+                min_confirm_frames_emergency=max(1, min_warning_frames),
             )
         self.config = config or RiskWarningStabilizerConfig()
         self._state_by_track_id: dict[int, _RiskDisplayState] = {}
@@ -951,43 +963,35 @@ class RiskWarningStabilizer:
             frames = self.config.min_confirm_frames_attention
         elif level == RiskLevel.CAUTION:
             frames = self.config.min_confirm_frames_caution
-        else:
+        elif level == RiskLevel.DANGER:
             frames = self.config.min_confirm_frames_danger
-        if self._is_caution_fast_path(assessment, observation_quality):
-            frames = 1
+        else:
+            frames = self.config.min_confirm_frames_emergency
         if level > RiskLevel.ATTENTION and observation_quality < self.config.low_quality_threshold:
             frames += self.config.low_quality_extra_frames
         return max(1, frames)
 
-    def _is_caution_fast_path(self, assessment: RiskAssessment, observation_quality: float) -> bool:
-        return (
-            assessment.level == RiskLevel.CAUTION
-            and observation_quality >= self.config.high_quality_fast_path_threshold
-            and assessment.motion_pattern in (MotionPattern.LATERAL_CUT_IN, MotionPattern.HEAD_ON_OR_CLOSING)
-            and (
-                (assessment.ttc_s is not None and assessment.ttc_s <= self.config.caution_fast_path_ttc_s)
-                or (
-                    assessment.cpa_distance_m is not None
-                    and assessment.cpa_time_s is not None
-                    and assessment.cpa_time_s <= self.config.caution_fast_path_ttc_s
-                    and assessment.cpa_distance_m <= self.config.caution_fast_path_trajectory_m
-                )
-            )
-        )
-
     def _is_fast_path(self, assessment: RiskAssessment, target) -> bool:
         distance_m = getattr(target, "distance_m", None)
+        observation_quality = float(getattr(target, "observation_quality", 0.0))
+        inside_personal_space = distance_m is not None and distance_m <= self.config.emergency_fast_path_distance_m
+        high_quality_emergency = observation_quality >= self.config.high_quality_fast_path_threshold
         return (
             assessment.level >= RiskLevel.EMERGENCY
             and (
-                (assessment.ttc_s is not None and assessment.ttc_s <= self.config.emergency_fast_path_ttc_s)
+                inside_personal_space
                 or (
-                    assessment.cpa_time_s is not None
+                    high_quality_emergency
+                    and assessment.ttc_s is not None
+                    and assessment.ttc_s <= self.config.emergency_fast_path_ttc_s
+                )
+                or (
+                    high_quality_emergency
+                    and assessment.cpa_time_s is not None
                     and assessment.cpa_distance_m is not None
                     and assessment.cpa_time_s <= self.config.emergency_fast_path_ttc_s
                     and assessment.cpa_distance_m <= self.config.emergency_fast_path_distance_m
                 )
-                or (distance_m is not None and distance_m <= self.config.emergency_fast_path_distance_m)
             )
         )
 

@@ -78,13 +78,20 @@ class RiskModelTest(unittest.TestCase):
         self.assertGreaterEqual(assessment.level.value, RiskLevel.CAUTION.value)
         self.assertAlmostEqual(1.0, assessment.trajectory_distance_m, places=3)
 
-    def test_ttc_over_5s_is_forced_safe_even_inside_trajectory_threshold(self) -> None:
+    def test_large_vehicle_can_warn_at_five_to_six_seconds_when_cpa_enters_path(self) -> None:
         assessment = assess_collision_risk(make_target(class_name="car", x_m=0.0, z_m=6.0, vz_mps=-1.0))
 
         self.assertGreater(assessment.ttc_s, 5.0)
-        self.assertEqual(RiskLevel.SAFE, assessment.level)
-        self.assertEqual(0.0, assessment.score)
+        self.assertEqual(RiskLevel.ATTENTION, assessment.level)
+        self.assertEqual("large_vehicle", assessment.severity_class)
+        self.assertIn("large_vehicle", assessment.risk_action_reason)
         self.assertAlmostEqual(0.0, assessment.trajectory_distance_m, places=3)
+
+    def test_small_rider_over_five_seconds_is_still_safe(self) -> None:
+        assessment = assess_collision_risk(make_target(class_name="bicycle", x_m=0.0, z_m=6.0, vz_mps=-1.0))
+
+        self.assertGreater(assessment.ttc_s, 5.0)
+        self.assertEqual(RiskLevel.SAFE, assessment.level)
 
     def test_trajectory_distance_risk_rises_fast_then_saturates(self) -> None:
         assessment = assess_collision_risk(

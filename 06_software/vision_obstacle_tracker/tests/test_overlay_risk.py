@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 import unittest
 
-from risk_model import MotionPattern, RiskAssessment, RiskLevel
+from risk_model import CorridorZone, MotionPattern, RiskAssessment, RiskLevel
 from vision_obstacle_tracker import (
     RiskWarningStabilizer,
     RiskWarningStabilizerConfig,
@@ -16,6 +16,10 @@ def make_assessment(
     ttc_s: float | None = 2.0,
     motion_pattern: MotionPattern = MotionPattern.HEAD_ON_OR_CLOSING,
     trajectory_distance_m: float | None = 0.0,
+    cpa_time_s: float | None = 1.5,
+    cpa_distance_m: float | None = 0.5,
+    severity_class: str = "large_vehicle",
+    risk_action_reason: str = "large_vehicle_path_conflict",
 ) -> RiskAssessment:
     return RiskAssessment(
         track_id=7,
@@ -23,9 +27,18 @@ def make_assessment(
         level=level,
         ttc_s=ttc_s,
         trajectory_distance_m=trajectory_distance_m,
+        cpa_time_s=cpa_time_s,
+        cpa_distance_m=cpa_distance_m,
+        cpa_valid=cpa_time_s is not None and cpa_distance_m is not None,
         drac_mps2=4.0,
         closing_speed_mps=8.0,
         motion_pattern=motion_pattern,
+        corridor_zone=CorridorZone.IN_PATH,
+        severity_class=severity_class,
+        warning_action="none",
+        warning_time_horizon_s=6.0,
+        warning_radius_m=2.4,
+        risk_action_reason=risk_action_reason,
     )
 
 
@@ -65,7 +78,7 @@ class OverlayRiskTest(unittest.TestCase):
 
         self.assertEqual(RiskLevel.ATTENTION, display.level)
 
-    def test_high_quality_cut_in_caution_displays_on_first_frame(self) -> None:
+    def test_high_quality_cut_in_caution_needs_two_confirmed_frames(self) -> None:
         stabilizer = RiskWarningStabilizer()
         caution = make_assessment(
             RiskLevel.CAUTION,
@@ -75,9 +88,11 @@ class OverlayRiskTest(unittest.TestCase):
             trajectory_distance_m=0.25,
         )
 
-        display = stabilizer.stabilize({7: caution}, {7: make_target(quality=0.85)})[7]
+        first = stabilizer.stabilize({7: caution}, {7: make_target(quality=0.85)})[7]
+        second = stabilizer.stabilize({7: caution}, {7: make_target(quality=0.85)})[7]
 
-        self.assertEqual(RiskLevel.CAUTION, display.level)
+        self.assertEqual(RiskLevel.SAFE, first.level)
+        self.assertEqual(RiskLevel.CAUTION, second.level)
 
     def test_stabilizer_reports_pending_reason_for_risk_log(self) -> None:
         stabilizer = RiskWarningStabilizer(
@@ -106,6 +121,18 @@ class OverlayRiskTest(unittest.TestCase):
         self.assertEqual(RiskLevel.DANGER, second.level)
         self.assertEqual(0.72, second.score)
 
+    def test_default_danger_needs_three_confirmed_frames(self) -> None:
+        stabilizer = RiskWarningStabilizer()
+        danger = make_assessment(RiskLevel.DANGER, 0.72)
+
+        first = stabilizer.stabilize({7: danger}, {7: make_target(quality=0.95)})[7]
+        second = stabilizer.stabilize({7: danger}, {7: make_target(quality=0.95)})[7]
+        third = stabilizer.stabilize({7: danger}, {7: make_target(quality=0.95)})[7]
+
+        self.assertEqual(RiskLevel.SAFE, first.level)
+        self.assertEqual(RiskLevel.SAFE, second.level)
+        self.assertEqual(RiskLevel.DANGER, third.level)
+
     def test_low_quality_danger_needs_extra_confirmation_frames(self) -> None:
         stabilizer = RiskWarningStabilizer(
             RiskWarningStabilizerConfig(min_confirm_frames_danger=2, low_quality_extra_frames=2)
@@ -119,14 +146,35 @@ class OverlayRiskTest(unittest.TestCase):
 
         self.assertEqual(RiskLevel.DANGER, fourth.level)
 
-    def test_fast_path_emergency_can_display_immediately_for_short_ttc(self) -> None:
+    def test_low_quality_single_frame_short_ttc_emergency_does_not_fast_path(self) -> None:
         stabilizer = RiskWarningStabilizer()
         emergency = make_assessment(RiskLevel.EMERGENCY, 0.92, ttc_s=0.4)
 
         display = stabilizer.stabilize({7: emergency}, {7: make_target(quality=0.3)})[7]
 
+        self.assertEqual(RiskLevel.SAFE, display.level)
+
+    def test_fast_path_emergency_can_display_immediately_when_currently_inside_personal_space(self) -> None:
+        stabilizer = RiskWarningStabilizer()
+        emergency = make_assessment(RiskLevel.EMERGENCY, 0.92, ttc_s=None, cpa_time_s=None, cpa_distance_m=None)
+
+        display = stabilizer.stabilize({7: emergency}, {7: make_target(quality=0.3, distance_m=0.5)})[7]
+
         self.assertEqual(RiskLevel.EMERGENCY, display.level)
         self.assertEqual(0.92, display.score)
+
+    def test_single_frame_distance_or_velocity_jump_does_not_directly_show_danger(self) -> None:
+        stabilizer = RiskWarningStabilizer()
+        safe_far = make_assessment(RiskLevel.SAFE, 0.0, ttc_s=None, cpa_time_s=None, cpa_distance_m=None)
+        jump_danger = make_assessment(RiskLevel.DANGER, 0.76, ttc_s=0.7, cpa_time_s=0.5, cpa_distance_m=0.2)
+
+        first = stabilizer.stabilize({7: safe_far}, {7: make_target(quality=0.9, distance_m=10.0)})[7]
+        jump = stabilizer.stabilize({7: jump_danger}, {7: make_target(quality=0.4, distance_m=2.0)})[7]
+        recovered = stabilizer.stabilize({7: safe_far}, {7: make_target(quality=0.9, distance_m=10.0)})[7]
+
+        self.assertEqual(RiskLevel.SAFE, first.level)
+        self.assertEqual(RiskLevel.SAFE, jump.level)
+        self.assertEqual(RiskLevel.SAFE, recovered.level)
 
     def test_one_safe_frame_does_not_drop_danger_to_safe_immediately(self) -> None:
         stabilizer = RiskWarningStabilizer(
