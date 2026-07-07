@@ -19,6 +19,8 @@
 - 使用 CPA（未来最近接近点）和佩戴者前方走廊判断真实风险。
 - 按 `large_vehicle`、`small_rider`、`unknown_or_other` 使用不同提前预警时间窗和安全半径。
 - 风险输出分为候选层 `raw_risk_level` 和实际显示/震动层 `display_risk_level`，保留多帧确认、防抖和降级迟滞。
+- 进一步区分 `visual_risk_level` 和 `haptic_risk_level`：画面可以显示远处候选注意，震动输出必须更严格。
+- 新增底部自身前景过滤，用于忽略画面下沿被截断的车把、背包边缘、身体边缘和固定装备误检。
 - 输出 `warning_action` 震动动作：不震动、短弱震、间歇中等震动、强快速脉冲、高频连续强震。
 - 使用风险上限机制限制远处横向交通流、路边静止目标、短 track 和速度不稳定目标的误报。
 - 支持 ROI 顶部裁剪、YOLO 类别前置过滤、OpenVINO CPU 推理、ego-motion、risk CSV、display-every-n、cpu_demo profile。
@@ -149,6 +151,40 @@ py vision_obstacle_tracker.py --source video --video D:\path\input.mp4 --runtime
 - `time_to_enter_corridor()` 使用有限矩形走廊 `|x| <= corridor_half_width`、`0 <= z <= corridor_depth`，不再把无限延长直线当作必然碰撞。
 - 单帧 CPA/TTC 异常不会直接驱动震动输出；`display_risk_level` 仍然经过多帧确认、趋势一致性和观测质量检查。
 
+### Self Object / Bottom Foreground Filter
+
+摄像头装在背包或佩戴者身上时，画面底部可能出现自己的车把、扶手、背包边缘、身体边缘或固定支架。这些内容经常被 YOLO 误识别成 `bicycle`、`motorcycle` 或 `person`，但它们不是外部障碍物，不应该触发震动预警。
+
+当前过滤逻辑会检查 bbox 是否贴近画面底部、是否被下边界截断、面积是否异常偏大、以及同一 track 是否长期固定在画面底部。被过滤的目标仍会写入 risk CSV，但风险被强制 SAFE，并记录：
+
+```text
+ignored_reason=self_object_bottom_foreground
+self_object_score
+bbox_bottom_ratio
+bbox_truncated_edges
+```
+
+可调参数：
+
+```powershell
+--self-mask-bottom-ratio 0.92
+--disable-self-object-filter
+```
+
+`--self-mask-bottom-ratio` 越小，底部忽略区域越大；默认 `0.92` 只针对非常靠近下沿的前景误检。`--disable-self-object-filter` 用于调试关闭过滤，但仍保留 bbox 诊断字段。
+
+### Visual Risk vs Haptic Warning
+
+风险输出现在分为三类日志概念：
+
+```text
+raw_risk_level:      单帧候选风险，便于分析 CPA/TTC/走廊/类别规则。
+visual_risk_level:   经过 stabilizer 后的画框显示风险。
+haptic_risk_level:   给未来震动模块使用的更严格风险。
+```
+
+远处车流、画面边缘截断车辆、路径冲突不成立的 REMOTE 目标，可以在画面上显示 ATTENTION 作为调试提示，但 `haptic_risk_level` 默认保持 SAFE。只有目标连续稳定地进入个人安全半径或前方行走走廊，才允许震动层升级。
+
 预警等级语义：
 
 ```text
@@ -200,7 +236,7 @@ unknown_or_other:
 推荐命令：
 
 ```powershell
-py vision_obstacle_tracker.py --source video --video D:\path\input.mp4 --runtime-profile cpu_demo --roi-top-ratio 0.20 --prefer-openvino --overlay-verbosity debug --risk-log-csv D:\path\risk_log.csv --profile
+py vision_obstacle_tracker.py --source video --video D:\path\input.mp4 --runtime-profile cpu_demo --roi-top-ratio 0.20 --self-mask-bottom-ratio 0.92 --prefer-openvino --overlay-verbosity debug --risk-log-csv D:\path\risk_log.csv --profile
 ```
 
 重点字段：
@@ -216,15 +252,17 @@ personal_entry_time_s, corridor_entry_time_s, min_future_distance_m, conflict_re
 ttc_s, drac_mps2, motion_pattern, corridor_zone
 severity_class, warning_action, warning_time_horizon_s, warning_radius_m
 risk_action_reason, risk_cap_reason
+ignored_reason, self_object_score, bbox_bottom_ratio, bbox_truncated_edges
 raw_risk_score, raw_risk_level, display_risk_score, display_risk_level
+visual_risk_level, haptic_risk_level
 stabilizer_pending_level, stabilizer_pending_count, stabilizer_required_frames, stabilizer_reason
 trajectory_risk, ttc_risk, drac_risk, closing_risk
 distance_confidence, observation_quality, quality_flags
 ```
 
-排查顺序：先看 `raw_risk_level` 和 `display_risk_level` 是否分离；再看 `path_conflict`、`moving_away`、`will_enter_personal_space`、`will_enter_warning_corridor`、`personal_entry_time_s`、`corridor_entry_time_s` 和 `conflict_reason` 是否符合真实画面；然后看 `cpa_time_s`、`cpa_distance_m`、`corridor_zone`；再看 `risk_action_reason` 是不是大车提前预警、路径冲突或当前进入个人空间；再看 `risk_cap_reason` 是否为 `moving_away_no_future_conflict`、`no_corridor_entry`、`remote_traffic_no_path_conflict`、`unstable_single_frame_cpa`、`side_static`、`low_speed_non_path`、`unstable_track`；最后检查 `distance_trend_mps`、`approach_consistency`、`path_conflict_consistency`、`velocity_stability`、`position_jitter_m` 和 `velocity_confidence`。
+排查顺序：先看 `ignored_reason` 是否说明目标是底部自身前景；再看 `raw_risk_level`、`display_risk_level`、`visual_risk_level` 和 `haptic_risk_level` 是否分离；再看 `path_conflict`、`moving_away`、`will_enter_personal_space`、`will_enter_warning_corridor`、`personal_entry_time_s`、`corridor_entry_time_s` 和 `conflict_reason` 是否符合真实画面；然后看 `bbox_truncated_edges` 是否有左右边缘截断；再看 `risk_action_reason` 是不是大车提前预警、路径冲突或当前进入个人空间；再看 `risk_cap_reason` 是否为 `moving_away_no_future_conflict`、`no_corridor_entry`、`remote_traffic_no_path_conflict`、`edge_truncated_cap`、`unstable_single_frame_cpa`、`side_static`、`low_speed_non_path`、`unstable_track`；最后检查 `distance_trend_mps`、`approach_consistency`、`path_conflict_consistency`、`velocity_stability`、`position_jitter_m` 和 `velocity_confidence`。
 
-判断修复是否有效：路边静止摩托/电动车不应 CAUTION；远处横向车流如果 `path_conflict=0` 不应 DANGER；正在远离的目标应出现 `moving_away=1` 和 `risk_cap_reason=moving_away_no_future_conflict`；大车真实进入路径时应提前形成候选 ATTENTION/CAUTION；真实进入正前方路径的自行车/电动车应出现 ATTENTION/CAUTION；单帧距离或速度跳变应出现 `unstable_single_frame_cpa` 或增加确认帧数，不应直接强震。
+判断修复是否有效：画面底部自己的车把/固定物应出现 `ignored_reason=self_object_bottom_foreground` 且不再 ATTENTION；远处横向车流如果 `path_conflict=0` 不应 DANGER，且 `haptic_risk_level` 应为 SAFE；右侧或左侧边缘截断车辆出现单帧 CPA 跳变时应看到 `edge_truncated_cap`，不应红框或强震；正在远离的目标应出现 `moving_away=1` 和 `risk_cap_reason=moving_away_no_future_conflict`；大车真实进入路径时仍应提前形成候选 ATTENTION/CAUTION，连续稳定后进入显示/震动预警。
 ## Overlay 显示文字
 
 `--overlay-verbosity` 控制检测框文字长度：
@@ -268,6 +306,8 @@ py vision_obstacle_tracker.py --source video --video D:\path\input.mp4 --runtime
 --runtime-profile cpu_demo            推荐 CPU 演示预设。
 --roi-top-ratio 0.20                  推理前裁掉图像顶部 20%。
 --target-classes car,bicycle,...      指定保留的目标类别，all 表示全部类别。
+--self-mask-bottom-ratio 0.92         设置底部自身前景过滤阈值。
+--disable-self-object-filter          关闭底部自身前景过滤，便于调试对比。
 --prefer-openvino                     优先加载已有 OpenVINO 导出模型。
 --export-openvino                     将 YOLO 模型导出为 OpenVINO。
 --display-every-n 5                   每 N 个处理帧刷新一次窗口。

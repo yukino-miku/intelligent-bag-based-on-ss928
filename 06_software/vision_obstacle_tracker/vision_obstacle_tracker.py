@@ -11,8 +11,8 @@ from pathlib import Path
 
 from camera_source import FfmpegCameraConfig, FfmpegMjpegCameraCapture
 from calibration import CameraCalibration, calibration_from_mapping, estimate_ground_point_from_bbox, load_calibration_file
-from risk_model import MotionPattern, RiskAssessment, RiskLevel, RiskModel, corridor_zone_name, motion_pattern_name
-from vision_core import DetectionObservation, StableTrackIdManager, TrackState, compute_observation_quality, format_overlay_label, parse_target_classes, should_keep_class
+from risk_model import MotionPattern, RiskAssessment, RiskLevel, RiskModel, corridor_zone_name, motion_pattern_name, warning_action_for_level
+from vision_core import DetectionObservation, StableTrackIdManager, TrackState, TrackedObject, compute_observation_quality, format_overlay_label, parse_target_classes, should_keep_class
 
 
 WINDOW_NAME = "YOLO Tracking Distance Speed"
@@ -71,6 +71,127 @@ class EgoMotionEstimate:
     magnitude_px: float = 0.0
     direction_consistency: float = 0.0
     quality_flags: tuple[str, ...] = ()
+
+
+class SelfObjectFilter:
+    SELF_LIKE_CLASSES = {"bicycle", "motorcycle", "person"}
+
+    def __init__(self, bottom_ratio: float = 0.92, enabled: bool = True, fixed_history_frames: int = 5) -> None:
+        self.bottom_ratio = min(max(bottom_ratio, 0.0), 0.99)
+        self.enabled = enabled
+        self.fixed_history_frames = max(2, fixed_history_frames)
+        self._history_by_track_id: dict[int, deque[tuple[float, float, float]]] = {}
+
+    def apply(self, targets: list[TrackedObject], frame_shape) -> list[TrackedObject]:
+        height = float(frame_shape[0]) if frame_shape else 0.0
+        width = float(frame_shape[1]) if frame_shape and len(frame_shape) > 1 else 0.0
+        if height <= 0.0 or width <= 0.0:
+            return targets
+
+        active_track_ids = {target.track_id for target in targets}
+        for stale_id in list(self._history_by_track_id):
+            if stale_id not in active_track_ids:
+                del self._history_by_track_id[stale_id]
+
+        return [self._with_self_object_diagnostics(target, width, height) for target in targets]
+
+    def _with_self_object_diagnostics(self, target: TrackedObject, width: float, height: float) -> TrackedObject:
+        x1, y1, x2, y2 = target.bbox_xyxy
+        bbox_width = max(0.0, x2 - x1)
+        bbox_height = max(0.0, y2 - y1)
+        bbox_area_ratio = (bbox_width * bbox_height) / max(width * height, 1.0)
+        bbox_bottom_ratio = min(max(y2 / height, 0.0), 1.5)
+        truncated_edges = self._truncated_edges(x1, y1, x2, y2, width, height)
+        score, fixed_bottom = self._self_object_score(
+            target,
+            width,
+            height,
+            bbox_area_ratio,
+            bbox_bottom_ratio,
+            bbox_height,
+            truncated_edges,
+        )
+
+        ignored_reason = getattr(target, "ignored_reason", "")
+        if self.enabled and score >= 0.80 and (
+            "bottom" in truncated_edges or fixed_bottom or bbox_bottom_ratio >= self.bottom_ratio
+        ):
+            ignored_reason = "self_object_bottom_foreground"
+        elif not self.enabled:
+            ignored_reason = ""
+
+        return replace(
+            target,
+            ignored_reason=ignored_reason,
+            self_object_score=score,
+            bbox_bottom_ratio=bbox_bottom_ratio,
+            bbox_truncated_edges="|".join(truncated_edges),
+        )
+
+    @staticmethod
+    def _truncated_edges(
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+        width: float,
+        height: float,
+    ) -> tuple[str, ...]:
+        margin_x = max(1.0, width * 0.005)
+        margin_y = max(1.0, height * 0.005)
+        edges: list[str] = []
+        if x1 <= margin_x:
+            edges.append("left")
+        if y1 <= margin_y:
+            edges.append("top")
+        if x2 >= width - margin_x:
+            edges.append("right")
+        if y2 >= height - margin_y:
+            edges.append("bottom")
+        return tuple(edges)
+
+    def _self_object_score(
+        self,
+        target: TrackedObject,
+        width: float,
+        height: float,
+        bbox_area_ratio: float,
+        bbox_bottom_ratio: float,
+        bbox_height: float,
+        truncated_edges: tuple[str, ...],
+    ) -> tuple[float, bool]:
+        if target.class_name not in self.SELF_LIKE_CLASSES:
+            return 0.0, False
+
+        x1, _y1, x2, y2 = target.bbox_xyxy
+        bottom_zone_top = self.bottom_ratio * height
+        bottom_overlap_px = max(0.0, min(y2, height) - max(target.bbox_xyxy[1], bottom_zone_top))
+        bottom_overlap_ratio = bottom_overlap_px / max(bbox_height, 1.0)
+        score = 0.0
+        if "bottom" in truncated_edges and bbox_bottom_ratio >= self.bottom_ratio:
+            score = max(score, 0.85)
+        if bottom_overlap_ratio >= 0.60 and bbox_bottom_ratio >= self.bottom_ratio:
+            score = max(score, 0.75)
+        if bbox_area_ratio >= 0.14 and bbox_bottom_ratio >= self.bottom_ratio:
+            score = max(score, 0.80)
+
+        center_x_ratio = ((x1 + x2) * 0.5) / max(width, 1.0)
+        history = self._history_by_track_id.setdefault(target.track_id, deque(maxlen=self.fixed_history_frames))
+        history.append((center_x_ratio, bbox_bottom_ratio, bbox_area_ratio))
+        fixed_bottom = False
+        if len(history) >= self.fixed_history_frames:
+            center_values = [value[0] for value in history]
+            bottom_values = [value[1] for value in history]
+            area_values = [value[2] for value in history]
+            fixed_bottom = (
+                min(bottom_values) >= self.bottom_ratio
+                and max(center_values) - min(center_values) <= 0.04
+                and max(bottom_values) - min(bottom_values) <= 0.03
+                and max(area_values) - min(area_values) <= 0.05
+            )
+            if fixed_bottom:
+                score = max(score, 0.82)
+        return min(score, 1.0), fixed_bottom
 
 
 class PitchController:
@@ -191,6 +312,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prefer-openvino", action="store_true", help="Prefer an existing OpenVINO export next to a .pt model without exporting automatically.")
     parser.add_argument("--target-classes", default="car,bicycle,motorcycle,bus,truck", help="Comma-separated COCO class names to display, or all.")
     parser.add_argument("--roi-top-ratio", type=float, default=0.0, help="Crop this top fraction of each frame before YOLO inference. 0 keeps full-frame inference.")
+    parser.add_argument("--self-mask-bottom-ratio", type=float, default=0.92, help="Ignore self-like bottom foreground boxes that touch the lower frame edge above this image-height ratio.")
+    parser.add_argument("--disable-self-object-filter", action="store_true", help="Disable bottom foreground self-object filtering while keeping bbox diagnostics in CSV.")
     parser.add_argument("--device", default=None, help="Ultralytics device, for example cpu, 0, cuda:0. Default: auto.")
     parser.add_argument("--camera-height", type=float, default=1.2, help="Camera height above ground in meters. Default approximates chest mounting.")
     parser.add_argument("--camera-pitch", type=float, default=5.0, help="Camera downward pitch in degrees. Smaller values increase forward distance.")
@@ -230,6 +353,8 @@ def apply_runtime_profile_defaults(args: argparse.Namespace) -> argparse.Namespa
             setattr(args, name, value)
     if not 0.0 <= args.roi_top_ratio < 1.0:
         raise SystemExit("--roi-top-ratio must be >= 0.0 and < 1.0.")
+    if not 0.0 < args.self_mask_bottom_ratio < 1.0:
+        raise SystemExit("--self-mask-bottom-ratio must be > 0.0 and < 1.0.")
     if args.display_every_n < 1:
         raise SystemExit("--display-every-n must be >= 1.")
     if args.pitch_adjust_step < 0.0:
@@ -555,6 +680,10 @@ class RiskCsvLogger:
         "size_confidence",
         "distance_source",
         "quality_flags",
+        "ignored_reason",
+        "self_object_score",
+        "bbox_bottom_ratio",
+        "bbox_truncated_edges",
         "x_m",
         "z_m",
         "vx_mps",
@@ -600,6 +729,8 @@ class RiskCsvLogger:
         "raw_risk_level",
         "display_risk_score",
         "display_risk_level",
+        "visual_risk_level",
+        "haptic_risk_level",
         "stabilizer_pending_level",
         "stabilizer_pending_count",
         "stabilizer_required_frames",
@@ -648,6 +779,10 @@ class RiskCsvLogger:
                     "size_confidence": f"{target.size_confidence:.3f}",
                     "distance_source": target.distance_source,
                     "quality_flags": "|".join(target.quality_flags),
+                    "ignored_reason": getattr(target, "ignored_reason", ""),
+                    "self_object_score": f"{getattr(target, 'self_object_score', 0.0):.3f}",
+                    "bbox_bottom_ratio": f"{getattr(target, 'bbox_bottom_ratio', 0.0):.3f}",
+                    "bbox_truncated_edges": getattr(target, "bbox_truncated_edges", ""),
                     "x_m": _format_optional_float(point.x_m if point is not None else None),
                     "z_m": _format_optional_float(point.z_m if point is not None else None),
                     "vx_mps": f"{target.vx_mps:.3f}",
@@ -693,6 +828,8 @@ class RiskCsvLogger:
                     "raw_risk_level": risk_level_name(raw.level) if raw else "",
                     "display_risk_score": f"{display.score:.3f}" if display else "",
                     "display_risk_level": risk_level_name(display.level) if display else "",
+                    "visual_risk_level": risk_level_name(display.visual_level) if display else "",
+                    "haptic_risk_level": risk_level_name(display.haptic_level) if display else "",
                     "stabilizer_pending_level": risk_level_name(debug.pending_level) if debug else "",
                     "stabilizer_pending_count": str(debug.pending_count) if debug else "",
                     "stabilizer_required_frames": str(debug.required_frames) if debug else "",
@@ -709,6 +846,26 @@ class RiskCsvLogger:
 
 def _format_optional_float(value: float | None) -> str:
     return "" if value is None else f"{value:.3f}"
+
+
+def ignored_target_assessment(target: TrackedObject) -> RiskAssessment:
+    reason = getattr(target, "ignored_reason", "") or "ignored"
+    return RiskAssessment(
+        track_id=target.track_id,
+        score=0.0,
+        level=RiskLevel.SAFE,
+        ttc_s=None,
+        trajectory_distance_m=None,
+        drac_mps2=0.0,
+        closing_speed_mps=0.0,
+        visual_level=RiskLevel.SAFE,
+        haptic_level=RiskLevel.SAFE,
+        motion_pattern=MotionPattern.STATIC_OR_UNCERTAIN,
+        risk_cap_reason=reason,
+        warning_action=warning_action_for_level(RiskLevel.SAFE),
+        risk_action_reason=reason,
+        ignored_reason=reason,
+    )
 
 
 def result_to_observations(
@@ -821,12 +978,14 @@ def format_risk_suffix(assessment: RiskAssessment | None, verbosity: str = "norm
     action = f" action={assessment.risk_action_reason}" if assessment.risk_action_reason != "none" else ""
     severity = f" sev={assessment.severity_class}" if assessment.severity_class else ""
     conflict = f" fc={assessment.conflict_reason}" if assessment.conflict_reason != "none" else ""
+    haptic = f" h={risk_level_name(assessment.haptic_level)}"
+    ignored = f" ignored={assessment.ignored_reason}" if assessment.ignored_reason else ""
     terms = (
         f" tr={assessment.trajectory_risk:.2f}"
         f" ttcR={assessment.ttc_risk:.2f}"
         f" closeR={assessment.closing_risk:.2f}"
     )
-    return f"RiskScore={assessment.score:.2f} {risk_level_name(assessment.level)} {zone} {pattern}{severity}{cpa}{ttc}{trajectory}{terms}{action}{conflict}{cap}"
+    return f"RiskScore={assessment.score:.2f} {risk_level_name(assessment.level)} {zone} {pattern}{severity}{haptic}{cpa}{ttc}{trajectory}{terms}{action}{conflict}{cap}{ignored}"
 
 
 @dataclass(frozen=True)
@@ -902,7 +1061,11 @@ class RiskWarningStabilizer:
                     required_frames=1,
                     reason="fast_path",
                 )
-                stabilized[track_id] = assessment
+                stabilized[track_id] = self._assessment_with_display_level(
+                    assessment,
+                    state.displayed_level,
+                    state.displayed_score,
+                )
                 continue
 
             if assessment.level > state.displayed_level:
@@ -915,7 +1078,7 @@ class RiskWarningStabilizer:
                 state.pending_level = assessment.level
                 state.pending_count = 0
                 state.downgrade_count = 0
-                display = assessment
+                display = self._assessment_with_display_level(assessment, assessment.level, assessment.score)
                 debug = StabilizerDebugInfo(
                     pending_level=assessment.level,
                     pending_count=0,
@@ -954,7 +1117,7 @@ class RiskWarningStabilizer:
         if state.pending_count >= required_frames:
             state.displayed_level = assessment.level
             state.displayed_score = assessment.score
-            return assessment, StabilizerDebugInfo(
+            return self._assessment_with_display_level(assessment, assessment.level, assessment.score), StabilizerDebugInfo(
                 pending_level=assessment.level,
                 pending_count=state.pending_count,
                 required_frames=required_frames,
@@ -1043,11 +1206,30 @@ class RiskWarningStabilizer:
         )
 
     @staticmethod
-    def _display_assessment_from_state(assessment: RiskAssessment, state: _RiskDisplayState) -> RiskAssessment:
+    def _assessment_with_display_level(
+        assessment: RiskAssessment,
+        display_level: RiskLevel,
+        display_score: float,
+    ) -> RiskAssessment:
+        if display_level <= RiskLevel.SAFE:
+            haptic_level = RiskLevel.SAFE
+        else:
+            haptic_level = RiskLevel(min(int(assessment.haptic_level), int(display_level)))
+        return replace(
+            assessment,
+            score=display_score,
+            level=display_level,
+            visual_level=display_level,
+            haptic_level=haptic_level,
+            warning_action=warning_action_for_level(haptic_level),
+        )
+
+    @classmethod
+    def _display_assessment_from_state(cls, assessment: RiskAssessment, state: _RiskDisplayState) -> RiskAssessment:
         if state.displayed_level <= RiskLevel.SAFE:
-            return replace(assessment, score=0.0, level=RiskLevel.SAFE)
+            return cls._assessment_with_display_level(assessment, RiskLevel.SAFE, 0.0)
         display_score = max(state.displayed_score, risk_score_for_display_level(state.displayed_level))
-        return replace(assessment, score=display_score, level=state.displayed_level)
+        return cls._assessment_with_display_level(assessment, state.displayed_level, display_score)
 
 
 def risk_score_for_display_level(level: RiskLevel) -> float:
@@ -1276,6 +1458,10 @@ def main() -> None:
     stable_track_ids = StableTrackIdManager()
     risk_model = RiskModel()
     risk_stabilizer = RiskWarningStabilizer()
+    self_object_filter = SelfObjectFilter(
+        bottom_ratio=args.self_mask_bottom_ratio,
+        enabled=not args.disable_self_object_filter,
+    )
     ego_motion_estimator = EgoMotionEstimator(mode=args.ego_motion_mode)
     risk_logger = RiskCsvLogger(args.risk_log_csv)
 
@@ -1350,8 +1536,16 @@ def main() -> None:
                     track_state.update(observation, ego_motion_magnitude=ego_motion.magnitude_px)
                     for observation in observations
                 ]
+                tracked_objects = self_object_filter.apply(tracked_objects, frame.shape)
             with profiler.stage("risk"):
-                raw_risk_by_track_id = {target.track_id: risk_model.assess(target) for target in tracked_objects}
+                raw_risk_by_track_id = {
+                    target.track_id: (
+                        ignored_target_assessment(target)
+                        if getattr(target, "ignored_reason", "")
+                        else risk_model.assess(target)
+                    )
+                    for target in tracked_objects
+                }
                 tracked_objects_by_id = {target.track_id: target for target in tracked_objects}
                 risk_by_track_id = risk_stabilizer.stabilize(raw_risk_by_track_id, tracked_objects_by_id)
                 risk_logger.write_frame(

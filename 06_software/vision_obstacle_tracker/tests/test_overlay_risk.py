@@ -21,7 +21,9 @@ def make_assessment(
     severity_class: str = "large_vehicle",
     risk_action_reason: str = "large_vehicle_path_conflict",
     path_conflict: bool = True,
+    haptic_level: RiskLevel | None = None,
 ) -> RiskAssessment:
+    haptic_level = level if haptic_level is None else haptic_level
     return RiskAssessment(
         track_id=7,
         score=score,
@@ -41,6 +43,8 @@ def make_assessment(
         warning_radius_m=2.4,
         risk_action_reason=risk_action_reason,
         path_conflict=path_conflict,
+        visual_level=level,
+        haptic_level=haptic_level,
     )
 
 
@@ -90,6 +94,22 @@ class OverlayRiskTest(unittest.TestCase):
         display = stabilizer.stabilize({7: attention}, {7: make_target(quality=0.8)})[7]
 
         self.assertEqual(RiskLevel.ATTENTION, display.level)
+
+    def test_remote_attention_can_display_without_haptic_warning(self) -> None:
+        stabilizer = RiskWarningStabilizer()
+        attention = make_assessment(
+            RiskLevel.ATTENTION,
+            0.45,
+            motion_pattern=MotionPattern.REMOTE_TRAFFIC,
+            path_conflict=False,
+            haptic_level=RiskLevel.SAFE,
+        )
+
+        display = stabilizer.stabilize({7: attention}, {7: make_target(quality=0.8)})[7]
+
+        self.assertEqual(RiskLevel.ATTENTION, display.visual_level)
+        self.assertEqual(RiskLevel.SAFE, display.haptic_level)
+        self.assertEqual("none", display.warning_action)
 
     def test_high_quality_cut_in_caution_needs_two_confirmed_frames(self) -> None:
         stabilizer = RiskWarningStabilizer()

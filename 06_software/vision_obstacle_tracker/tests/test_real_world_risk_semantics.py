@@ -26,6 +26,8 @@ def make_target(
     distance_trend_mps: float = 0.0,
     approach_consistency: float = 1.0,
     path_conflict_consistency: float = 1.0,
+    bbox_truncated_edges: str = "",
+    ignored_reason: str = "",
 ) -> TrackedObject:
     point = GroundPoint(x_m=x_m, z_m=z_m)
     speed_mps = (vx_mps**2 + vz_mps**2) ** 0.5
@@ -48,6 +50,8 @@ def make_target(
         distance_trend_mps=distance_trend_mps,
         approach_consistency=approach_consistency,
         path_conflict_consistency=path_conflict_consistency,
+        bbox_truncated_edges=bbox_truncated_edges,
+        ignored_reason=ignored_reason,
     )
 
 
@@ -166,6 +170,17 @@ class RealWorldRiskSemanticsTest(unittest.TestCase):
         self.assertLessEqual(assessment.level.value, RiskLevel.ATTENTION.value)
         self.assertEqual("large_vehicle", assessment.severity_class)
         self.assertIn("remote_traffic_no_path_conflict", assessment.risk_cap_reason)
+        self.assertLessEqual(assessment.visual_level.value, RiskLevel.ATTENTION.value)
+        self.assertEqual(RiskLevel.SAFE, assessment.haptic_level)
+
+    def test_remote_cross_traffic_attention_does_not_vibrate_without_path_conflict(self) -> None:
+        assessment = assess_collision_risk(
+            make_target(class_name="car", x_m=5.0, z_m=7.0, vx_mps=-2.0, vz_mps=0.0)
+        )
+
+        self.assertFalse(assessment.path_conflict)
+        self.assertLessEqual(assessment.visual_level.value, RiskLevel.ATTENTION.value)
+        self.assertEqual(RiskLevel.SAFE, assessment.haptic_level)
 
     def test_remote_large_vehicle_path_conflict_is_warned_early(self) -> None:
         assessment = assess_collision_risk(
@@ -266,6 +281,26 @@ class RealWorldRiskSemanticsTest(unittest.TestCase):
         self.assertTrue(assessment.path_conflict)
         self.assertLessEqual(assessment.level.value, RiskLevel.ATTENTION.value)
         self.assertIn("unstable_single_frame_cpa", assessment.risk_cap_reason)
+        self.assertEqual(RiskLevel.SAFE, assessment.haptic_level)
+
+    def test_edge_truncated_low_quality_vehicle_is_capped_to_attention(self) -> None:
+        assessment = assess_collision_risk(
+            make_target(
+                class_name="car",
+                x_m=0.4,
+                z_m=4.0,
+                vx_mps=0.0,
+                vz_mps=-5.0,
+                track_age_frames=1,
+                velocity_confidence=0.2,
+                distance_confidence=0.2,
+                bbox_truncated_edges="right",
+            )
+        )
+
+        self.assertLessEqual(assessment.level.value, RiskLevel.ATTENTION.value)
+        self.assertIn("edge_truncated_cap", assessment.risk_cap_reason)
+        self.assertEqual(RiskLevel.SAFE, assessment.haptic_level)
 
     def test_short_or_unstable_track_is_capped_unless_currently_inside_personal_space(self) -> None:
         assessment = assess_collision_risk(

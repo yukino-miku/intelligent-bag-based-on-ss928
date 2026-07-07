@@ -210,6 +210,8 @@ class RiskAssessment:
     trajectory_distance_m: float | None
     drac_mps2: float
     closing_speed_mps: float
+    visual_level: RiskLevel | None = None
+    haptic_level: RiskLevel | None = None
     motion_pattern: MotionPattern = MotionPattern.STATIC_OR_UNCERTAIN
     cpa_time_s: float | None = None
     cpa_distance_m: float | None = None
@@ -230,11 +232,18 @@ class RiskAssessment:
     warning_time_horizon_s: float = 0.0
     warning_radius_m: float = 0.0
     risk_action_reason: str = "none"
+    ignored_reason: str = ""
     static_obstacle_risk: float = 0.0
     trajectory_risk: float = 0.0
     ttc_risk: float = 0.0
     drac_risk: float = 0.0
     closing_risk: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.visual_level is None:
+            object.__setattr__(self, "visual_level", self.level)
+        if self.haptic_level is None:
+            object.__setattr__(self, "haptic_level", self.level)
 
 
 MOTOR_VEHICLE_CLASSES = {"car", "motorcycle", "truck", "bus"}
@@ -984,6 +993,22 @@ def _contextual_risk_cap(
     if _target_motion_is_unstable(target, config) and not current_inside_personal:
         add_cap(RiskLevel.ATTENTION, "unstable_track")
 
+    truncated_edges = {
+        edge
+        for edge in str(getattr(target, "bbox_truncated_edges", "")).split("|")
+        if edge
+    }
+    edge_truncated = bool(truncated_edges.intersection({"left", "right"}))
+    if edge_truncated and not current_inside_personal:
+        low_quality_edge = (
+            getattr(target, "track_age_frames", 1) < config.min_stable_track_age_frames
+            or getattr(target, "velocity_confidence", 1.0) < 0.55
+            or getattr(target, "distance_confidence", 1.0) < 0.55
+            or getattr(target, "position_jitter_m", 0.0) >= config.high_position_jitter_m
+        )
+        if low_quality_edge:
+            add_cap(RiskLevel.ATTENTION, "edge_truncated_cap")
+
     if (
         future_conflict.path_conflict
         and not current_inside_personal
@@ -1003,6 +1028,51 @@ def _apply_contextual_cap(score: float, cap_level: RiskLevel | None) -> float:
     if cap_level is None:
         return score
     return _cap_score(score, cap_level)
+
+
+def _haptic_level_for_context(
+    level: RiskLevel,
+    target: TrackedObject,
+    future_conflict: FutureConflict,
+    profile: SeverityProfile,
+    cap_reason: str,
+    config: RiskModelConfig,
+) -> RiskLevel:
+    if level <= RiskLevel.SAFE:
+        return RiskLevel.SAFE
+    if getattr(target, "ignored_reason", ""):
+        return RiskLevel.SAFE
+
+    distance_m = target.distance_m
+    current_inside_personal = distance_m is not None and distance_m <= profile.personal_space_radius_m
+    if current_inside_personal:
+        return level
+    if future_conflict.moving_away and not future_conflict.path_conflict:
+        return RiskLevel.SAFE
+    if not future_conflict.path_conflict:
+        return RiskLevel.SAFE
+
+    cap_reasons = {reason for reason in cap_reason.split("|") if reason and reason != "none"}
+    if cap_reasons.intersection(
+        {
+            "edge_truncated_cap",
+            "unstable_single_frame_cpa",
+            "low_distance_confidence",
+            "unstable_track",
+        }
+    ):
+        return RiskLevel.SAFE if level <= RiskLevel.ATTENTION else RiskLevel.ATTENTION
+
+    approach_consistency = float(getattr(target, "approach_consistency", 0.0))
+    path_conflict_consistency = float(getattr(target, "path_conflict_consistency", 0.0))
+    stable_path_relevance = (
+        approach_consistency >= config.min_approach_consistency_for_high_risk
+        or path_conflict_consistency >= config.min_path_conflict_consistency_for_high_risk
+    )
+    if not stable_path_relevance:
+        return RiskLevel.SAFE if level <= RiskLevel.ATTENTION else RiskLevel.ATTENTION
+
+    return level
 
 
 def _empty_assessment(
@@ -1046,6 +1116,7 @@ def _empty_assessment(
         warning_time_horizon_s=warning_time_horizon_s,
         warning_radius_m=warning_radius_m,
         risk_action_reason="no_ground_point",
+        ignored_reason=getattr(target, "ignored_reason", ""),
     )
 
 
@@ -1240,6 +1311,7 @@ def assess_collision_risk(
     risk_action_reason = action_reason
     if cap_level is not None and action_level > cap_level:
         risk_action_reason = f"{action_reason}|capped_to_{cap_level.name.lower()}"
+    haptic_level = _haptic_level_for_context(level, target, future_conflict, profile, cap_reason, config)
     return RiskAssessment(
         track_id=target.track_id,
         score=score,
@@ -1248,6 +1320,8 @@ def assess_collision_risk(
         trajectory_distance_m=trajectory_distance,
         drac_mps2=drac,
         closing_speed_mps=closing_speed,
+        visual_level=level,
+        haptic_level=haptic_level,
         motion_pattern=motion_pattern,
         cpa_time_s=cpa.time_s,
         cpa_distance_m=cpa.distance_m,
@@ -1264,10 +1338,11 @@ def assess_collision_risk(
         min_future_distance_m=future_conflict.min_future_distance_m,
         conflict_reason=future_conflict.conflict_reason,
         severity_class=profile.severity_class,
-        warning_action=warning_action_for_level(level),
+        warning_action=warning_action_for_level(haptic_level),
         warning_time_horizon_s=profile.attention_time_s,
         warning_radius_m=profile.warning_radius_m,
         risk_action_reason=risk_action_reason,
+        ignored_reason=getattr(target, "ignored_reason", ""),
         static_obstacle_risk=static_obstacle_risk,
         trajectory_risk=trajectory_risk,
         ttc_risk=ttc_risk,

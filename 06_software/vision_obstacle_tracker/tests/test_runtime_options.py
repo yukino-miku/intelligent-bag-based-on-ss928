@@ -24,6 +24,8 @@ class RuntimeOptionsTest(unittest.TestCase):
         self.assertFalse(args.export_openvino)
         self.assertFalse(args.prefer_openvino)
         self.assertEqual(0.0, args.roi_top_ratio)
+        self.assertEqual(0.92, args.self_mask_bottom_ratio)
+        self.assertFalse(args.disable_self_object_filter)
         self.assertEqual(1.0, args.display_scale)
         self.assertEqual(1, args.display_every_n)
         self.assertEqual("normal", args.overlay_verbosity)

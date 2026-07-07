@@ -37,6 +37,10 @@ class DetectionObservation:
     size_confidence: float = 1.0
     quality_flags: tuple[str, ...] = ()
     observation_quality: float = 0.5
+    ignored_reason: str = ""
+    self_object_score: float = 0.0
+    bbox_bottom_ratio: float = 0.0
+    bbox_truncated_edges: str = ""
 
 
 @dataclass(frozen=True)
@@ -68,6 +72,10 @@ class TrackedObject:
     distance_trend_mps: float = 0.0
     approach_consistency: float = 1.0
     path_conflict_consistency: float = 1.0
+    ignored_reason: str = ""
+    self_object_score: float = 0.0
+    bbox_bottom_ratio: float = 0.0
+    bbox_truncated_edges: str = ""
 
 
 @dataclass
@@ -283,6 +291,10 @@ class TrackState:
             distance_trend_mps=distance_trend_mps,
             approach_consistency=approach_consistency,
             path_conflict_consistency=path_conflict_consistency,
+            ignored_reason=observation.ignored_reason,
+            self_object_score=observation.self_object_score,
+            bbox_bottom_ratio=observation.bbox_bottom_ratio,
+            bbox_truncated_edges=observation.bbox_truncated_edges,
         )
 
     def _smooth_point(self, track_id: int, point: GroundPoint) -> GroundPoint:

@@ -4,7 +4,9 @@ import unittest
 import numpy as np
 
 from calibration import CameraCalibration, estimate_ground_point_from_bbox
+from vision_core import TrackedObject
 from vision_obstacle_tracker import (
+    SelfObjectFilter,
     StageProfiler,
     crop_frame_for_inference,
     restore_result_boxes_to_full_frame,
@@ -22,6 +24,45 @@ class FakeBoxes:
 
 
 class DetectionPipelineHelpersTest(unittest.TestCase):
+    def test_self_object_filter_ignores_bottom_truncated_bicycle(self) -> None:
+        target = TrackedObject(
+            track_id=9,
+            class_name="bicycle",
+            confidence=0.88,
+            bbox_xyxy=(180.0, 360.0, 460.0, 480.0),
+            ground_point=None,
+            distance_m=None,
+            vx_mps=0.0,
+            vz_mps=0.0,
+            speed_mps=0.0,
+            timestamp_s=1.0,
+        )
+        filtered = SelfObjectFilter(bottom_ratio=0.92).apply([target], frame_shape=(480, 640, 3))[0]
+
+        self.assertEqual("self_object_bottom_foreground", filtered.ignored_reason)
+        self.assertGreaterEqual(filtered.self_object_score, 0.8)
+        self.assertAlmostEqual(1.0, filtered.bbox_bottom_ratio, places=3)
+        self.assertIn("bottom", filtered.bbox_truncated_edges)
+
+    def test_self_object_filter_can_be_disabled_but_keeps_bbox_diagnostics(self) -> None:
+        target = TrackedObject(
+            track_id=10,
+            class_name="bicycle",
+            confidence=0.88,
+            bbox_xyxy=(180.0, 360.0, 460.0, 480.0),
+            ground_point=None,
+            distance_m=None,
+            vx_mps=0.0,
+            vz_mps=0.0,
+            speed_mps=0.0,
+            timestamp_s=1.0,
+        )
+        filtered = SelfObjectFilter(bottom_ratio=0.92, enabled=False).apply([target], frame_shape=(480, 640, 3))[0]
+
+        self.assertEqual("", filtered.ignored_reason)
+        self.assertGreaterEqual(filtered.self_object_score, 0.8)
+        self.assertIn("bottom", filtered.bbox_truncated_edges)
+
     def test_target_class_ids_from_model_names_uses_model_indices(self) -> None:
         model_names = {0: "person", 1: "bicycle", 2: "car", 3: "motorcycle", 5: "bus"}
 

@@ -39,6 +39,10 @@ class RiskLoggingTest(unittest.TestCase):
                 distance_trend_mps=-1.2,
                 approach_consistency=0.85,
                 path_conflict_consistency=0.75,
+                ignored_reason="",
+                self_object_score=0.15,
+                bbox_bottom_ratio=0.65,
+                bbox_truncated_edges="right",
             )
             raw = RiskAssessment(
                 track_id=7,
@@ -68,6 +72,8 @@ class RiskLoggingTest(unittest.TestCase):
                 corridor_entry_time_s=0.8,
                 min_future_distance_m=0.4,
                 conflict_reason="personal_space_entry",
+                visual_level=RiskLevel.DANGER,
+                haptic_level=RiskLevel.CAUTION,
                 trajectory_risk=0.80,
                 ttc_risk=0.70,
                 drac_risk=0.30,
@@ -92,6 +98,8 @@ class RiskLoggingTest(unittest.TestCase):
                 warning_time_horizon_s=6.0,
                 warning_radius_m=2.4,
                 risk_action_reason="large_vehicle_path_conflict",
+                visual_level=RiskLevel.CAUTION,
+                haptic_level=RiskLevel.ATTENTION,
             )
 
             logger.write_frame(
@@ -123,6 +131,10 @@ class RiskLoggingTest(unittest.TestCase):
         self.assertEqual("-1.200", row["distance_trend_mps"])
         self.assertEqual("0.850", row["approach_consistency"])
         self.assertEqual("0.750", row["path_conflict_consistency"])
+        self.assertEqual("", row["ignored_reason"])
+        self.assertEqual("0.150", row["self_object_score"])
+        self.assertEqual("0.650", row["bbox_bottom_ratio"])
+        self.assertEqual("right", row["bbox_truncated_edges"])
         self.assertEqual("distance_disagreement", row["quality_flags"])
         self.assertEqual("CLOSING", row["motion_pattern"])
         self.assertEqual("PATH", row["corridor_zone"])
@@ -148,6 +160,8 @@ class RiskLoggingTest(unittest.TestCase):
         self.assertEqual("DANGER", row["raw_risk_level"])
         self.assertEqual("0.600", row["display_risk_score"])
         self.assertEqual("CAUTION", row["display_risk_level"])
+        self.assertEqual("CAUTION", row["visual_risk_level"])
+        self.assertEqual("ATTENTION", row["haptic_risk_level"])
         self.assertEqual("0.800", row["trajectory_risk"])
         self.assertEqual("0.700", row["ttc_risk"])
         self.assertEqual("0.200", row["closing_risk"])

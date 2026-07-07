@@ -171,7 +171,14 @@ py vision_obstacle_tracker.py --source video --video D:\path\input.mp4 --runtime
 Risk tuning with compact overlay plus full debug CSV:
 
 ```powershell
-py vision_obstacle_tracker.py --source video --video D:\path\input.mp4 --runtime-profile cpu_demo --roi-top-ratio 0.20 --prefer-openvino --overlay-verbosity debug --risk-log-csv D:\path\risk_log.csv --profile
+py vision_obstacle_tracker.py --source video --video D:\path\input.mp4 --runtime-profile cpu_demo --roi-top-ratio 0.20 --self-mask-bottom-ratio 0.92 --prefer-openvino --overlay-verbosity debug --risk-log-csv D:\path\risk_log.csv --profile
+```
+
+Bottom foreground / self-object filter comparison:
+
+```powershell
+py vision_obstacle_tracker.py --source video --video D:\path\input.mp4 --runtime-profile cpu_demo --roi-top-ratio 0.20 --self-mask-bottom-ratio 0.92 --overlay-verbosity debug --risk-log-csv D:\path\risk_log.csv --profile
+py vision_obstacle_tracker.py --source video --video D:\path\input.mp4 --runtime-profile cpu_demo --roi-top-ratio 0.20 --disable-self-object-filter --overlay-verbosity debug --risk-log-csv D:\path\risk_log_no_self_filter.csv --profile
 ```
 
 Performance profiling and CPU-load controls:
@@ -190,6 +197,8 @@ py vision_obstacle_tracker.py --source camera --prefer-openvino --profile
 `--display-every-n` lowers OpenCV preview refresh cost. `--display-every-n 2` refreshes the window every second processed frame, while inference, tracking, risk calculation, and optional video writing still run for every processed frame. `--no-display` still disables the window completely. `--save-output` still writes every processed frame with overlay.
 
 `--overlay-verbosity` controls how much text is drawn on each detection box. `minimal` shows class, distance, and risk level; `normal` shows ID, class, distance, speed, risk, CPA/TTC, and corridor zone; `debug` adds quality, velocity vector, trajectory, risk terms, and cap reason. The risk CSV remains detailed regardless of this display setting.
+
+`--self-mask-bottom-ratio` controls the bottom foreground self-object filter. The default `0.92` only targets boxes very close to the lower image edge. It is meant to remove camera-wearer equipment such as handlebar, backpack edge, body edge, support bracket, or other fixed foreground parts when they are misdetected as `bicycle`, `motorcycle`, or `person`. It is not a general obstacle deletion tool. Use `--disable-self-object-filter` to turn it off for A/B comparison while keeping bbox diagnostics in the CSV.
 
 Suggested comparison commands:
 
@@ -318,6 +327,8 @@ EMERGENCY: red
 
 The output has two layers. `raw_risk_level` is the candidate level computed from CPA, corridor zone, target class, speed, distance, and motion quality. `display_risk_level` is the actual box color and the level intended for the later vibration module. Display risk is stabilized across frames so a single bad monocular distance or velocity spike does not immediately become a strong warning.
 
+The CSV also exposes `visual_risk_level` and `haptic_risk_level`. `visual_risk_level` follows the stabilized box warning. `haptic_risk_level` is stricter and is intended for the future vibration output. Remote traffic can remain visually interesting as ATTENTION for debugging while still producing `haptic_risk_level=SAFE` when there is no future path conflict.
+
 Default confirmation behavior:
 
 ```text
@@ -329,6 +340,64 @@ Downgrade: held briefly and drops step by step to avoid flicker.
 ```
 
 Low observation quality, short track age, low velocity confidence, high position jitter, speed spikes, and velocity reversals add conservatism. They usually cap displayed warning to ATTENTION unless the target is already extremely close or the dangerous condition is stable for multiple frames.
+
+### Self Object / Bottom Foreground Filter
+
+For a wearable camera, the lower image area can include the user's own handlebar, backpack edge, clothing, hand, support bracket, or other fixed equipment. YOLO can misclassify these as `bicycle`, `motorcycle`, or `person`. These are not external obstacles, so they should not trigger haptic warnings.
+
+The `SelfObjectFilter` runs after tracking and before risk assessment. It checks:
+
+```text
+bbox bottom ratio near the lower image edge
+whether the bbox is truncated by the bottom frame boundary
+large bottom foreground area for bicycle/motorcycle/person
+track staying fixed at the bottom across recent frames
+```
+
+Filtered targets are kept in `risk_log.csv` for debugging but forced to SAFE with:
+
+```text
+ignored_reason=self_object_bottom_foreground
+self_object_score
+bbox_bottom_ratio
+bbox_truncated_edges
+```
+
+Default tuning:
+
+```powershell
+--self-mask-bottom-ratio 0.92
+```
+
+If a real obstacle near the lower edge is being filtered incorrectly, reduce the bottom foreground score by raising the ratio slightly, or disable the filter temporarily:
+
+```powershell
+--disable-self-object-filter
+```
+
+This filter should only affect bottom-truncated, self-like foreground boxes. Normal bicycles, e-bikes, motorcycles, cars, or pedestrians in the forward road/path remain in the detection and risk pipeline.
+
+### Visual Risk vs Haptic Warning / 视觉风险与震动风险
+
+The warning outputs are intentionally split:
+
+```text
+raw_risk_level: single-frame candidate from CPA, TTC, corridor, class, speed, and quality.
+visual_risk_level: stabilized visual box color for on-screen debugging.
+haptic_risk_level: stricter output for the future vibration module.
+```
+
+Rules of thumb:
+
+```text
+REMOTE_TRAFFIC without path_conflict: visual can be ATTENTION, haptic stays SAFE.
+Moving away without future conflict: visual and haptic stay SAFE.
+Bottom self object: ignored_reason is set, visual and haptic stay SAFE.
+Edge-truncated low-quality box: capped by edge_truncated_cap; no DANGER/EMERGENCY haptic from a single frame.
+Real stable path conflict: visual upgrades after confirmation; haptic can upgrade once the conflict is path-related and stable.
+```
+
+Future vibration control should use `haptic_risk_level` and `warning_action`, not raw single-frame risk.
 
 ### Warning Level Semantics / 预警等级语义
 
@@ -435,7 +504,7 @@ DRAC: deceleration required to avoid collision
 radial closing speed: speed along the target-to-camera line
 ```
 
-Remote traffic remains conservative. `remote_traffic_no_path_conflict` caps far lateral traffic to SAFE or ATTENTION when the finite future path does not enter personal space or the walking corridor. `moving_away_no_future_conflict` forces clearly receding targets to SAFE. `no_corridor_entry` records objects whose CPA/TTC terms are not allowed to escalate because the finite path never enters the safety regions. A large vehicle in REMOTE can escape that cap only when the finite future path shows a real conflict, recorded as `remote_large_vehicle_path_conflict`. Roadside stopped motorcycles/e-bikes are capped by `side_static`; low-speed non-path riders are capped by `low_speed_non_path`; short or unstable single-frame CPA spikes are capped by `unstable_single_frame_cpa` or `unstable_track` unless they are already extremely close.
+Remote traffic remains conservative. `remote_traffic_no_path_conflict` caps far lateral traffic to SAFE or ATTENTION when the finite future path does not enter personal space or the walking corridor. `moving_away_no_future_conflict` forces clearly receding targets to SAFE. `no_corridor_entry` records objects whose CPA/TTC terms are not allowed to escalate because the finite path never enters the safety regions. A large vehicle in REMOTE can escape that cap only when the finite future path shows a real conflict, recorded as `remote_large_vehicle_path_conflict`. Roadside stopped motorcycles/e-bikes are capped by `side_static`; low-speed non-path riders are capped by `low_speed_non_path`; side-edge truncated boxes with weak distance/velocity confidence are capped by `edge_truncated_cap`; short or unstable single-frame CPA spikes are capped by `unstable_single_frame_cpa` or `unstable_track` unless they are already extremely close.
 
 Risk score is still computed and logged for sorting and debugging. It combines CPA-distance risk, TTC risk, DRAC risk, radial closing risk, optional near-static risk, and the existing vehicle multipliers. Final candidate level is then adjusted by explicit action rules and contextual caps. This is why `risk_action_reason` and `risk_cap_reason` are both important when tuning.
 
@@ -447,19 +516,22 @@ For debugging risk decisions frame by frame:
 py vision_obstacle_tracker.py --source video --video D:\path\input.mp4 --no-display --risk-log-csv D:\path\risk_log.csv --max-frames 300
 ```
 
-The CSV includes frame index, track ID, class, detection confidence, observation quality, distance components, distance/velocity confidence, velocity stability, position jitter, distance trend, approach consistency, path-conflict consistency, quality flags, ground position, velocity, ego-motion magnitude, radial closing speed, trajectory distance, CPA time, CPA distance, CPA validity, future-conflict fields (`moving_away`, `approaching`, `path_conflict`, `will_enter_personal_space`, `will_enter_warning_corridor`, `personal_entry_time_s`, `corridor_entry_time_s`, `min_future_distance_m`, `conflict_reason`), TTC, DRAC, motion pattern, corridor zone, risk cap reason, severity class, warning action, warning time horizon, warning radius, risk action reason, raw risk score/level, displayed risk score/level, risk term breakdown (`trajectory_risk`, `ttc_risk`, `drac_risk`, `closing_risk`, `static_obstacle_risk`), and stabilizer diagnostics (`stabilizer_pending_level`, `stabilizer_pending_count`, `stabilizer_required_frames`, `stabilizer_reason`).
+The CSV includes frame index, track ID, class, detection confidence, observation quality, distance components, distance/velocity confidence, velocity stability, position jitter, distance trend, approach consistency, path-conflict consistency, quality flags, self-object diagnostics (`ignored_reason`, `self_object_score`, `bbox_bottom_ratio`, `bbox_truncated_edges`), ground position, velocity, ego-motion magnitude, radial closing speed, trajectory distance, CPA time, CPA distance, CPA validity, future-conflict fields (`moving_away`, `approaching`, `path_conflict`, `will_enter_personal_space`, `will_enter_warning_corridor`, `personal_entry_time_s`, `corridor_entry_time_s`, `min_future_distance_m`, `conflict_reason`), TTC, DRAC, motion pattern, corridor zone, risk cap reason, severity class, warning action, warning time horizon, warning radius, risk action reason, raw risk score/level, displayed risk score/level, `visual_risk_level`, `haptic_risk_level`, risk term breakdown (`trajectory_risk`, `ttc_risk`, `drac_risk`, `closing_risk`, `static_obstacle_risk`), and stabilizer diagnostics (`stabilizer_pending_level`, `stabilizer_pending_count`, `stabilizer_required_frames`, `stabilizer_reason`).
 
 ### Risk Model Tuning
 
-Start with calibration before changing risk thresholds. If distances are biased, fix `camera_matrix`, `camera_height_m`, `camera_pitch_deg`, or `distance_scale` first. If velocity is noisy, check `qV`, `velocity_stability`, `position_jitter_m`, `distance_trend_mps`, `approach_consistency`, `path_conflict_consistency`, ego-motion flags, lighting, `--ego-motion-mode`, `--ego-motion-every-n`, and `--distance-smoothing`. Use `--risk-log-csv` to compare raw risk against displayed risk; if raw risk is correct but colors lag, inspect `stabilizer_reason`, `stabilizer_required_frames`, and whether low `path_conflict_consistency` added confirmation frames. If raw risk itself is wrong, inspect `path_conflict`, `moving_away`, `will_enter_personal_space`, `will_enter_warning_corridor`, `personal_entry_time_s`, `corridor_entry_time_s`, `conflict_reason`, `cpa_time_s`, `cpa_distance_m`, `corridor_zone`, `risk_cap_reason`, `TRAJ`, `TTC`, `motion_pattern`, `distance_confidence`, `velocity_confidence`, and the risk term breakdown.
+Start with calibration before changing risk thresholds. If distances are biased, fix `camera_matrix`, `camera_height_m`, `camera_pitch_deg`, or `distance_scale` first. If velocity is noisy, check `qV`, `velocity_stability`, `position_jitter_m`, `distance_trend_mps`, `approach_consistency`, `path_conflict_consistency`, ego-motion flags, lighting, `--ego-motion-mode`, `--ego-motion-every-n`, and `--distance-smoothing`. Use `--risk-log-csv` to compare raw risk against displayed and haptic risk; if raw risk is correct but colors lag, inspect `stabilizer_reason`, `stabilizer_required_frames`, and whether low `path_conflict_consistency` added confirmation frames. If visual risk is ATTENTION but haptic stays SAFE, check whether `path_conflict=False`, `corridor_zone=REMOTE`, `moving_away=True`, `ignored_reason` is set, or `risk_cap_reason` includes `edge_truncated_cap`. If raw risk itself is wrong, inspect `path_conflict`, `moving_away`, `will_enter_personal_space`, `will_enter_warning_corridor`, `personal_entry_time_s`, `corridor_entry_time_s`, `conflict_reason`, `cpa_time_s`, `cpa_distance_m`, `corridor_zone`, `risk_cap_reason`, `bbox_truncated_edges`, `TRAJ`, `TTC`, `motion_pattern`, `distance_confidence`, `velocity_confidence`, and the risk term breakdown.
 
 To judge whether the false-positive fix is working:
 
 ```text
 Roadside static motorcycle/e-bike: should not become CAUTION.
-Remote lateral traffic: should not become DANGER.
+Bottom handlebar/backpack/body-edge false bicycle: should show ignored_reason=self_object_bottom_foreground and stay SAFE.
+Remote lateral traffic: should not become DANGER, and haptic_risk_level should usually stay SAFE when path_conflict is false.
+Right/left edge-truncated vehicle with a single CPA spike: should show edge_truncated_cap and should not become DANGER/EMERGENCY.
 Bicycle/e-bike actually entering the front path: should become ATTENTION/CAUTION.
-risk_log.csv should contain cpa_time_s, cpa_distance_m, cpa_valid, moving_away, path_conflict, will_enter_personal_space, will_enter_warning_corridor, personal_entry_time_s, corridor_entry_time_s, min_future_distance_m, conflict_reason, distance_trend_mps, approach_consistency, path_conflict_consistency, corridor_zone, severity_class, warning_action, risk_action_reason, risk_cap_reason, and stabilizer_required_frames.
+Large vehicle actually entering the walking corridor: should still become early ATTENTION/CAUTION and then DANGER after stable confirmation if it enters personal space soon.
+risk_log.csv should contain ignored_reason, self_object_score, bbox_bottom_ratio, bbox_truncated_edges, visual_risk_level, haptic_risk_level, cpa_time_s, cpa_distance_m, cpa_valid, moving_away, path_conflict, will_enter_personal_space, will_enter_warning_corridor, personal_entry_time_s, corridor_entry_time_s, min_future_distance_m, conflict_reason, distance_trend_mps, approach_consistency, path_conflict_consistency, corridor_zone, severity_class, warning_action, risk_action_reason, risk_cap_reason, and stabilizer_required_frames.
 ```
 
 If live FPS stays low at every requested resolution, the camera delivery path is the limit rather than YOLO. In that case, check lighting, exposure, and the camera driver settings; reducing resolution will not help until the camera actually supplies frames faster. A common cause is auto exposure in a dim scene lowering the camera to about 5-6 FPS.
