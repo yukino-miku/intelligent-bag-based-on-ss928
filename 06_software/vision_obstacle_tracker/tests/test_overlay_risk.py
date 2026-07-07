@@ -20,6 +20,7 @@ def make_assessment(
     cpa_distance_m: float | None = 0.5,
     severity_class: str = "large_vehicle",
     risk_action_reason: str = "large_vehicle_path_conflict",
+    path_conflict: bool = True,
 ) -> RiskAssessment:
     return RiskAssessment(
         track_id=7,
@@ -39,11 +40,23 @@ def make_assessment(
         warning_time_horizon_s=6.0,
         warning_radius_m=2.4,
         risk_action_reason=risk_action_reason,
+        path_conflict=path_conflict,
     )
 
 
-def make_target(quality: float = 1.0, distance_m: float = 5.0):
-    return SimpleNamespace(track_id=7, observation_quality=quality, distance_m=distance_m)
+def make_target(
+    quality: float = 1.0,
+    distance_m: float = 5.0,
+    approach_consistency: float = 1.0,
+    path_conflict_consistency: float = 1.0,
+):
+    return SimpleNamespace(
+        track_id=7,
+        observation_quality=quality,
+        distance_m=distance_m,
+        approach_consistency=approach_consistency,
+        path_conflict_consistency=path_conflict_consistency,
+    )
 
 
 class OverlayRiskTest(unittest.TestCase):
@@ -93,6 +106,27 @@ class OverlayRiskTest(unittest.TestCase):
 
         self.assertEqual(RiskLevel.SAFE, first.level)
         self.assertEqual(RiskLevel.CAUTION, second.level)
+
+    def test_low_conflict_consistency_blocks_nominal_caution_upgrade(self) -> None:
+        stabilizer = RiskWarningStabilizer()
+        caution = make_assessment(
+            RiskLevel.CAUTION,
+            0.62,
+            motion_pattern=MotionPattern.LATERAL_CUT_IN,
+        )
+        unstable_target = make_target(
+            quality=0.95,
+            approach_consistency=0.2,
+            path_conflict_consistency=0.0,
+        )
+
+        first = stabilizer.stabilize({7: caution}, {7: unstable_target})[7]
+        second = stabilizer.stabilize({7: caution}, {7: unstable_target})[7]
+
+        self.assertEqual(RiskLevel.SAFE, first.level)
+        self.assertEqual(RiskLevel.SAFE, second.level)
+        info = stabilizer.debug_info_by_track_id()[7]
+        self.assertGreater(info.required_frames, 2)
 
     def test_stabilizer_reports_pending_reason_for_risk_log(self) -> None:
         stabilizer = RiskWarningStabilizer(

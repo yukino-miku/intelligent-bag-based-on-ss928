@@ -139,6 +139,16 @@ py vision_obstacle_tracker.py --source video --video D:\path\input.mp4 --runtime
 
 当前风险模型不是“看到车就报警”，也不是只看无限直线轨迹或统一分数阈值。它会综合 CPA、佩戴者前方行走走廊、目标类别严重性、速度、当前距离、TTC/DRAC、track 年龄、速度置信度、位置抖动和观测质量。
 
+### Future Conflict Gate / 未来冲突闸门
+
+风险判定先检查目标未来有限时间内是否真的会接近佩戴者：
+
+- `path_conflict=True` 只在目标会进入个人安全圆，或会进入前方有限行走走廊时成立。
+- `moving_away=True` 且没有未来路径冲突时，候选风险会被强制压到 SAFE。
+- 目标只是远处横向车流、侧边通过、或 CPA 最近距离仍大于安全半径和走廊阈值时，最多 ATTENTION，不允许 CAUTION/DANGER/EMERGENCY。
+- `time_to_enter_corridor()` 使用有限矩形走廊 `|x| <= corridor_half_width`、`0 <= z <= corridor_depth`，不再把无限延长直线当作必然碰撞。
+- 单帧 CPA/TTC 异常不会直接驱动震动输出；`display_risk_level` 仍然经过多帧确认、趋势一致性和观测质量检查。
+
 预警等级语义：
 
 ```text
@@ -198,8 +208,11 @@ py vision_obstacle_tracker.py --source video --video D:\path\input.mp4 --runtime
 ```text
 track_id, class_name, distance_m, x_m, z_m, vx_mps, vz_mps, speed_mps
 velocity_confidence, velocity_stability, position_jitter_m
+distance_trend_mps, approach_consistency, path_conflict_consistency
 radial_closing_speed_mps, trajectory_distance_m
 cpa_time_s, cpa_distance_m, cpa_valid
+moving_away, approaching, path_conflict, will_enter_personal_space, will_enter_warning_corridor
+personal_entry_time_s, corridor_entry_time_s, min_future_distance_m, conflict_reason
 ttc_s, drac_mps2, motion_pattern, corridor_zone
 severity_class, warning_action, warning_time_horizon_s, warning_radius_m
 risk_action_reason, risk_cap_reason
@@ -209,9 +222,9 @@ trajectory_risk, ttc_risk, drac_risk, closing_risk
 distance_confidence, observation_quality, quality_flags
 ```
 
-排查顺序：先看 `raw_risk_level` 和 `display_risk_level` 是否分离；再看 `cpa_time_s`、`cpa_distance_m`、`corridor_zone`；然后看 `risk_action_reason` 是不是大车提前预警、路径冲突或当前进入个人空间；再看 `risk_cap_reason` 是否为 `remote_traffic_no_path_conflict`、`remote_large_vehicle_path_conflict`、`side_static`、`low_speed_non_path`、`unstable_track`；最后检查 `velocity_stability`、`position_jitter_m` 和 `velocity_confidence`。
+排查顺序：先看 `raw_risk_level` 和 `display_risk_level` 是否分离；再看 `path_conflict`、`moving_away`、`will_enter_personal_space`、`will_enter_warning_corridor`、`personal_entry_time_s`、`corridor_entry_time_s` 和 `conflict_reason` 是否符合真实画面；然后看 `cpa_time_s`、`cpa_distance_m`、`corridor_zone`；再看 `risk_action_reason` 是不是大车提前预警、路径冲突或当前进入个人空间；再看 `risk_cap_reason` 是否为 `moving_away_no_future_conflict`、`no_corridor_entry`、`remote_traffic_no_path_conflict`、`unstable_single_frame_cpa`、`side_static`、`low_speed_non_path`、`unstable_track`；最后检查 `distance_trend_mps`、`approach_consistency`、`path_conflict_consistency`、`velocity_stability`、`position_jitter_m` 和 `velocity_confidence`。
 
-判断修复是否有效：路边静止摩托/电动车不应 CAUTION；远处横向车流不应 DANGER；大车真实进入路径时应提前形成候选 ATTENTION/CAUTION；真实进入正前方路径的自行车/电动车应出现 ATTENTION/CAUTION；单帧距离或速度跳变不应直接强震。
+判断修复是否有效：路边静止摩托/电动车不应 CAUTION；远处横向车流如果 `path_conflict=0` 不应 DANGER；正在远离的目标应出现 `moving_away=1` 和 `risk_cap_reason=moving_away_no_future_conflict`；大车真实进入路径时应提前形成候选 ATTENTION/CAUTION；真实进入正前方路径的自行车/电动车应出现 ATTENTION/CAUTION；单帧距离或速度跳变应出现 `unstable_single_frame_cpa` 或增加确认帧数，不应直接强震。
 ## Overlay 显示文字
 
 `--overlay-verbosity` 控制检测框文字长度：

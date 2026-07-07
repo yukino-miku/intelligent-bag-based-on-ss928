@@ -36,6 +36,9 @@ class RiskLoggingTest(unittest.TestCase):
                 observation_quality=0.58,
                 velocity_confidence=0.62,
                 ego_motion_magnitude=9.0,
+                distance_trend_mps=-1.2,
+                approach_consistency=0.85,
+                path_conflict_consistency=0.75,
             )
             raw = RiskAssessment(
                 track_id=7,
@@ -56,6 +59,15 @@ class RiskLoggingTest(unittest.TestCase):
                 warning_time_horizon_s=6.0,
                 warning_radius_m=2.4,
                 risk_action_reason="large_vehicle_path_conflict",
+                moving_away=False,
+                approaching=True,
+                path_conflict=True,
+                will_enter_personal_space=True,
+                will_enter_warning_corridor=True,
+                personal_entry_time_s=1.1,
+                corridor_entry_time_s=0.8,
+                min_future_distance_m=0.4,
+                conflict_reason="personal_space_entry",
                 trajectory_risk=0.80,
                 ttc_risk=0.70,
                 drac_risk=0.30,
@@ -108,6 +120,9 @@ class RiskLoggingTest(unittest.TestCase):
         self.assertEqual("0.580", row["observation_quality"])
         self.assertEqual("0.720", row["distance_confidence"])
         self.assertEqual("0.620", row["velocity_confidence"])
+        self.assertEqual("-1.200", row["distance_trend_mps"])
+        self.assertEqual("0.850", row["approach_consistency"])
+        self.assertEqual("0.750", row["path_conflict_consistency"])
         self.assertEqual("distance_disagreement", row["quality_flags"])
         self.assertEqual("CLOSING", row["motion_pattern"])
         self.assertEqual("PATH", row["corridor_zone"])
@@ -120,6 +135,15 @@ class RiskLoggingTest(unittest.TestCase):
         self.assertEqual("6.000", row["warning_time_horizon_s"])
         self.assertEqual("2.400", row["warning_radius_m"])
         self.assertEqual("large_vehicle_path_conflict", row["risk_action_reason"])
+        self.assertEqual("0", row["moving_away"])
+        self.assertEqual("1", row["approaching"])
+        self.assertEqual("1", row["path_conflict"])
+        self.assertEqual("1", row["will_enter_personal_space"])
+        self.assertEqual("1", row["will_enter_warning_corridor"])
+        self.assertEqual("1.100", row["personal_entry_time_s"])
+        self.assertEqual("0.800", row["corridor_entry_time_s"])
+        self.assertEqual("0.400", row["min_future_distance_m"])
+        self.assertEqual("personal_space_entry", row["conflict_reason"])
         self.assertEqual("0.760", row["raw_risk_score"])
         self.assertEqual("DANGER", row["raw_risk_level"])
         self.assertEqual("0.600", row["display_risk_score"])

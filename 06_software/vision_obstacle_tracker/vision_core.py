@@ -65,6 +65,9 @@ class TrackedObject:
     track_age_frames: int = 1
     velocity_stability: float = 1.0
     position_jitter_m: float = 0.0
+    distance_trend_mps: float = 0.0
+    approach_consistency: float = 1.0
+    path_conflict_consistency: float = 1.0
 
 
 @dataclass
@@ -201,6 +204,9 @@ class TrackState:
         vz_mps = 0.0
         velocity_stability = 1.0
         position_jitter_m = 0.0
+        distance_trend_mps = 0.0
+        approach_consistency = 0.0
+        path_conflict_consistency = 0.0
         output_point = observation.ground_point
         motion_quality_flags: list[str] = []
         track_age_frames = self._track_age_by_id.get(observation.track_id, 0) + 1
@@ -217,6 +223,7 @@ class TrackState:
 
             if len(history) >= 2:
                 vx_mps, vz_mps, velocity_stability, position_jitter_m = self._estimate_velocity(history)
+                distance_trend_mps, approach_consistency, path_conflict_consistency = self._estimate_motion_trends(history)
                 if velocity_stability < 0.65:
                     motion_quality_flags.append("unstable_velocity")
                 if position_jitter_m >= 0.50:
@@ -273,6 +280,9 @@ class TrackState:
             track_age_frames=track_age_frames,
             velocity_stability=velocity_stability,
             position_jitter_m=position_jitter_m,
+            distance_trend_mps=distance_trend_mps,
+            approach_consistency=approach_consistency,
+            path_conflict_consistency=path_conflict_consistency,
         )
 
     def _smooth_point(self, track_id: int, point: GroundPoint) -> GroundPoint:
@@ -354,6 +364,92 @@ class TrackState:
             if previous[0] * current[0] + previous[1] * current[1] < 0.0:
                 reversals += 1
         return reversals
+
+    def _estimate_motion_trends(self, history: list[tuple[GroundPoint, float]]) -> tuple[float, float, float]:
+        distance_trends: list[float] = []
+        approach_hits = 0
+        path_conflict_hits = 0
+        segment_count = 0
+
+        for (previous_point, previous_time), (current_point, current_time) in zip(history, history[1:]):
+            dt_s = current_time - previous_time
+            if dt_s <= 1e-6:
+                continue
+
+            previous_distance = previous_point.distance_m
+            current_distance = current_point.distance_m
+            trend_mps = (current_distance - previous_distance) / dt_s
+            vx_mps = (current_point.x_m - previous_point.x_m) / dt_s
+            vz_mps = (current_point.z_m - previous_point.z_m) / dt_s
+
+            distance_trends.append(trend_mps)
+            segment_count += 1
+            if trend_mps < -0.05 or current_point.z_m < previous_point.z_m - 0.05:
+                approach_hits += 1
+            if self._segment_enters_default_corridor(current_point.x_m, current_point.z_m, vx_mps, vz_mps):
+                path_conflict_hits += 1
+
+        if not distance_trends or segment_count <= 0:
+            return 0.0, 0.0, 0.0
+
+        return (
+            float(median(distance_trends)),
+            clamp(approach_hits / segment_count),
+            clamp(path_conflict_hits / segment_count),
+        )
+
+    @staticmethod
+    def _segment_enters_default_corridor(
+        x_m: float,
+        z_m: float,
+        vx_mps: float,
+        vz_mps: float,
+        half_width_m: float = 1.20,
+        depth_m: float = 5.00,
+        horizon_s: float = 6.00,
+    ) -> bool:
+        if math.hypot(vx_mps, vz_mps) <= 0.10:
+            return abs(x_m) <= half_width_m and 0.0 <= z_m <= depth_m
+        entry_time = TrackState._time_to_enter_axis_aligned_corridor(
+            x_m,
+            z_m,
+            vx_mps,
+            vz_mps,
+            half_width_m,
+            depth_m,
+            horizon_s,
+        )
+        return entry_time is not None
+
+    @staticmethod
+    def _time_to_enter_axis_aligned_corridor(
+        x_m: float,
+        z_m: float,
+        vx_mps: float,
+        vz_mps: float,
+        half_width_m: float,
+        depth_m: float,
+        horizon_s: float,
+    ) -> float | None:
+        def axis_interval(position: float, velocity: float, lower: float, upper: float) -> tuple[float, float] | None:
+            if abs(velocity) <= 1e-6:
+                if lower <= position <= upper:
+                    return -math.inf, math.inf
+                return None
+            t1 = (lower - position) / velocity
+            t2 = (upper - position) / velocity
+            return (min(t1, t2), max(t1, t2))
+
+        x_interval = axis_interval(x_m, vx_mps, -half_width_m, half_width_m)
+        z_interval = axis_interval(z_m, vz_mps, 0.0, depth_m)
+        if x_interval is None or z_interval is None:
+            return None
+
+        enter_s = max(0.0, x_interval[0], z_interval[0])
+        exit_s = min(horizon_s, x_interval[1], z_interval[1])
+        if enter_s <= exit_s:
+            return enter_s
+        return None
 
     def _velocity_confidence(
         self,
@@ -473,6 +569,8 @@ def format_overlay_label(target: TrackedObject, verbosity: str = "normal") -> st
             f"d={distance}({target.distance_source},q={target.distance_confidence:.2f}) "
             f"v={target.speed_mps:.1f}m/s qV={target.velocity_confidence:.2f} "
             f"vx={target.vx_mps:+.1f} vz={target.vz_mps:+.1f} "
-            f"stab={target.velocity_stability:.2f} jitter={target.position_jitter_m:.2f}"
+            f"stab={target.velocity_stability:.2f} jitter={target.position_jitter_m:.2f} "
+            f"trend={target.distance_trend_mps:+.1f} appr={target.approach_consistency:.2f} "
+            f"pathC={target.path_conflict_consistency:.2f}"
         )
     return f"ID {target.track_id} {target.class_name} d={distance} v={target.speed_mps:.1f}m/s"

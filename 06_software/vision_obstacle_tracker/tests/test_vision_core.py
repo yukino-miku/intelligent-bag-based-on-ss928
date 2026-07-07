@@ -126,6 +126,48 @@ class VisionCoreTest(unittest.TestCase):
         self.assertGreater(tracked.position_jitter_m, 0.5)
         self.assertIn("position_jitter", tracked.motion_quality_flags)
 
+    def test_track_state_reports_distance_trend_and_approach_consistency(self) -> None:
+        state = TrackState(smoothing_alpha=1.0, history_seconds=3.0)
+        tracked = None
+        for timestamp_s, z_m in [(0.0, 8.0), (0.5, 7.0), (1.0, 6.0), (1.5, 5.0)]:
+            tracked = state.update(
+                DetectionObservation(
+                    track_id=41,
+                    class_name="car",
+                    confidence=0.90,
+                    bbox_xyxy=(0, 0, 10, 10),
+                    ground_point=GroundPoint(x_m=0.4, z_m=z_m),
+                    timestamp_s=timestamp_s,
+                    distance_confidence=0.9,
+                )
+            )
+
+        self.assertIsNotNone(tracked)
+        self.assertLess(tracked.distance_trend_mps, 0.0)
+        self.assertGreaterEqual(tracked.approach_consistency, 0.9)
+        self.assertGreaterEqual(tracked.path_conflict_consistency, 0.9)
+
+    def test_track_state_reports_moving_away_distance_trend(self) -> None:
+        state = TrackState(smoothing_alpha=1.0, history_seconds=3.0)
+        tracked = None
+        for timestamp_s, z_m in [(0.0, 4.0), (0.5, 4.8), (1.0, 5.6), (1.5, 6.4)]:
+            tracked = state.update(
+                DetectionObservation(
+                    track_id=42,
+                    class_name="car",
+                    confidence=0.90,
+                    bbox_xyxy=(0, 0, 10, 10),
+                    ground_point=GroundPoint(x_m=3.0, z_m=z_m),
+                    timestamp_s=timestamp_s,
+                    distance_confidence=0.9,
+                )
+            )
+
+        self.assertIsNotNone(tracked)
+        self.assertGreater(tracked.distance_trend_mps, 0.0)
+        self.assertLessEqual(tracked.approach_consistency, 0.1)
+        self.assertLessEqual(tracked.path_conflict_consistency, 0.1)
+
     def test_velocity_direction_reversal_lowers_confidence(self) -> None:
         state = TrackState(smoothing_alpha=1.0, history_seconds=3.0)
         for timestamp_s, point in [

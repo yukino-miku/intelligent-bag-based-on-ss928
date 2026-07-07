@@ -406,6 +406,22 @@ EMERGENCY: continuous_high_frequency    高频连续强震
 
 ### CPA, Corridor, And Caps / CPA、走廊和上限
 
+### Future Conflict Gate / 未来冲突闸门
+
+Before any CAUTION/DANGER/EMERGENCY candidate is allowed, the model checks whether the target will actually enter the wearer's personal safety circle or the finite forward walking corridor. The gate is logged through `path_conflict` and `conflict_reason`.
+
+```text
+path_conflict: true only for personal-space entry or finite corridor entry
+moving_away: dot(p, v) >= 0 or recent distance trend is receding, with no future conflict
+will_enter_personal_space: future motion enters the class-specific personal radius
+will_enter_warning_corridor: future motion enters |x| <= corridor_half_width and 0 <= z <= corridor_depth
+personal_entry_time_s: first time entering the safety circle
+corridor_entry_time_s: first time entering the finite walking corridor
+min_future_distance_m: nearest finite-horizon distance used by the risk terms
+```
+
+If `moving_away=True` and `path_conflict=False`, the candidate risk is forced to SAFE unless the target is already inside personal space. If `path_conflict=False`, TTC/DRAC/closing speed can only support ATTENTION-level candidates; they cannot push the target to CAUTION or above. Remote lateral traffic and side passing therefore stay SAFE/ATTENTION unless the finite future path really enters the wearer's corridor or personal radius.
+
 The warning model is a calibrated rule model, not a trained crash-probability model. It prioritizes whether a target enters the camera-wearer's finite forward corridor within the configured time horizon, rather than treating every infinite straight-line trajectory as dangerous.
 
 ```text
@@ -419,9 +435,10 @@ DRAC: deceleration required to avoid collision
 radial closing speed: speed along the target-to-camera line
 ```
 
-Remote traffic remains conservative. `remote_traffic_no_path_conflict` caps far lateral traffic to SAFE or ATTENTION when CPA does not enter the forward path. A large vehicle in REMOTE can escape that cap only when CPA shows a real future path conflict, recorded as `remote_large_vehicle_path_conflict`. Roadside stopped motorcycles/e-bikes are capped by `side_static`; low-speed non-path riders are capped by `low_speed_non_path`; short or unstable tracks are capped by `unstable_track` unless they are already extremely close.
+Remote traffic remains conservative. `remote_traffic_no_path_conflict` caps far lateral traffic to SAFE or ATTENTION when the finite future path does not enter personal space or the walking corridor. `moving_away_no_future_conflict` forces clearly receding targets to SAFE. `no_corridor_entry` records objects whose CPA/TTC terms are not allowed to escalate because the finite path never enters the safety regions. A large vehicle in REMOTE can escape that cap only when the finite future path shows a real conflict, recorded as `remote_large_vehicle_path_conflict`. Roadside stopped motorcycles/e-bikes are capped by `side_static`; low-speed non-path riders are capped by `low_speed_non_path`; short or unstable single-frame CPA spikes are capped by `unstable_single_frame_cpa` or `unstable_track` unless they are already extremely close.
 
 Risk score is still computed and logged for sorting and debugging. It combines CPA-distance risk, TTC risk, DRAC risk, radial closing risk, optional near-static risk, and the existing vehicle multipliers. Final candidate level is then adjusted by explicit action rules and contextual caps. This is why `risk_action_reason` and `risk_cap_reason` are both important when tuning.
+
 ### Risk Logging
 
 For debugging risk decisions frame by frame:
@@ -430,11 +447,11 @@ For debugging risk decisions frame by frame:
 py vision_obstacle_tracker.py --source video --video D:\path\input.mp4 --no-display --risk-log-csv D:\path\risk_log.csv --max-frames 300
 ```
 
-The CSV includes frame index, track ID, class, detection confidence, observation quality, distance components, distance/velocity confidence, velocity stability, position jitter, quality flags, ground position, velocity, ego-motion magnitude, radial closing speed, trajectory distance, CPA time, CPA distance, CPA validity, TTC, DRAC, motion pattern, corridor zone, risk cap reason, severity class, warning action, warning time horizon, warning radius, risk action reason, raw risk score/level, displayed risk score/level, risk term breakdown (`trajectory_risk`, `ttc_risk`, `drac_risk`, `closing_risk`, `static_obstacle_risk`), and stabilizer diagnostics (`stabilizer_pending_level`, `stabilizer_pending_count`, `stabilizer_required_frames`, `stabilizer_reason`).
+The CSV includes frame index, track ID, class, detection confidence, observation quality, distance components, distance/velocity confidence, velocity stability, position jitter, distance trend, approach consistency, path-conflict consistency, quality flags, ground position, velocity, ego-motion magnitude, radial closing speed, trajectory distance, CPA time, CPA distance, CPA validity, future-conflict fields (`moving_away`, `approaching`, `path_conflict`, `will_enter_personal_space`, `will_enter_warning_corridor`, `personal_entry_time_s`, `corridor_entry_time_s`, `min_future_distance_m`, `conflict_reason`), TTC, DRAC, motion pattern, corridor zone, risk cap reason, severity class, warning action, warning time horizon, warning radius, risk action reason, raw risk score/level, displayed risk score/level, risk term breakdown (`trajectory_risk`, `ttc_risk`, `drac_risk`, `closing_risk`, `static_obstacle_risk`), and stabilizer diagnostics (`stabilizer_pending_level`, `stabilizer_pending_count`, `stabilizer_required_frames`, `stabilizer_reason`).
 
 ### Risk Model Tuning
 
-Start with calibration before changing risk thresholds. If distances are biased, fix `camera_matrix`, `camera_height_m`, `camera_pitch_deg`, or `distance_scale` first. If velocity is noisy, check `qV`, `velocity_stability`, `position_jitter_m`, ego-motion flags, lighting, `--ego-motion-mode`, `--ego-motion-every-n`, and `--distance-smoothing`. Use `--risk-log-csv` to compare raw risk against displayed risk; if raw risk is correct but colors lag, inspect `stabilizer_reason` and `stabilizer_required_frames`. If raw risk itself is wrong, inspect `cpa_time_s`, `cpa_distance_m`, `corridor_zone`, `risk_cap_reason`, `TRAJ`, `TTC`, `motion_pattern`, `distance_confidence`, `velocity_confidence`, and the risk term breakdown.
+Start with calibration before changing risk thresholds. If distances are biased, fix `camera_matrix`, `camera_height_m`, `camera_pitch_deg`, or `distance_scale` first. If velocity is noisy, check `qV`, `velocity_stability`, `position_jitter_m`, `distance_trend_mps`, `approach_consistency`, `path_conflict_consistency`, ego-motion flags, lighting, `--ego-motion-mode`, `--ego-motion-every-n`, and `--distance-smoothing`. Use `--risk-log-csv` to compare raw risk against displayed risk; if raw risk is correct but colors lag, inspect `stabilizer_reason`, `stabilizer_required_frames`, and whether low `path_conflict_consistency` added confirmation frames. If raw risk itself is wrong, inspect `path_conflict`, `moving_away`, `will_enter_personal_space`, `will_enter_warning_corridor`, `personal_entry_time_s`, `corridor_entry_time_s`, `conflict_reason`, `cpa_time_s`, `cpa_distance_m`, `corridor_zone`, `risk_cap_reason`, `TRAJ`, `TTC`, `motion_pattern`, `distance_confidence`, `velocity_confidence`, and the risk term breakdown.
 
 To judge whether the false-positive fix is working:
 
@@ -442,7 +459,7 @@ To judge whether the false-positive fix is working:
 Roadside static motorcycle/e-bike: should not become CAUTION.
 Remote lateral traffic: should not become DANGER.
 Bicycle/e-bike actually entering the front path: should become ATTENTION/CAUTION.
-risk_log.csv should contain cpa_time_s, cpa_distance_m, cpa_valid, corridor_zone, severity_class, warning_action, risk_action_reason, risk_cap_reason, and stabilizer_required_frames.
+risk_log.csv should contain cpa_time_s, cpa_distance_m, cpa_valid, moving_away, path_conflict, will_enter_personal_space, will_enter_warning_corridor, personal_entry_time_s, corridor_entry_time_s, min_future_distance_m, conflict_reason, distance_trend_mps, approach_consistency, path_conflict_consistency, corridor_zone, severity_class, warning_action, risk_action_reason, risk_cap_reason, and stabilizer_required_frames.
 ```
 
 If live FPS stays low at every requested resolution, the camera delivery path is the limit rather than YOLO. In that case, check lighting, exposure, and the camera driver settings; reducing resolution will not help until the camera actually supplies frames faster. A common cause is auto exposure in a dim scene lowering the camera to about 5-6 FPS.

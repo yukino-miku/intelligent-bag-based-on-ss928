@@ -563,12 +563,24 @@ class RiskCsvLogger:
         "velocity_confidence",
         "velocity_stability",
         "position_jitter_m",
+        "distance_trend_mps",
+        "approach_consistency",
+        "path_conflict_consistency",
         "ego_motion_magnitude",
         "radial_closing_speed_mps",
         "trajectory_distance_m",
         "cpa_time_s",
         "cpa_distance_m",
         "cpa_valid",
+        "moving_away",
+        "approaching",
+        "path_conflict",
+        "will_enter_personal_space",
+        "will_enter_warning_corridor",
+        "personal_entry_time_s",
+        "corridor_entry_time_s",
+        "min_future_distance_m",
+        "conflict_reason",
         "ttc_s",
         "drac_mps2",
         "motion_pattern",
@@ -644,12 +656,24 @@ class RiskCsvLogger:
                     "velocity_confidence": f"{target.velocity_confidence:.3f}",
                     "velocity_stability": f"{target.velocity_stability:.3f}",
                     "position_jitter_m": f"{target.position_jitter_m:.3f}",
+                    "distance_trend_mps": f"{getattr(target, 'distance_trend_mps', 0.0):.3f}",
+                    "approach_consistency": f"{getattr(target, 'approach_consistency', 0.0):.3f}",
+                    "path_conflict_consistency": f"{getattr(target, 'path_conflict_consistency', 0.0):.3f}",
                     "ego_motion_magnitude": f"{target.ego_motion_magnitude:.3f}",
                     "radial_closing_speed_mps": _format_optional_float(raw.closing_speed_mps if raw else None),
                     "trajectory_distance_m": _format_optional_float(raw.trajectory_distance_m if raw else None),
                     "cpa_time_s": _format_optional_float(raw.cpa_time_s if raw else None),
                     "cpa_distance_m": _format_optional_float(raw.cpa_distance_m if raw else None),
                     "cpa_valid": "1" if raw and raw.cpa_valid else "0" if raw else "",
+                    "moving_away": "1" if raw and raw.moving_away else "0" if raw else "",
+                    "approaching": "1" if raw and raw.approaching else "0" if raw else "",
+                    "path_conflict": "1" if raw and raw.path_conflict else "0" if raw else "",
+                    "will_enter_personal_space": "1" if raw and raw.will_enter_personal_space else "0" if raw else "",
+                    "will_enter_warning_corridor": "1" if raw and raw.will_enter_warning_corridor else "0" if raw else "",
+                    "personal_entry_time_s": _format_optional_float(raw.personal_entry_time_s if raw else None),
+                    "corridor_entry_time_s": _format_optional_float(raw.corridor_entry_time_s if raw else None),
+                    "min_future_distance_m": _format_optional_float(raw.min_future_distance_m if raw else None),
+                    "conflict_reason": raw.conflict_reason if raw else "",
                     "ttc_s": _format_optional_float(raw.ttc_s if raw else None),
                     "drac_mps2": _format_optional_float(raw.drac_mps2 if raw else None),
                     "motion_pattern": motion_pattern_name(raw.motion_pattern) if raw else "",
@@ -796,12 +820,13 @@ def format_risk_suffix(assessment: RiskAssessment | None, verbosity: str = "norm
     cap = f" cap={assessment.risk_cap_reason}" if assessment.risk_cap_reason != "none" else ""
     action = f" action={assessment.risk_action_reason}" if assessment.risk_action_reason != "none" else ""
     severity = f" sev={assessment.severity_class}" if assessment.severity_class else ""
+    conflict = f" fc={assessment.conflict_reason}" if assessment.conflict_reason != "none" else ""
     terms = (
         f" tr={assessment.trajectory_risk:.2f}"
         f" ttcR={assessment.ttc_risk:.2f}"
         f" closeR={assessment.closing_risk:.2f}"
     )
-    return f"RiskScore={assessment.score:.2f} {risk_level_name(assessment.level)} {zone} {pattern}{severity}{cpa}{ttc}{trajectory}{terms}{action}{cap}"
+    return f"RiskScore={assessment.score:.2f} {risk_level_name(assessment.level)} {zone} {pattern}{severity}{cpa}{ttc}{trajectory}{terms}{action}{conflict}{cap}"
 
 
 @dataclass(frozen=True)
@@ -816,6 +841,9 @@ class RiskWarningStabilizerConfig:
     emergency_fast_path_ttc_s: float = 0.80
     emergency_fast_path_distance_m: float = 0.80
     downgrade_hold_frames: int = 2
+    low_conflict_consistency_threshold: float = 0.50
+    low_approach_consistency_threshold: float = 0.50
+    low_conflict_extra_frames: int = 2
 
 
 @dataclass(frozen=True)
@@ -878,7 +906,7 @@ class RiskWarningStabilizer:
                 continue
 
             if assessment.level > state.displayed_level:
-                display, debug = self._handle_upgrade(state, assessment, observation_quality)
+                display, debug = self._handle_upgrade(state, assessment, observation_quality, target)
             elif assessment.level < state.displayed_level:
                 display, debug = self._handle_downgrade(state, assessment)
             else:
@@ -913,6 +941,7 @@ class RiskWarningStabilizer:
         state: _RiskDisplayState,
         assessment: RiskAssessment,
         observation_quality: float,
+        target,
     ) -> tuple[RiskAssessment, StabilizerDebugInfo]:
         if state.pending_level != assessment.level:
             state.pending_level = assessment.level
@@ -921,7 +950,7 @@ class RiskWarningStabilizer:
             state.pending_count += 1
         state.downgrade_count = 0
 
-        required_frames = self._required_confirm_frames(assessment, observation_quality)
+        required_frames = self._required_confirm_frames(assessment, observation_quality, target)
         if state.pending_count >= required_frames:
             state.displayed_level = assessment.level
             state.displayed_score = assessment.score
@@ -957,7 +986,7 @@ class RiskWarningStabilizer:
             reason=reason,
         )
 
-    def _required_confirm_frames(self, assessment: RiskAssessment, observation_quality: float) -> int:
+    def _required_confirm_frames(self, assessment: RiskAssessment, observation_quality: float, target=None) -> int:
         level = assessment.level
         if level <= RiskLevel.ATTENTION:
             frames = self.config.min_confirm_frames_attention
@@ -969,6 +998,17 @@ class RiskWarningStabilizer:
             frames = self.config.min_confirm_frames_emergency
         if level > RiskLevel.ATTENTION and observation_quality < self.config.low_quality_threshold:
             frames += self.config.low_quality_extra_frames
+        if level > RiskLevel.ATTENTION:
+            approach_consistency = float(getattr(target, "approach_consistency", 1.0))
+            path_conflict_consistency = float(getattr(target, "path_conflict_consistency", 1.0))
+            if (
+                not assessment.path_conflict
+                or (
+                    approach_consistency < self.config.low_approach_consistency_threshold
+                    and path_conflict_consistency < self.config.low_conflict_consistency_threshold
+                )
+            ):
+                frames += self.config.low_conflict_extra_frames
         return max(1, frames)
 
     def _is_fast_path(self, assessment: RiskAssessment, target) -> bool:
@@ -976,17 +1016,24 @@ class RiskWarningStabilizer:
         observation_quality = float(getattr(target, "observation_quality", 0.0))
         inside_personal_space = distance_m is not None and distance_m <= self.config.emergency_fast_path_distance_m
         high_quality_emergency = observation_quality >= self.config.high_quality_fast_path_threshold
+        stable_conflict = (
+            bool(getattr(assessment, "path_conflict", False))
+            and float(getattr(target, "approach_consistency", 0.0)) >= self.config.low_approach_consistency_threshold
+            and float(getattr(target, "path_conflict_consistency", 0.0)) >= self.config.low_conflict_consistency_threshold
+        )
         return (
             assessment.level >= RiskLevel.EMERGENCY
             and (
                 inside_personal_space
                 or (
-                    high_quality_emergency
+                    stable_conflict
+                    and high_quality_emergency
                     and assessment.ttc_s is not None
                     and assessment.ttc_s <= self.config.emergency_fast_path_ttc_s
                 )
                 or (
-                    high_quality_emergency
+                    stable_conflict
+                    and high_quality_emergency
                     and assessment.cpa_time_s is not None
                     and assessment.cpa_distance_m is not None
                     and assessment.cpa_time_s <= self.config.emergency_fast_path_ttc_s

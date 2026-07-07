@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from enum import IntEnum
 
 from vision_core import TrackedObject
@@ -130,6 +130,12 @@ class RiskModelConfig:
     min_stable_track_age_frames: int = 3
     unstable_velocity_confidence: float = 0.45
     high_position_jitter_m: float = 0.75
+    future_conflict_horizon_s: float = 6.00
+    moving_away_trend_mps: float = 0.15
+    approach_trend_mps: float = -0.15
+    min_approach_consistency_for_high_risk: float = 0.50
+    min_path_conflict_consistency_for_high_risk: float = 0.50
+    low_distance_confidence: float = 0.35
     large_vehicle_profile: SeverityProfile = field(
         default_factory=lambda: SeverityProfile(
             severity_class="large_vehicle",
@@ -183,6 +189,19 @@ class CpaMetrics:
 
 
 @dataclass(frozen=True)
+class FutureConflict:
+    moving_away: bool = False
+    approaching: bool = False
+    will_enter_personal_space: bool = False
+    will_enter_warning_corridor: bool = False
+    personal_entry_time_s: float | None = None
+    corridor_entry_time_s: float | None = None
+    min_future_distance_m: float | None = None
+    path_conflict: bool = False
+    conflict_reason: str = "none"
+
+
+@dataclass(frozen=True)
 class RiskAssessment:
     track_id: int
     score: float
@@ -197,6 +216,15 @@ class RiskAssessment:
     cpa_valid: bool = False
     corridor_zone: CorridorZone = CorridorZone.UNKNOWN
     risk_cap_reason: str = "none"
+    moving_away: bool = False
+    approaching: bool = False
+    path_conflict: bool = False
+    will_enter_personal_space: bool = False
+    will_enter_warning_corridor: bool = False
+    personal_entry_time_s: float | None = None
+    corridor_entry_time_s: float | None = None
+    min_future_distance_m: float | None = None
+    conflict_reason: str = "none"
     severity_class: str = "unknown_or_other"
     warning_action: str = "none"
     warning_time_horizon_s: float = 0.0
@@ -318,6 +346,174 @@ def closest_point_of_approach_m(
     return CpaMetrics(time_s=t_cpa, distance_m=math.hypot(closest_x, closest_z), valid=True)
 
 
+def time_to_enter_corridor(
+    x_m: float,
+    z_m: float,
+    vx_mps: float,
+    vz_mps: float,
+    half_width_m: float,
+    depth_m: float,
+    horizon_s: float,
+) -> float | None:
+    def axis_interval(position: float, velocity: float, lower: float, upper: float) -> tuple[float, float] | None:
+        if abs(velocity) <= 1e-6:
+            if lower <= position <= upper:
+                return -math.inf, math.inf
+            return None
+        t1 = (lower - position) / velocity
+        t2 = (upper - position) / velocity
+        return min(t1, t2), max(t1, t2)
+
+    x_interval = axis_interval(x_m, vx_mps, -half_width_m, half_width_m)
+    z_interval = axis_interval(z_m, vz_mps, 0.0, depth_m)
+    if x_interval is None or z_interval is None:
+        return None
+
+    enter_s = max(0.0, x_interval[0], z_interval[0])
+    exit_s = min(horizon_s, x_interval[1], z_interval[1])
+    if enter_s <= exit_s:
+        return enter_s
+    return None
+
+
+def _time_to_enter_radius(
+    x_m: float,
+    z_m: float,
+    vx_mps: float,
+    vz_mps: float,
+    radius_m: float,
+    horizon_s: float,
+) -> float | None:
+    if math.hypot(x_m, z_m) <= radius_m:
+        return 0.0
+
+    speed_sq = vx_mps * vx_mps + vz_mps * vz_mps
+    if speed_sq <= 1e-8:
+        return None
+
+    b = 2.0 * (x_m * vx_mps + z_m * vz_mps)
+    c = x_m * x_m + z_m * z_m - radius_m * radius_m
+    discriminant = b * b - 4.0 * speed_sq * c
+    if discriminant < 0.0:
+        return None
+
+    sqrt_discriminant = math.sqrt(discriminant)
+    t1 = (-b - sqrt_discriminant) / (2.0 * speed_sq)
+    t2 = (-b + sqrt_discriminant) / (2.0 * speed_sq)
+    enter_s = max(0.0, min(t1, t2))
+    exit_s = max(t1, t2)
+    if enter_s <= exit_s and enter_s <= horizon_s and exit_s >= 0.0:
+        return enter_s
+    return None
+
+
+def future_conflict_for_target(
+    target: TrackedObject,
+    profile: SeverityProfile,
+    cpa: CpaMetrics,
+    config: RiskModelConfig,
+) -> FutureConflict:
+    point = target.ground_point
+    if point is None or target.distance_m is None:
+        return FutureConflict(conflict_reason="no_ground_point")
+
+    horizon_s = max(profile.attention_time_s, config.future_conflict_horizon_s)
+    speed_mps = math.hypot(target.vx_mps, target.vz_mps)
+    dot_pv = point.x_m * target.vx_mps + point.z_m * target.vz_mps
+    current_inside_personal = target.distance_m <= profile.personal_space_radius_m
+    enough_speed = speed_mps >= config.min_cpa_speed_mps
+    cpa_time = cpa.time_s
+    cpa_distance = cpa.distance_m
+
+    distance_trend_mps = float(getattr(target, "distance_trend_mps", 0.0))
+    approach_consistency = float(getattr(target, "approach_consistency", 0.0))
+    trend_moving_away = distance_trend_mps >= config.moving_away_trend_mps
+    trend_approaching = distance_trend_mps <= config.approach_trend_mps
+
+    personal_entry_time_s = _time_to_enter_radius(
+        point.x_m,
+        point.z_m,
+        target.vx_mps,
+        target.vz_mps,
+        profile.personal_space_radius_m,
+        horizon_s,
+    )
+    corridor_entry_time_s = time_to_enter_corridor(
+        point.x_m,
+        point.z_m,
+        target.vx_mps,
+        target.vz_mps,
+        config.warning_corridor_half_width_m,
+        config.in_path_depth_m,
+        horizon_s,
+    )
+
+    moving_away_candidate = False
+    if enough_speed and dot_pv >= 0.0:
+        moving_away_candidate = True
+    if trend_moving_away and (not cpa.valid or (cpa_time is not None and cpa_time <= 0.0)):
+        moving_away_candidate = True
+
+    will_enter_personal = personal_entry_time_s is not None
+    will_enter_corridor = corridor_entry_time_s is not None
+    if (
+        will_enter_corridor
+        and corridor_entry_time_s is not None
+        and corridor_entry_time_s <= 1e-6
+        and moving_away_candidate
+        and not will_enter_personal
+    ):
+        will_enter_corridor = False
+        corridor_entry_time_s = None
+    path_conflict = current_inside_personal or will_enter_personal or will_enter_corridor
+
+    if cpa.valid and cpa_time is not None and cpa_distance is not None and 0.0 <= cpa_time <= horizon_s:
+        min_future_distance_m = cpa_distance
+    elif current_inside_personal:
+        min_future_distance_m = target.distance_m
+    else:
+        future_x = point.x_m + target.vx_mps * horizon_s
+        future_z = point.z_m + target.vz_mps * horizon_s
+        min_future_distance_m = min(target.distance_m, math.hypot(future_x, future_z))
+
+    moving_away = moving_away_candidate
+    if current_inside_personal or path_conflict:
+        moving_away = False
+
+    approaching = False
+    if enough_speed and dot_pv < 0.0:
+        approaching = True
+    if trend_approaching:
+        approaching = True
+    if enough_speed and approach_consistency >= config.min_approach_consistency_for_high_risk:
+        approaching = True
+    if moving_away and not path_conflict:
+        approaching = False
+
+    if current_inside_personal:
+        reason = "current_personal_space"
+    elif will_enter_personal:
+        reason = "personal_space_entry"
+    elif will_enter_corridor:
+        reason = "warning_corridor_entry"
+    elif moving_away:
+        reason = "moving_away_no_future_conflict"
+    else:
+        reason = "no_corridor_entry"
+
+    return FutureConflict(
+        moving_away=moving_away,
+        approaching=approaching,
+        will_enter_personal_space=will_enter_personal,
+        will_enter_warning_corridor=will_enter_corridor,
+        personal_entry_time_s=personal_entry_time_s,
+        corridor_entry_time_s=corridor_entry_time_s,
+        min_future_distance_m=min_future_distance_m,
+        path_conflict=path_conflict,
+        conflict_reason=reason,
+    )
+
+
 def motion_pattern_name(pattern: MotionPattern) -> str:
     return {
         MotionPattern.STATIC_OR_UNCERTAIN: "STATIC",
@@ -389,6 +585,7 @@ def classify_motion_pattern(
     config: RiskModelConfig,
     cpa: CpaMetrics | None = None,
     corridor_zone: CorridorZone | None = None,
+    future_conflict: FutureConflict | None = None,
 ) -> MotionPattern:
     cpa = cpa or closest_point_of_approach_m(
         target.ground_point.x_m if target.ground_point else 0.0,
@@ -400,19 +597,34 @@ def classify_motion_pattern(
     corridor_zone = corridor_zone or classify_corridor_zone(target, config)
     distance_m = target.distance_m
     speed_mps = target.speed_mps
+    path_conflict = bool(future_conflict.path_conflict) if future_conflict is not None else False
+    moving_away = bool(future_conflict.moving_away) if future_conflict is not None else False
+    approach_consistency = float(getattr(target, "approach_consistency", 0.0))
 
     if distance_m is not None and distance_m <= config.near_static_distance_m and speed_mps <= config.static_motion_speed_mps:
         return MotionPattern.NEAR_STATIC_OBSTACLE
     if corridor_zone == CorridorZone.SIDE_STATIC:
         return MotionPattern.SIDE_STATIC
 
-    personal_cpa_soon = _cpa_enters_radius(cpa, config.personal_space_radius_m, config.remote_traffic_immediate_cpa_s)
-    corridor_cpa_soon = _cpa_enters_radius(
-        cpa,
-        config.warning_corridor_half_width_m,
-        config.cut_in_time_horizon_s,
+    if future_conflict is not None:
+        personal_cpa_soon = (
+            future_conflict.personal_entry_time_s is not None
+            and future_conflict.personal_entry_time_s <= config.remote_traffic_immediate_cpa_s
+        )
+    else:
+        personal_cpa_soon = _cpa_enters_radius(
+            cpa,
+            config.personal_space_radius_m,
+            config.remote_traffic_immediate_cpa_s,
+        )
+    corridor_entry_soon = (
+        future_conflict.will_enter_warning_corridor
+        if future_conflict is not None
+        else _cpa_enters_radius(cpa, config.warning_corridor_half_width_m, config.cut_in_time_horizon_s)
     )
-    if corridor_zone == CorridorZone.REMOTE_TRAFFIC and not personal_cpa_soon:
+    if moving_away and not path_conflict:
+        return MotionPattern.MOVING_AWAY
+    if corridor_zone == CorridorZone.REMOTE_TRAFFIC and not path_conflict:
         return MotionPattern.REMOTE_TRAFFIC
 
     if _target_motion_is_unstable(target, config) and not personal_cpa_soon:
@@ -424,15 +636,19 @@ def classify_motion_pattern(
 
     moving_toward_center = point.x_m * target.vx_mps < 0.0
     if (
-        corridor_cpa_soon
+        path_conflict
+        and (personal_cpa_soon or corridor_entry_soon)
         and abs(point.x_m) >= config.warning_corridor_half_width_m
         and moving_toward_center
         and abs(target.vx_mps) >= config.lateral_cut_in_speed_mps
+        and approach_consistency >= config.min_approach_consistency_for_high_risk
     ):
         return MotionPattern.LATERAL_CUT_IN
 
     if closing_speed_mps >= config.min_closing_speed_mps and (
-        corridor_zone == CorridorZone.IN_PATH or personal_cpa_soon or corridor_cpa_soon
+        path_conflict
+        and approach_consistency >= config.min_approach_consistency_for_high_risk
+        and (corridor_zone == CorridorZone.IN_PATH or personal_cpa_soon or corridor_entry_soon)
     ):
         return MotionPattern.HEAD_ON_OR_CLOSING
 
@@ -507,6 +723,7 @@ def _level_from_cpa_and_context(
     profile: SeverityProfile,
     cpa: CpaMetrics,
     corridor_zone: CorridorZone,
+    future_conflict: FutureConflict,
     closing_speed_mps: float,
     ttc_s: float | None,
     config: RiskModelConfig,
@@ -522,62 +739,80 @@ def _level_from_cpa_and_context(
     in_path = corridor_zone == CorridorZone.IN_PATH
     near_side = corridor_zone == CorridorZone.NEAR_SIDE
     stable_motion = not _target_motion_is_unstable(target, config)
+    personal_entry_s = future_conflict.personal_entry_time_s
+    corridor_entry_s = future_conflict.corridor_entry_time_s
+    min_future_distance = future_conflict.min_future_distance_m
 
-    if in_path and closing_speed_mps >= config.min_closing_speed_mps:
-        if ttc_s is not None and ttc_s <= profile.emergency_time_s:
-            level, reason = RiskLevel.EMERGENCY, f"{profile.severity_class}_short_ttc"
-        elif ttc_s is not None and ttc_s <= profile.danger_time_s:
-            level, reason = RiskLevel.DANGER, f"{profile.severity_class}_in_path_closing"
-        elif ttc_s is not None and ttc_s <= profile.caution_time_s:
-            level, reason = RiskLevel.CAUTION, f"{profile.severity_class}_in_path_closing"
-        elif ttc_s is not None and ttc_s <= profile.attention_time_s:
-            level, reason = RiskLevel.ATTENTION, f"{profile.severity_class}_in_path_closing"
-        elif is_large_vehicle:
-            level, reason = RiskLevel.ATTENTION, "large_vehicle_in_path_closing"
+    if not future_conflict.path_conflict:
+        if (
+            future_conflict.approaching
+            and min_future_distance is not None
+            and min_future_distance <= profile.warning_radius_m
+            and not future_conflict.moving_away
+        ):
+            return RiskLevel.ATTENTION, f"{profile.severity_class}_possible_future_relevance"
+        return RiskLevel.SAFE, future_conflict.conflict_reason
 
-    if not cpa.valid or cpa.time_s is None or cpa.distance_m is None:
-        return level, reason
+    def time_leq(value: float | None, threshold: float) -> bool:
+        return value is not None and value <= threshold
 
-    cpa_time_s = cpa.time_s
-    cpa_distance_m = cpa.distance_m
-    personal_conflict = cpa_distance_m <= profile.personal_space_radius_m
-    warning_conflict = cpa_distance_m <= profile.warning_radius_m
-    corridor_conflict = cpa_distance_m <= config.warning_corridor_half_width_m
-
-    if cpa_time_s <= profile.emergency_time_s and personal_conflict:
-        return RiskLevel.EMERGENCY, f"{profile.severity_class}_emergency_cpa"
+    if time_leq(personal_entry_s, profile.emergency_time_s):
+        return RiskLevel.EMERGENCY, f"{profile.severity_class}_emergency_personal_entry"
 
     if is_large_vehicle:
-        if cpa_time_s <= profile.danger_time_s and (personal_conflict or (in_path and corridor_conflict)):
-            return RiskLevel.DANGER, "large_vehicle_personal_or_path_conflict"
+        if time_leq(personal_entry_s, profile.danger_time_s):
+            return RiskLevel.DANGER, "large_vehicle_personal_path_conflict"
         if (
-            cpa_time_s <= profile.caution_time_s
-            and corridor_conflict
-            and (in_path or corridor_zone == CorridorZone.REMOTE_TRAFFIC)
+            in_path
+            and time_leq(ttc_s, profile.danger_time_s)
+            and closing_speed_mps >= config.min_closing_speed_mps
+            and min_future_distance is not None
+            and min_future_distance <= config.warning_corridor_half_width_m
         ):
-            return RiskLevel.CAUTION, "large_vehicle_early_path_conflict"
-        if cpa_time_s <= profile.attention_time_s and (warning_conflict or (in_path and closing_speed_mps > 0.0)):
-            return RiskLevel.ATTENTION, "large_vehicle_early_warning"
+            return RiskLevel.DANGER, "large_vehicle_in_path_closing"
+        if time_leq(personal_entry_s, profile.caution_time_s):
+            return RiskLevel.CAUTION, "large_vehicle_personal_path_conflict"
+        if (
+            time_leq(corridor_entry_s, profile.caution_time_s)
+            and (in_path or corridor_zone == CorridorZone.REMOTE_TRAFFIC)
+            and min_future_distance is not None
+            and min_future_distance <= profile.warning_radius_m
+        ):
+            return RiskLevel.CAUTION, "large_vehicle_corridor_path_conflict"
+        if time_leq(personal_entry_s, profile.attention_time_s) or time_leq(corridor_entry_s, profile.attention_time_s):
+            return RiskLevel.ATTENTION, "large_vehicle_early_future_conflict"
+        if in_path and closing_speed_mps >= config.min_closing_speed_mps:
+            return RiskLevel.ATTENTION, "large_vehicle_in_path_closing"
         return level, reason
 
     if is_small_rider:
         high_speed = target.speed_mps >= profile.high_speed_mps
         low_speed = target.speed_mps < profile.low_speed_mps
-        if cpa_time_s <= profile.danger_time_s and personal_conflict and high_speed:
+        if time_leq(personal_entry_s, profile.danger_time_s) and high_speed:
             return RiskLevel.DANGER, "small_rider_high_speed_personal_conflict"
-        if cpa_time_s <= profile.caution_time_s and personal_conflict and (stable_motion or in_path or near_side):
+        if time_leq(personal_entry_s, profile.caution_time_s) and (stable_motion or in_path or near_side):
             return RiskLevel.CAUTION, "small_rider_personal_conflict"
-        if cpa_time_s <= profile.caution_time_s and corridor_conflict and in_path and not low_speed:
-            return RiskLevel.CAUTION, "small_rider_path_conflict"
-        if cpa_time_s <= profile.attention_time_s and warning_conflict and not low_speed:
-            return _max_level(level, RiskLevel.ATTENTION), "small_rider_possible_conflict"
+        if (
+            time_leq(corridor_entry_s, profile.caution_time_s)
+            and in_path
+            and not low_speed
+            and min_future_distance is not None
+            and min_future_distance <= config.warning_corridor_half_width_m
+        ):
+            return RiskLevel.CAUTION, "small_rider_corridor_conflict"
+        if time_leq(personal_entry_s, profile.attention_time_s) and not low_speed:
+            return RiskLevel.ATTENTION, "small_rider_possible_personal_conflict"
         return level, reason
 
-    if cpa_time_s <= profile.danger_time_s and personal_conflict:
+    if time_leq(personal_entry_s, profile.danger_time_s):
         return RiskLevel.DANGER, "unknown_personal_conflict"
-    if cpa_time_s <= profile.caution_time_s and corridor_conflict:
+    if time_leq(personal_entry_s, profile.caution_time_s) or (
+        time_leq(corridor_entry_s, profile.caution_time_s)
+        and min_future_distance is not None
+        and min_future_distance <= config.warning_corridor_half_width_m
+    ):
         return RiskLevel.CAUTION, "unknown_path_conflict"
-    if cpa_time_s <= profile.attention_time_s and warning_conflict:
+    if time_leq(personal_entry_s, profile.attention_time_s) or time_leq(corridor_entry_s, profile.attention_time_s):
         return RiskLevel.ATTENTION, "unknown_possible_conflict"
     return level, reason
 
@@ -588,24 +823,31 @@ def _apply_motion_pattern_score_floor(
     motion_pattern: MotionPattern,
     cpa: CpaMetrics,
     corridor_zone: CorridorZone,
+    future_conflict: FutureConflict,
     config: RiskModelConfig,
 ) -> float:
+    if not future_conflict.path_conflict:
+        return score
+
     if (
         motion_pattern == MotionPattern.LATERAL_CUT_IN
-        and cpa.valid
-        and cpa.time_s is not None
-        and cpa.distance_m is not None
-        and cpa.time_s <= config.cut_in_time_horizon_s
-        and cpa.distance_m <= config.warning_corridor_half_width_m
+        and future_conflict.corridor_entry_time_s is not None
+        and future_conflict.corridor_entry_time_s <= config.cut_in_time_horizon_s
+        and future_conflict.min_future_distance_m is not None
+        and future_conflict.min_future_distance_m <= config.warning_corridor_half_width_m
         and not _target_motion_is_unstable(target, config)
     ):
         score = max(score, config.cut_in_attention_score_floor)
-        if cpa.distance_m <= config.personal_space_radius_m and cpa.time_s <= config.remote_traffic_immediate_cpa_s:
+        if (
+            future_conflict.personal_entry_time_s is not None
+            and future_conflict.personal_entry_time_s <= config.remote_traffic_immediate_cpa_s
+        ):
             score = max(score, config.cut_in_caution_score_floor)
         if (
             target.class_name in SMALL_RIDER_CLASSES
             and target.speed_mps >= high_speed_threshold_mps(target.class_name, config)
-            and cpa.time_s <= 1.25
+            and future_conflict.personal_entry_time_s is not None
+            and future_conflict.personal_entry_time_s <= 1.25
         ):
             score = max(score, risk_score_threshold_for_level(RiskLevel.DANGER))
 
@@ -619,19 +861,18 @@ def _apply_motion_pattern_score_floor(
 
     if (
         corridor_zone == CorridorZone.IN_PATH
-        and cpa.valid
-        and cpa.time_s is not None
-        and cpa.distance_m is not None
-        and cpa.time_s <= config.caution_ttc_s
-        and cpa.distance_m <= config.warning_corridor_half_width_m
+        and future_conflict.corridor_entry_time_s is not None
+        and future_conflict.corridor_entry_time_s <= config.caution_ttc_s
+        and future_conflict.min_future_distance_m is not None
+        and future_conflict.min_future_distance_m <= config.warning_corridor_half_width_m
     ):
         score = max(score, risk_score_threshold_for_level(RiskLevel.ATTENTION))
         if (
-            cpa.distance_m <= config.personal_space_radius_m
+            future_conflict.personal_entry_time_s is not None
             or (
                 target.class_name in LARGE_MOTOR_VEHICLE_CLASSES
                 and target.speed_mps >= high_speed_threshold_mps(target.class_name, config)
-                and cpa.time_s <= config.danger_ttc_s
+                and future_conflict.corridor_entry_time_s <= config.danger_ttc_s
             )
         ):
             score = max(score, risk_score_threshold_for_level(RiskLevel.CAUTION))
@@ -639,17 +880,17 @@ def _apply_motion_pattern_score_floor(
     if (
         target.class_name in LARGE_MOTOR_VEHICLE_CLASSES
         and corridor_zone == CorridorZone.IN_PATH
-        and _cpa_enters_radius(cpa, config.personal_space_radius_m, config.remote_traffic_immediate_cpa_s)
+        and future_conflict.personal_entry_time_s is not None
+        and future_conflict.personal_entry_time_s <= config.remote_traffic_immediate_cpa_s
         and target.speed_mps >= high_speed_threshold_mps(target.class_name, config)
     ):
         score = max(score, risk_score_threshold_for_level(RiskLevel.DANGER))
 
     if (
-        cpa.valid
-        and cpa.time_s is not None
-        and cpa.distance_m is not None
-        and cpa.time_s <= 0.80
-        and cpa.distance_m <= config.personal_space_radius_m * 0.50
+        future_conflict.personal_entry_time_s is not None
+        and future_conflict.personal_entry_time_s <= 0.80
+        and future_conflict.min_future_distance_m is not None
+        and future_conflict.min_future_distance_m <= config.personal_space_radius_m * 0.50
     ):
         score = max(score, risk_score_threshold_for_level(RiskLevel.EMERGENCY))
 
@@ -667,6 +908,7 @@ def _contextual_risk_cap(
     target: TrackedObject,
     corridor_zone: CorridorZone,
     cpa: CpaMetrics,
+    future_conflict: FutureConflict,
     profile: SeverityProfile,
     action_level: RiskLevel,
     config: RiskModelConfig,
@@ -682,46 +924,77 @@ def _contextual_risk_cap(
 
     distance_m = target.distance_m
     current_inside_personal = distance_m is not None and distance_m <= profile.personal_space_radius_m
-    enters_personal_immediately = _cpa_enters_radius(
-        cpa,
-        profile.personal_space_radius_m,
-        min(config.remote_traffic_immediate_cpa_s, profile.danger_time_s),
+    enters_personal_immediately = (
+        future_conflict.personal_entry_time_s is not None
+        and future_conflict.personal_entry_time_s <= min(config.remote_traffic_immediate_cpa_s, profile.danger_time_s)
     )
-    enters_corridor_soon = _cpa_enters_radius(
-        cpa,
-        config.warning_corridor_half_width_m,
-        profile.attention_time_s,
+    enters_corridor_soon = (
+        future_conflict.corridor_entry_time_s is not None
+        and future_conflict.corridor_entry_time_s <= profile.attention_time_s
     )
+
+    if future_conflict.moving_away and not future_conflict.path_conflict and not current_inside_personal:
+        add_cap(RiskLevel.SAFE, "moving_away_no_future_conflict")
+
+    if not future_conflict.path_conflict and not current_inside_personal:
+        add_cap(RiskLevel.ATTENTION, "no_corridor_entry")
 
     if corridor_zone == CorridorZone.REMOTE_TRAFFIC and not current_inside_personal:
         large_vehicle_path_conflict = (
             profile.severity_class == "large_vehicle"
             and action_level >= RiskLevel.ATTENTION
+            and future_conflict.path_conflict
             and enters_corridor_soon
             and not _target_motion_is_unstable(target, config)
         )
         if large_vehicle_path_conflict:
             reasons.append("remote_large_vehicle_path_conflict")
-        elif enters_personal_immediately and not _target_motion_is_unstable(target, config):
+        elif future_conflict.path_conflict and enters_personal_immediately and not _target_motion_is_unstable(target, config):
             add_cap(RiskLevel.ATTENTION, "remote_traffic_requires_confirmation")
         else:
-            add_cap(RiskLevel.ATTENTION if enters_corridor_soon else RiskLevel.SAFE, "remote_traffic_no_path_conflict")
+            add_cap(
+                RiskLevel.ATTENTION if future_conflict.path_conflict and enters_corridor_soon else RiskLevel.SAFE,
+                "remote_traffic_no_path_conflict",
+            )
 
     if corridor_zone == CorridorZone.SIDE_STATIC and not current_inside_personal:
         add_cap(RiskLevel.SAFE, "side_static")
 
-    low_speed = target.speed_mps < low_speed_threshold_mps(target.class_name, config)
+    low_speed = target.speed_mps <= low_speed_threshold_mps(target.class_name, config)
     if low_speed and not current_inside_personal:
-        enters_personal_soon = _cpa_enters_radius(
-            cpa,
-            profile.personal_space_radius_m,
-            config.low_speed_cpa_time_horizon_s,
+        enters_personal_soon = (
+            future_conflict.personal_entry_time_s is not None
+            and future_conflict.personal_entry_time_s <= config.low_speed_cpa_time_horizon_s
         )
         if not (corridor_zone == CorridorZone.IN_PATH and enters_personal_soon):
-            add_cap(RiskLevel.ATTENTION, "low_speed_non_path")
+            distant_low_speed_small_rider = (
+                profile.severity_class == "small_rider"
+                and (
+                    future_conflict.personal_entry_time_s is None
+                    or future_conflict.personal_entry_time_s > profile.attention_time_s
+                )
+                and not (
+                    corridor_zone == CorridorZone.IN_PATH
+                    and distance_m is not None
+                    and distance_m <= config.near_static_attention_distance_m
+                )
+            )
+            add_cap(RiskLevel.SAFE if distant_low_speed_small_rider else RiskLevel.ATTENTION, "low_speed_non_path")
 
     if _target_motion_is_unstable(target, config) and not current_inside_personal:
         add_cap(RiskLevel.ATTENTION, "unstable_track")
+
+    if (
+        future_conflict.path_conflict
+        and not current_inside_personal
+        and action_level > RiskLevel.ATTENTION
+        and float(getattr(target, "approach_consistency", 0.0)) < config.min_approach_consistency_for_high_risk
+        and float(getattr(target, "path_conflict_consistency", 0.0)) < config.min_path_conflict_consistency_for_high_risk
+    ):
+        add_cap(RiskLevel.ATTENTION, "unstable_single_frame_cpa")
+
+    if getattr(target, "distance_confidence", 1.0) < config.low_distance_confidence and not current_inside_personal:
+        add_cap(RiskLevel.ATTENTION, "low_distance_confidence")
 
     return cap_level, "|".join(dict.fromkeys(reasons)) if reasons else "none"
 
@@ -738,8 +1011,10 @@ def _empty_assessment(
     corridor_zone: CorridorZone = CorridorZone.UNKNOWN,
     risk_cap_reason: str = "none",
     profile: SeverityProfile | None = None,
+    future_conflict: FutureConflict | None = None,
 ) -> RiskAssessment:
     cpa = cpa or CpaMetrics(None, None, False)
+    future_conflict = future_conflict or FutureConflict(conflict_reason="no_ground_point")
     severity_class = profile.severity_class if profile is not None else "unknown_or_other"
     warning_time_horizon_s = profile.attention_time_s if profile is not None else 0.0
     warning_radius_m = profile.warning_radius_m if profile is not None else 0.0
@@ -757,6 +1032,15 @@ def _empty_assessment(
         cpa_valid=cpa.valid,
         corridor_zone=corridor_zone,
         risk_cap_reason=risk_cap_reason,
+        moving_away=future_conflict.moving_away,
+        approaching=future_conflict.approaching,
+        path_conflict=future_conflict.path_conflict,
+        will_enter_personal_space=future_conflict.will_enter_personal_space,
+        will_enter_warning_corridor=future_conflict.will_enter_warning_corridor,
+        personal_entry_time_s=future_conflict.personal_entry_time_s,
+        corridor_entry_time_s=future_conflict.corridor_entry_time_s,
+        min_future_distance_m=future_conflict.min_future_distance_m,
+        conflict_reason=future_conflict.conflict_reason,
         severity_class=severity_class,
         warning_action=warning_action_for_level(RiskLevel.SAFE),
         warning_time_horizon_s=warning_time_horizon_s,
@@ -784,6 +1068,7 @@ def assess_collision_risk(
         config.min_cpa_speed_mps,
     )
     corridor_zone = classify_corridor_zone(target, config)
+    future_conflict = future_conflict_for_target(target, profile, cpa, config)
     closing_speed = radial_closing_speed_mps(point.x_m, point.z_m, target.vx_mps, target.vz_mps)
     ttc = time_to_collision_s(target.distance_m, closing_speed)
     drac = decel_required_mps2(target.distance_m, closing_speed)
@@ -794,6 +1079,7 @@ def assess_collision_risk(
         config,
         cpa=cpa,
         corridor_zone=corridor_zone,
+        future_conflict=future_conflict,
     )
     static_obstacle_risk = _near_static_obstacle_risk(target.distance_m, corridor_zone, config)
     action_level, action_reason = _level_from_cpa_and_context(
@@ -801,11 +1087,20 @@ def assess_collision_risk(
         profile,
         cpa,
         corridor_zone,
+        future_conflict,
         closing_speed,
         ttc,
         config,
     )
-    cap_level, cap_reason = _contextual_risk_cap(target, corridor_zone, cpa, profile, action_level, config)
+    cap_level, cap_reason = _contextual_risk_cap(
+        target,
+        corridor_zone,
+        cpa,
+        future_conflict,
+        profile,
+        action_level,
+        config,
+    )
 
     ttc_safe = ttc is not None and ttc > config.safe_ttc_s
     cpa_in_risk_window = (
@@ -820,6 +1115,7 @@ def assess_collision_risk(
         and not cpa_in_risk_window
         and static_obstacle_risk <= 0.0
         and action_level <= RiskLevel.SAFE
+        and not future_conflict.path_conflict
     ):
         return RiskAssessment(
             track_id=target.track_id,
@@ -835,6 +1131,15 @@ def assess_collision_risk(
             cpa_valid=cpa.valid,
             corridor_zone=corridor_zone,
             risk_cap_reason=cap_reason,
+            moving_away=future_conflict.moving_away,
+            approaching=future_conflict.approaching,
+            path_conflict=future_conflict.path_conflict,
+            will_enter_personal_space=future_conflict.will_enter_personal_space,
+            will_enter_warning_corridor=future_conflict.will_enter_warning_corridor,
+            personal_entry_time_s=future_conflict.personal_entry_time_s,
+            corridor_entry_time_s=future_conflict.corridor_entry_time_s,
+            min_future_distance_m=future_conflict.min_future_distance_m,
+            conflict_reason=future_conflict.conflict_reason,
             severity_class=profile.severity_class,
             warning_action=warning_action_for_level(RiskLevel.SAFE),
             warning_time_horizon_s=profile.attention_time_s,
@@ -846,7 +1151,8 @@ def assess_collision_risk(
     if (
         motion_pattern in (MotionPattern.MOVING_AWAY, MotionPattern.REMOTE_TRAFFIC, MotionPattern.SIDE_STATIC)
         and static_obstacle_risk <= 0.0
-        and not _cpa_enters_radius(cpa, profile.personal_space_radius_m, config.remote_traffic_immediate_cpa_s)
+        and not future_conflict.will_enter_personal_space
+        and not future_conflict.will_enter_warning_corridor
         and action_level <= RiskLevel.SAFE
     ):
         return RiskAssessment(
@@ -863,6 +1169,15 @@ def assess_collision_risk(
             cpa_valid=cpa.valid,
             corridor_zone=corridor_zone,
             risk_cap_reason=cap_reason,
+            moving_away=future_conflict.moving_away,
+            approaching=future_conflict.approaching,
+            path_conflict=future_conflict.path_conflict,
+            will_enter_personal_space=future_conflict.will_enter_personal_space,
+            will_enter_warning_corridor=future_conflict.will_enter_warning_corridor,
+            personal_entry_time_s=future_conflict.personal_entry_time_s,
+            corridor_entry_time_s=future_conflict.corridor_entry_time_s,
+            min_future_distance_m=future_conflict.min_future_distance_m,
+            conflict_reason=future_conflict.conflict_reason,
             severity_class=profile.severity_class,
             warning_action=warning_action_for_level(RiskLevel.SAFE),
             warning_time_horizon_s=profile.attention_time_s,
@@ -871,7 +1186,13 @@ def assess_collision_risk(
             static_obstacle_risk=static_obstacle_risk,
         )
 
-    trajectory_risk = _cpa_distance_risk(cpa, config)
+    trajectory_risk = 0.0
+    if future_conflict.path_conflict and future_conflict.min_future_distance_m is not None:
+        trajectory_risk = _trajectory_distance_risk(
+            future_conflict.min_future_distance_m,
+            config.warning_corridor_half_width_m,
+            config.trajectory_risk_exponent,
+        )
     ttc_risk = _collision_time_risk(ttc, config)
     drac_risk = clamp(
         (drac - config.comfortable_decel_mps2)
@@ -886,6 +1207,10 @@ def assess_collision_risk(
     ttc_risk *= velocity_risk_scale
     drac_risk *= velocity_risk_scale
     closing_risk *= velocity_risk_scale
+    if not future_conflict.path_conflict:
+        ttc_risk = min(ttc_risk, risk_score_threshold_for_level(RiskLevel.ATTENTION))
+        drac_risk = min(drac_risk, risk_score_threshold_for_level(RiskLevel.ATTENTION))
+        closing_risk = min(closing_risk, risk_score_threshold_for_level(RiskLevel.ATTENTION))
     static_obstacle_risk *= max(0.35, distance_confidence)
 
     weights = config.weights
@@ -906,6 +1231,7 @@ def assess_collision_risk(
         motion_pattern,
         cpa,
         corridor_zone,
+        future_conflict,
         config,
     )
     score = max(score, _score_for_level_floor(action_level))
@@ -928,6 +1254,15 @@ def assess_collision_risk(
         cpa_valid=cpa.valid,
         corridor_zone=corridor_zone,
         risk_cap_reason=cap_reason,
+        moving_away=future_conflict.moving_away,
+        approaching=future_conflict.approaching,
+        path_conflict=future_conflict.path_conflict,
+        will_enter_personal_space=future_conflict.will_enter_personal_space,
+        will_enter_warning_corridor=future_conflict.will_enter_warning_corridor,
+        personal_entry_time_s=future_conflict.personal_entry_time_s,
+        corridor_entry_time_s=future_conflict.corridor_entry_time_s,
+        min_future_distance_m=future_conflict.min_future_distance_m,
+        conflict_reason=future_conflict.conflict_reason,
         severity_class=profile.severity_class,
         warning_action=warning_action_for_level(level),
         warning_time_horizon_s=profile.attention_time_s,

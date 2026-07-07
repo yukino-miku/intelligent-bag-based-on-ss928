@@ -7,6 +7,7 @@ from risk_model import (
     RiskLevel,
     assess_collision_risk,
     corridor_zone_name,
+    time_to_enter_corridor,
     warning_action_for_level,
 )
 from vision_core import TrackedObject
@@ -22,6 +23,9 @@ def make_target(
     velocity_confidence: float = 1.0,
     distance_confidence: float = 1.0,
     motion_quality_flags: tuple[str, ...] = (),
+    distance_trend_mps: float = 0.0,
+    approach_consistency: float = 1.0,
+    path_conflict_consistency: float = 1.0,
 ) -> TrackedObject:
     point = GroundPoint(x_m=x_m, z_m=z_m)
     speed_mps = (vx_mps**2 + vz_mps**2) ** 0.5
@@ -41,10 +45,36 @@ def make_target(
         velocity_confidence=velocity_confidence,
         motion_quality_flags=motion_quality_flags,
         track_age_frames=track_age_frames,
+        distance_trend_mps=distance_trend_mps,
+        approach_consistency=approach_consistency,
+        path_conflict_consistency=path_conflict_consistency,
     )
 
 
 class RealWorldRiskSemanticsTest(unittest.TestCase):
+    def test_time_to_enter_corridor_uses_finite_forward_rectangle(self) -> None:
+        entry_time = time_to_enter_corridor(
+            x_m=4.0,
+            z_m=7.0,
+            vx_mps=-1.0,
+            vz_mps=-1.5,
+            half_width_m=1.2,
+            depth_m=5.0,
+            horizon_s=6.0,
+        )
+        no_entry_time = time_to_enter_corridor(
+            x_m=4.0,
+            z_m=8.0,
+            vx_mps=-1.0,
+            vz_mps=0.0,
+            half_width_m=1.2,
+            depth_m=5.0,
+            horizon_s=6.0,
+        )
+
+        self.assertAlmostEqual(2.8, entry_time, places=2)
+        self.assertIsNone(no_entry_time)
+
     def test_warning_actions_match_vibration_semantics(self) -> None:
         self.assertEqual("none", warning_action_for_level(RiskLevel.SAFE))
         self.assertEqual("short_weak_pulse", warning_action_for_level(RiskLevel.ATTENTION))
@@ -62,6 +92,34 @@ class RealWorldRiskSemanticsTest(unittest.TestCase):
         self.assertLess(assessment.cpa_distance_m, 0.8)
         self.assertEqual(CorridorZone.NEAR_SIDE, assessment.corridor_zone)
         self.assertEqual("SIDE", corridor_zone_name(assessment.corridor_zone))
+        self.assertTrue(assessment.path_conflict)
+        self.assertTrue(assessment.will_enter_personal_space)
+        self.assertIsNotNone(assessment.personal_entry_time_s)
+
+    def test_moving_away_without_future_conflict_is_forced_safe(self) -> None:
+        assessment = assess_collision_risk(
+            make_target(class_name="car", x_m=4.0, z_m=4.0, vx_mps=2.0, vz_mps=0.0, distance_trend_mps=1.2)
+        )
+
+        self.assertTrue(assessment.moving_away)
+        self.assertFalse(assessment.path_conflict)
+        self.assertFalse(assessment.will_enter_personal_space)
+        self.assertFalse(assessment.will_enter_warning_corridor)
+        self.assertEqual(RiskLevel.SAFE, assessment.level)
+        self.assertIn("moving_away_no_future_conflict", assessment.risk_cap_reason)
+
+    def test_side_passing_with_large_cpa_and_no_corridor_entry_is_not_caution(self) -> None:
+        assessment = assess_collision_risk(
+            make_target(class_name="car", x_m=4.0, z_m=8.0, vx_mps=-1.0, vz_mps=0.0)
+        )
+
+        self.assertFalse(assessment.path_conflict)
+        self.assertFalse(assessment.will_enter_personal_space)
+        self.assertFalse(assessment.will_enter_warning_corridor)
+        self.assertGreater(assessment.min_future_distance_m, 2.0)
+        self.assertLessEqual(assessment.level.value, RiskLevel.ATTENTION.value)
+        self.assertNotEqual(MotionPattern.LATERAL_CUT_IN, assessment.motion_pattern)
+        self.assertIn("no_corridor_entry", assessment.risk_cap_reason)
 
     def test_roadside_static_motorcycle_is_not_caution(self) -> None:
         assessment = assess_collision_risk(
@@ -119,6 +177,9 @@ class RealWorldRiskSemanticsTest(unittest.TestCase):
         self.assertLessEqual(assessment.cpa_time_s, 5.0)
         self.assertLess(assessment.cpa_distance_m, 1.2)
         self.assertGreaterEqual(assessment.level.value, RiskLevel.ATTENTION.value)
+        self.assertTrue(assessment.path_conflict)
+        self.assertTrue(assessment.will_enter_warning_corridor)
+        self.assertIsNotNone(assessment.corridor_entry_time_s)
         self.assertIn("remote_large_vehicle_path_conflict", assessment.risk_cap_reason)
         self.assertIn("large_vehicle", assessment.risk_action_reason)
 
@@ -128,6 +189,8 @@ class RealWorldRiskSemanticsTest(unittest.TestCase):
         )
 
         self.assertEqual("large_vehicle", assessment.severity_class)
+        self.assertTrue(assessment.path_conflict)
+        self.assertTrue(assessment.will_enter_personal_space)
         self.assertGreaterEqual(assessment.level.value, RiskLevel.DANGER.value)
         self.assertLessEqual(assessment.cpa_time_s, 3.0)
         self.assertLess(assessment.cpa_distance_m, assessment.warning_radius_m)
@@ -158,6 +221,7 @@ class RealWorldRiskSemanticsTest(unittest.TestCase):
         )
 
         self.assertEqual("small_rider", assessment.severity_class)
+        self.assertTrue(assessment.path_conflict)
         self.assertGreaterEqual(assessment.level.value, RiskLevel.CAUTION.value)
         self.assertLess(assessment.level.value, RiskLevel.DANGER.value)
         self.assertLessEqual(assessment.cpa_time_s, 3.0)
@@ -179,8 +243,29 @@ class RealWorldRiskSemanticsTest(unittest.TestCase):
         )
 
         self.assertEqual(RiskLevel.EMERGENCY, assessment.level)
+        self.assertTrue(assessment.path_conflict)
         self.assertEqual("continuous_high_frequency", assessment.warning_action)
         self.assertIn("current_personal_space", assessment.risk_action_reason)
+
+    def test_single_frame_path_conflict_with_low_consistency_is_capped_to_attention(self) -> None:
+        assessment = assess_collision_risk(
+            make_target(
+                class_name="car",
+                x_m=0.4,
+                z_m=5.4,
+                vx_mps=0.0,
+                vz_mps=-2.0,
+                track_age_frames=10,
+                velocity_confidence=0.9,
+                distance_trend_mps=0.2,
+                approach_consistency=0.2,
+                path_conflict_consistency=0.0,
+            )
+        )
+
+        self.assertTrue(assessment.path_conflict)
+        self.assertLessEqual(assessment.level.value, RiskLevel.ATTENTION.value)
+        self.assertIn("unstable_single_frame_cpa", assessment.risk_cap_reason)
 
     def test_short_or_unstable_track_is_capped_unless_currently_inside_personal_space(self) -> None:
         assessment = assess_collision_risk(
