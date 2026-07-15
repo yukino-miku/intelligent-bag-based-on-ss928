@@ -1,0 +1,23 @@
+{
+  "pwm": {
+    "period_ns": 1000000,
+    "level_duty_percent": {
+      "0": [0, 0],
+      "1": [60, 0],
+      "2": [60, 60],
+      "3": [100, 60],
+      "4": [100, 100]
+    }
+  },
+  "timing": {
+    "event_timeout_s": 1.0,
+    "max_event_age_s": 2.0
+  },
+  "audio": {
+    "enabled": false,
+    "root": "/root/smartbag/audio"
+  },
+  "ble": {
+    "name": "SS928-SmartBag"
+  }
+}

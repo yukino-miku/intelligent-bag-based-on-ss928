@@ -1,0 +1,75 @@
+{
+  "device": {
+    "backend": "i2c",
+    "i2c_bus": 0,
+    "i2c_addr": "0x68",
+    "config_blob": "auto",
+    "init_sensor": true,
+    "sample_hz": 50.0
+  },
+  "output": {
+    "console_hz": 2.0,
+    "ble_enabled": false,
+    "ble_hz": 10.0,
+    "ble_name": "SS928-SmartBag"
+  },
+  "calibration": {
+    "data_dir": "/var/lib/smartbag/calibration",
+    "modes": {
+      "straight": {
+        "label": "straight standing with backpack",
+        "prefix": "straight",
+        "duration_s": 15.0
+      },
+      "hunch": {
+        "label": "hunched standing with backpack",
+        "prefix": "hunch",
+        "duration_s": 15.0
+      },
+      "straight_walk": {
+        "label": "normal standing and walking",
+        "prefix": "straight_walk",
+        "duration_s": 30.0
+      },
+      "hunch_walk": {
+        "label": "hunched walking",
+        "prefix": "hunch_walk",
+        "duration_s": 30.0
+      },
+      "bend_pickup": {
+        "label": "bend, pick up, adjust backpack",
+        "prefix": "bend_pickup",
+        "duration_s": 30.0
+      }
+    }
+  },
+  "posture": {
+    "enabled": true,
+    "roll_zero_deg": 0.08,
+    "pitch_zero_deg": -10.605,
+    "yaw_zero_deg": 0.0
+  },
+  "thresholds": {
+    "tilt_enabled": false,
+    "pitch_forward_deg": 999.0,
+    "pitch_backward_deg": -999.0,
+    "roll_left_deg": -999.0,
+    "roll_right_deg": 999.0,
+    "tilt_hold_s": 3.0,
+    "hunch_enabled": true,
+    "hunch_pitch_deg": -15.5,
+    "hunch_hold_s": 3.0,
+    "hunch_max_gyro_dps": 30.0,
+    "hunch_accel_min_g": 0.75,
+    "hunch_accel_max_g": 1.25,
+    "impact_g": 99.0,
+    "freefall_g": 0.0,
+    "freefall_hold_s": 0.25,
+    "speed_warn_mps": 99.0,
+    "speed_hold_s": 1.0,
+    "alert_cooldown_s": 5.0
+  },
+  "fall_detection": {
+    "enabled": true
+  }
+}

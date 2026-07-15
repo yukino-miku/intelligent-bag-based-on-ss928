@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BMI270 Pose Viewer</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f3;
+      --ink: #202421;
+      --muted: #667069;
+      --line: #cfd7cf;
+      --panel: #ffffff;
+      --accent: #0d766f;
+      --accent-2: #b23a48;
+      --face-a: rgba(13, 118, 111, 0.78);
+      --face-b: rgba(242, 184, 75, 0.82);
+      --face-c: rgba(178, 58, 72, 0.78);
+      --cube-size: min(34vw, 320px);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Segoe UI", Arial, sans-serif;
+      color: var(--ink);
+      background: var(--bg);
+    }
+
+    main {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: minmax(280px, 360px) 1fr;
+      gap: 1px;
+      background: var(--line);
+    }
+
+    aside,
+    section {
+      background: var(--panel);
+    }
+
+    aside {
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    .controls {
+      display: grid;
+      gap: 10px;
+    }
+
+    label {
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    input {
+      width: 100%;
+      min-height: 38px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      font: inherit;
+      color: var(--ink);
+      background: #fff;
+    }
+
+    button {
+      min-height: 40px;
+      border: 1px solid var(--accent);
+      border-radius: 6px;
+      padding: 0 14px;
+      font: inherit;
+      font-weight: 650;
+      color: #fff;
+      background: var(--accent);
+      cursor: pointer;
+    }
+
+    button.secondary {
+      color: var(--accent);
+      background: #fff;
+    }
+
+    button:disabled {
+      cursor: default;
+      opacity: 0.55;
+    }
+
+    .status {
+      min-height: 24px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .readout {
+      display: grid;
+      gap: 8px;
+      border-top: 1px solid var(--line);
+      padding-top: 16px;
+    }
+
+    .metric {
+      display: grid;
+      grid-template-columns: 72px 1fr;
+      align-items: baseline;
+      gap: 12px;
+      min-height: 30px;
+    }
+
+    .metric span:first-child {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .metric strong {
+      font-size: 22px;
+      letter-spacing: 0;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .stage {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      perspective: 900px;
+      overflow: hidden;
+    }
+
+    .cube {
+      position: relative;
+      width: var(--cube-size);
+      height: var(--cube-size);
+      min-width: 190px;
+      min-height: 190px;
+      transform-style: preserve-3d;
+      transform: rotateX(0deg) rotateY(0deg) rotateZ(0deg);
+      transition: transform 80ms linear;
+    }
+
+    .face {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(0, 0, 0, 0.22);
+      color: #fff;
+      font-size: 18px;
+      font-weight: 700;
+      backface-visibility: visible;
+    }
+
+    .front { background: var(--face-a); transform: translateZ(calc(var(--cube-size) / 2)); }
+    .back { background: var(--face-a); transform: rotateY(180deg) translateZ(calc(var(--cube-size) / 2)); }
+    .right { background: var(--face-b); transform: rotateY(90deg) translateZ(calc(var(--cube-size) / 2)); }
+    .left { background: var(--face-b); transform: rotateY(-90deg) translateZ(calc(var(--cube-size) / 2)); }
+    .top { background: var(--face-c); transform: rotateX(90deg) translateZ(calc(var(--cube-size) / 2)); }
+    .bottom { background: var(--face-c); transform: rotateX(-90deg) translateZ(calc(var(--cube-size) / 2)); }
+
+    .log {
+      height: 150px;
+      overflow: auto;
+      border-top: 1px solid var(--line);
+      padding-top: 12px;
+      color: var(--muted);
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 12px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+    }
+
+    @media (max-width: 760px) {
+      main {
+        grid-template-columns: 1fr;
+        --cube-size: min(58vw, 280px);
+      }
+
+      aside {
+        min-height: auto;
+      }
+
+      .stage {
+        min-height: 58vh;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <aside>
+      <h1>BMI270 Pose Viewer</h1>
+      <div class="controls">
+        <label>Baud
+          <input id="baud" value="115200" inputmode="numeric">
+        </label>
+        <button id="connect">Connect Serial</button>
+        <button id="disconnect" class="secondary" disabled>Disconnect</button>
+      </div>
+      <div id="status" class="status">Idle</div>
+      <div class="readout">
+        <div class="metric"><span>Pitch</span><strong id="pitch">0.00</strong></div>
+        <div class="metric"><span>Roll</span><strong id="roll">0.00</strong></div>
+        <div class="metric"><span>Yaw</span><strong id="yaw">0.00</strong></div>
+        <div class="metric"><span>Temp</span><strong id="temp">--</strong></div>
+      </div>
+      <div id="log" class="log"></div>
+    </aside>
+    <section class="stage">
+      <div id="cube" class="cube" aria-label="BMI270 orientation cube">
+        <div class="face front">FRONT</div>
+        <div class="face back">BACK</div>
+        <div class="face right">RIGHT</div>
+        <div class="face left">LEFT</div>
+        <div class="face top">TOP</div>
+        <div class="face bottom">BOTTOM</div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const connectButton = document.getElementById('connect');
+    const disconnectButton = document.getElementById('disconnect');
+    const baudInput = document.getElementById('baud');
+    const statusEl = document.getElementById('status');
+    const logEl = document.getElementById('log');
+    const cubeEl = document.getElementById('cube');
+    const pitchEl = document.getElementById('pitch');
+    const rollEl = document.getElementById('roll');
+    const yawEl = document.getElementById('yaw');
+    const tempEl = document.getElementById('temp');
+
+    let port;
+    let reader;
+    let keepReading = false;
+    let buffer = '';
+
+    function setStatus(text) {
+      statusEl.textContent = text;
+    }
+
+    function appendLog(line) {
+      logEl.textContent = `${line}\n${logEl.textContent}`.slice(0, 2200);
+    }
+
+    function updatePose(values, line) {
+      if (values.length < 3) return;
+      const pitch = Number(values[0]);
+      const roll = Number(values[1]);
+      const yaw = Number(values[2]);
+      if (!Number.isFinite(pitch) || !Number.isFinite(roll) || !Number.isFinite(yaw)) return;
+
+      pitchEl.textContent = pitch.toFixed(2);
+      rollEl.textContent = roll.toFixed(2);
+      yawEl.textContent = yaw.toFixed(2);
+
+      if (values.length >= 10 && Number.isFinite(Number(values[9]))) {
+        tempEl.textContent = Number(values[9]).toFixed(2);
+      }
+
+      cubeEl.style.transform = `rotateZ(${yaw}deg) rotateX(${pitch}deg) rotateY(${roll}deg)`;
+      appendLog(line);
+    }
+
+    function handleLine(rawLine) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith('#')) return;
+      const values = line.split(',').map(item => item.trim());
+      updatePose(values, line);
+    }
+
+    async function readLoop() {
+      const decoder = new TextDecoder();
+      while (keepReading && port && port.readable) {
+        reader = port.readable.getReader();
+        try {
+          while (keepReading) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split(/\r?\n/);
+            buffer = lines.pop() ?? '';
+            for (const line of lines) handleLine(line);
+          }
+        } finally {
+          reader.releaseLock();
+        }
+      }
+    }
+
+    async function connectSerial() {
+      if (!('serial' in navigator)) {
+        setStatus('Web Serial is not available in this browser');
+        return;
+      }
+      const baudRate = Number(baudInput.value || 115200);
+      if (!Number.isFinite(baudRate) || baudRate <= 0) {
+        setStatus('Invalid baud rate');
+        return;
+      }
+
+      port = await navigator.serial.requestPort();
+      await port.open({ baudRate });
+      keepReading = true;
+      connectButton.disabled = true;
+      disconnectButton.disabled = false;
+      setStatus(`Connected at ${baudRate}`);
+      readLoop().catch(error => setStatus(error.message));
+    }
+
+    async function disconnectSerial() {
+      keepReading = false;
+      if (reader) {
+        await reader.cancel().catch(() => {});
+      }
+      if (port) {
+        await port.close().catch(() => {});
+      }
+      reader = undefined;
+      port = undefined;
+      connectButton.disabled = false;
+      disconnectButton.disabled = true;
+      setStatus('Idle');
+    }
+
+    connectButton.addEventListener('click', () => {
+      connectSerial().catch(error => setStatus(error.message));
+    });
+    disconnectButton.addEventListener('click', () => {
+      disconnectSerial().catch(error => setStatus(error.message));
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,90 @@
+{
+  "device": {
+    "backend": "auto",
+    "iio_path": "auto",
+    "i2c_bus": 0,
+    "i2c_addr": "0x68",
+    "config_blob": "auto",
+    "init_sensor": true,
+    "sample_hz": 50.0
+  },
+  "filter": {
+    "gyro_alpha": 0.98,
+    "linear_acc_deadband_mps2": 0.18,
+    "stationary_accel_tolerance_g": 0.06,
+    "stationary_gyro_dps": 3.0,
+    "stationary_hold_s": 0.45,
+    "velocity_damping_per_s": 0.15,
+    "max_speed_mps": 8.0
+  },
+  "thresholds": {
+    "pitch_forward_deg": 35.0,
+    "pitch_backward_deg": -35.0,
+    "roll_left_deg": -45.0,
+    "roll_right_deg": 45.0,
+    "tilt_hold_s": 0.8,
+    "impact_g": 2.8,
+    "freefall_g": 0.35,
+    "freefall_hold_s": 0.25,
+    "speed_warn_mps": 2.5,
+    "speed_hold_s": 1.0,
+    "alert_cooldown_s": 3.0,
+    "tilt_enabled": true,
+    "hunch_enabled": true,
+    "hunch_pitch_deg": -15.5,
+    "hunch_hold_s": 3.0,
+    "hunch_max_gyro_dps": 30.0,
+    "hunch_accel_min_g": 0.75,
+    "hunch_accel_max_g": 1.25
+  },
+  "output": {
+    "console_hz": 5.0,
+    "ble_enabled": false,
+    "ble_hz": 10.0,
+    "ble_name": "SS928-SmartBag",
+    "alert_file": "",
+    "alert_active_value": "1",
+    "alert_inactive_value": "0",
+    "alert_pulse_ms": 300,
+    "alert_command": []
+  },
+  "calibration": {
+    "data_dir": "/var/lib/smartbag/calibration",
+    "modes": {
+      "straight": {
+        "label": "straight standing with backpack",
+        "prefix": "straight",
+        "duration_s": 15.0
+      },
+      "hunch": {
+        "label": "hunched standing with backpack",
+        "prefix": "hunch",
+        "duration_s": 15.0
+      },
+      "straight_walk": {
+        "label": "normal standing and walking",
+        "prefix": "straight_walk",
+        "duration_s": 30.0
+      },
+      "hunch_walk": {
+        "label": "hunched walking",
+        "prefix": "hunch_walk",
+        "duration_s": 30.0
+      },
+      "bend_pickup": {
+        "label": "bend, pick up, adjust backpack",
+        "prefix": "bend_pickup",
+        "duration_s": 30.0
+      }
+    }
+  },
+  "posture": {
+    "enabled": false,
+    "roll_zero_deg": 0.0,
+    "pitch_zero_deg": 0.0,
+    "yaw_zero_deg": 0.0
+  },
+  "fall_detection": {
+    "enabled": true
+  }
+}

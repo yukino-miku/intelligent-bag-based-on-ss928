@@ -3,14 +3,17 @@ from __future__ import annotations
 import argparse
 import csv
 import os
+import sys
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from alert_output import AlertJsonlEmitter
 from camera_source import FfmpegCameraConfig, FfmpegMjpegCameraCapture
 from calibration import CameraCalibration, calibration_from_mapping, estimate_ground_point_from_bbox, load_calibration_file
+from detector_backend import DetectorBackend, Ss928OmBackend, UltralyticsBackend
 from risk_model import MotionPattern, RiskAssessment, RiskLevel, RiskModel, corridor_zone_name, motion_pattern_name, warning_action_for_level
 from vision_core import DetectionObservation, StableTrackIdManager, TrackState, TrackedObject, compute_observation_quality, format_overlay_label, parse_target_classes, should_keep_class
 
@@ -47,7 +50,18 @@ RUNTIME_PROFILES = {
         "conf": 0.02,
         "max_det": 50,
     },
+    "board_cpu": {
+        "width": 640,
+        "height": 480,
+        "imgsz": 416,
+        "conf": 0.06,
+        "max_det": 30,
+    },
 }
+
+
+def eprint(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
 
 
 @dataclass(frozen=True)
@@ -297,13 +311,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source", choices=("camera", "video"), default="camera", help="Input source type.")
     parser.add_argument("--video", help="Video file path when --source video is used.")
     parser.add_argument("--camera-index", type=int, default=1, help="OpenCV camera index. USB Camera is usually 1 on this PC.")
+    parser.add_argument("--camera-device", default=None, help="Linux camera device path, for example /dev/video0. Overrides --camera-index/backend.")
     parser.add_argument("--camera-backend", choices=("ffmpeg", "opencv"), default="ffmpeg", help="Live camera backend.")
     parser.add_argument("--camera-name", default="USB Camera", help="DirectShow camera device name for --camera-backend ffmpeg.")
-    parser.add_argument("--runtime-profile", choices=tuple(RUNTIME_PROFILES), default="balanced", help="Runtime preset: cpu_demo is recommended for PyTorch CPU demos; quality favors far-object recognition.")
+    parser.add_argument("--runtime-profile", choices=tuple(RUNTIME_PROFILES), default="balanced", help="Runtime preset: cpu_demo targets PC CPU demos, board_cpu is the SS928 CPU baseline, and quality favors far-object recognition.")
     parser.add_argument("--width", type=int, default=None, help="Requested camera width. Defaults come from --runtime-profile.")
     parser.add_argument("--height", type=int, default=None, help="Requested camera height. Defaults come from --runtime-profile.")
     parser.add_argument("--fps", type=float, default=30.0, help="Requested camera FPS or fallback video FPS.")
     parser.add_argument("--model", default="yolo11n.pt", help="Ultralytics YOLO model path/name.")
+    parser.add_argument("--detector-backend", choices=("ultralytics", "ss928_om"), default="ultralytics", help="Detection backend. ss928_om is an explicit integration placeholder until a verified board runtime is available.")
     parser.add_argument("--tracker", default="vehicle_botsort.yaml", help="Ultralytics tracker config, for example vehicle_botsort.yaml.")
     parser.add_argument("--conf", type=float, default=None, help="YOLO confidence threshold. Lower values detect farther/smaller objects.")
     parser.add_argument("--imgsz", type=int, default=None, help="YOLO inference image size. Defaults come from --runtime-profile.")
@@ -338,6 +354,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--overlay-verbosity", choices=("minimal", "normal", "debug"), default="normal", help="Overlay label detail level.")
     parser.add_argument("--save-output", help="Optional output MP4 path with overlays.")
     parser.add_argument("--risk-log-csv", help="Optional CSV path for per-track risk debugging logs.")
+    parser.add_argument("--side", choices=("auto", "left", "right"), default="auto", help="Alert side mode. auto infers left/right from target ground x; dual-camera deployments use fixed left/right.")
+    parser.add_argument("--center-side", choices=("both", "strongest", "left", "right"), default="both", help="How single-camera central targets are routed to haptic sides.")
+    parser.add_argument("--side-dead-zone", type=float, default=0.35, help="Single-camera center dead zone in ground x meters.")
+    parser.add_argument("--emit-alert-jsonl", action="store_true", help="Emit stabilized haptic vision_alert events to stdout; all diagnostics stay on stderr.")
+    parser.add_argument("--alert-min-level", type=int, default=1, help="Minimum stabilized haptic level to emit, 0..4.")
+    parser.add_argument("--alert-rate-limit", type=float, default=0.25, help="Minimum seconds between repeated same-side/same-level events.")
     parser.add_argument("--profile", action="store_true", help="Print sliding-average stage timings once per second.")
     parser.add_argument("--max-frames", type=int, default=0, help="Stop after N processed frames. 0 means no limit.")
     parser.add_argument("--no-display", action="store_true", help="Process without opening an OpenCV window.")
@@ -363,6 +385,12 @@ def apply_runtime_profile_defaults(args: argparse.Namespace) -> argparse.Namespa
         raise SystemExit("--pitch-smoothing must be between 0 and 1.")
     if args.ego_motion_every_n < 1:
         raise SystemExit("--ego-motion-every-n must be >= 1.")
+    if args.side_dead_zone < 0.0:
+        raise SystemExit("--side-dead-zone must be >= 0.")
+    if not 0 <= args.alert_min_level <= 4:
+        raise SystemExit("--alert-min-level must be 0..4.")
+    if args.alert_rate_limit < 0.0:
+        raise SystemExit("--alert-rate-limit must be >= 0.")
     return args
 
 
@@ -544,7 +572,7 @@ class StageProfiler:
         text = self.summary_text()
         if text:
             self.last_report_text = text
-            print(text)
+            eprint(text)
         return text
 
     def overlay_text(self) -> str:
@@ -565,7 +593,11 @@ def open_capture(args: argparse.Namespace):
             raise SystemExit(f"Could not open video: {args.video}")
         return capture
 
-    if args.camera_backend == "ffmpeg":
+    if args.camera_device:
+        capture = cv2.VideoCapture(str(args.camera_device), cv2.CAP_ANY)
+        if not capture.isOpened():
+            raise SystemExit(f"Could not open camera device {args.camera_device}.")
+    elif args.camera_backend == "ffmpeg":
         capture = FfmpegMjpegCameraCapture(
             FfmpegCameraConfig(
                 device_name=args.camera_name,
@@ -577,17 +609,29 @@ def open_capture(args: argparse.Namespace):
         if not capture.is_opened():
             raise SystemExit(f"Could not open camera {args.camera_name} with FFmpeg.")
         return capture
-
-    backend = cv2.CAP_DSHOW if os.name == "nt" else cv2.CAP_ANY
-    capture = cv2.VideoCapture(args.camera_index, backend)
-    if not capture.isOpened():
-        raise SystemExit(f"Could not open camera index {args.camera_index}. Try --camera-index 0 or 1.")
+    else:
+        backend = cv2.CAP_DSHOW if os.name == "nt" else cv2.CAP_ANY
+        capture = cv2.VideoCapture(args.camera_index, backend)
+        if not capture.isOpened():
+            raise SystemExit(f"Could not open camera index {args.camera_index}. Try --camera-index 0 or 1.")
 
     capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
     capture.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
     capture.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
     capture.set(cv2.CAP_PROP_FPS, args.fps)
     return capture
+
+
+def read_initial_frame(capture, timeout_s: float = 5.0, sleep_s: float = 0.05):
+    deadline_s = time.monotonic() + max(timeout_s, 0.0)
+    while True:
+        ok, frame = capture.read()
+        if ok and frame is not None:
+            return True, frame
+        if time.monotonic() >= deadline_s:
+            return False, None
+        if sleep_s > 0.0:
+            time.sleep(sleep_s)
 
 
 def create_writer(args: argparse.Namespace, frame_shape: tuple[int, int, int], fps: float):
@@ -622,7 +666,7 @@ def create_camera_calibration(args: argparse.Namespace, frame_width: int, frame_
     mapping = load_calibration_file(args.calibration_file)
     calibration = calibration_from_mapping(mapping, fallback)
     calibration = calibration.scaled_to_image_size(frame_width, frame_height)
-    print(
+    eprint(
         "Loaded camera calibration: "
         f"{'intrinsics' if calibration.has_intrinsics else 'FOV fallback'} "
         f"{calibration.image_width}x{calibration.image_height} pitch={calibration.camera_pitch_deg:.2f}"
@@ -640,22 +684,28 @@ def create_yolo_model(args: argparse.Namespace, yolo_cls=None):
     if args.prefer_openvino and backend_label == "PyTorch":
         openvino_dir = openvino_export_dir_for_model(args.model)
         if openvino_dir is not None and not openvino_dir.exists():
-            print(
+            eprint(
                 f"OpenVINO export not found at {openvino_dir}. "
                 "Run once with --export-openvino, then rerun with --prefer-openvino."
             )
     if backend_label == "PyTorch" and (args.device is None or str(args.device).lower() == "cpu"):
-        print(
+        eprint(
             "PyTorch CPU inference may be slow. For demos, try "
             "--runtime-profile cpu_demo --imgsz 640 --prefer-openvino."
         )
-    print(f"Loading {backend_label} model: {model_path}")
+    eprint(f"Loading {backend_label} model: {model_path}")
     model = yolo_cls(model_path)
     if args.export_openvino:
         exported_model_path = model.export(format="openvino")
-        print(f"Loading OpenVINO model: {exported_model_path}")
+        eprint(f"Loading OpenVINO model: {exported_model_path}")
         model = yolo_cls(str(exported_model_path))
     return model
+
+
+def create_detector_backend(args: argparse.Namespace) -> DetectorBackend:
+    if args.detector_backend == "ss928_om":
+        return Ss928OmBackend(args.model)
+    return UltralyticsBackend(create_yolo_model(args))
 
 
 def frame_timestamp(args: argparse.Namespace, start_time: float, frame_index: int, fps: float) -> float:
@@ -1424,7 +1474,7 @@ def main() -> None:
     capture_fps = float(capture.get(cv2.CAP_PROP_FPS) or args.fps or 30.0) if hasattr(capture, "get") else float(args.fps or 30.0)
 
     with profiler.stage("capture"):
-        ok, first_frame = capture.read()
+        ok, first_frame = read_initial_frame(capture)
     if not ok:
         raise SystemExit("Input opened but no frame could be read.")
 
@@ -1438,16 +1488,16 @@ def main() -> None:
 
     writer = create_writer(args, first_frame.shape, capture_fps)
     target_classes = parse_target_classes(args.target_classes)
-    model = create_yolo_model(args)
-    target_class_ids = target_class_ids_from_model_names(getattr(model, "names", None), target_classes)
+    detector = create_detector_backend(args)
+    target_class_ids = target_class_ids_from_model_names(detector.names, target_classes)
     if target_classes is None:
-        print("YOLO class prefilter: all classes")
+        eprint("YOLO class prefilter: all classes")
     elif target_class_ids is None:
-        print("YOLO class prefilter unavailable; using post-processing class filter only.")
+        eprint("YOLO class prefilter unavailable; using post-processing class filter only.")
     elif target_class_ids:
-        print(f"YOLO class prefilter IDs: {target_class_ids}")
+        eprint(f"YOLO class prefilter IDs: {target_class_ids}")
     else:
-        print("YOLO class prefilter IDs: none matched; YOLO tracking will receive an empty class filter.")
+        eprint("YOLO class prefilter IDs: none matched; YOLO tracking will receive an empty class filter.")
 
     track_state = TrackState(
         history_seconds=args.speed_window,
@@ -1464,6 +1514,18 @@ def main() -> None:
     )
     ego_motion_estimator = EgoMotionEstimator(mode=args.ego_motion_mode)
     risk_logger = RiskCsvLogger(args.risk_log_csv)
+    alert_emitter = (
+        AlertJsonlEmitter(
+            sys.stdout,
+            fixed_side=args.side,
+            min_level=args.alert_min_level,
+            rate_limit_s=args.alert_rate_limit,
+            dead_zone_m=args.side_dead_zone,
+            center_mode=args.center_side,
+        )
+        if args.emit_alert_jsonl
+        else None
+    )
 
     start_time = time.monotonic()
     processed_frames = 0
@@ -1520,7 +1582,7 @@ def main() -> None:
                 track_kwargs["classes"] = target_class_ids
 
             with profiler.stage("infer+track"):
-                results = model.track(inference_frame, **track_kwargs)
+                results = detector.track(inference_frame, **track_kwargs)
             with profiler.stage("postprocess"):
                 result = restore_result_boxes_to_full_frame(results[0], inference_view.y_offset_px)
                 observations = result_to_observations(
@@ -1548,6 +1610,8 @@ def main() -> None:
                 }
                 tracked_objects_by_id = {target.track_id: target for target in tracked_objects}
                 risk_by_track_id = risk_stabilizer.stabilize(raw_risk_by_track_id, tracked_objects_by_id)
+                if alert_emitter is not None:
+                    alert_emitter.update(tracked_objects, risk_by_track_id)
                 risk_logger.write_frame(
                     source_frame_index,
                     tracked_objects,
@@ -1615,9 +1679,11 @@ def main() -> None:
         if not args.no_display and key in (ord("["), ord("]")):
             delta = -1 if key == ord("[") else 1
             pitch = pitch_controller.adjust(delta)
-            print(f"camera pitch: {pitch:.2f} deg")
+            eprint(f"camera pitch: {pitch:.2f} deg")
         profiler.maybe_report()
 
+    if alert_emitter is not None:
+        alert_emitter.clear_all()
     capture.release()
     if writer is not None:
         writer.release()

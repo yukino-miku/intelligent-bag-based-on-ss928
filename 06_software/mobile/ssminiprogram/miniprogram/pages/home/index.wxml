@@ -1,0 +1,79 @@
+<view class="home">
+  <view class="home__title">智能安全背包</view>
+
+  <view class="section-title">
+    <view class="section-title__line"></view>
+    <text>全局监控</text>
+    <view class="section-title__line"></view>
+  </view>
+
+  <view class="monitor-card">
+    <view class="monitor-card__visual">
+      <view class="backpack">
+        <view class="backpack__strap backpack__strap--left"></view>
+        <view class="backpack__strap backpack__strap--right"></view>
+        <view class="backpack__body">
+          <view class="backpack__shield">盾</view>
+          <view class="backpack__glow"></view>
+        </view>
+        <view class="backpack__pocket"></view>
+      </view>
+    </view>
+
+    <view class="monitor-card__grid">
+      <view class="status-cell">
+        <view class="status-cell__dot status-cell__dot--blue">连</view>
+        <view class="status-cell__text">
+          <view class="status-cell__title">设备在线</view>
+          <view class="status-cell__meta">在线设备：{{onlineCount}}台</view>
+        </view>
+      </view>
+      <view class="status-cell">
+        <view class="status-cell__dot status-cell__dot--green">监</view>
+        <view class="status-cell__text">
+          <view class="status-cell__title">{{monitorState}}</view>
+          <view class="status-cell__meta">系统运行正常</view>
+        </view>
+      </view>
+      <view class="status-cell">
+        <view class="status-cell__dot status-cell__dot--mint">电</view>
+        <view class="status-cell__text">
+          <view class="status-cell__title">电量 {{battery}}%</view>
+          <view class="status-cell__meta">剩余电量充足</view>
+        </view>
+      </view>
+      <view class="status-cell">
+        <view class="status-cell__dot status-cell__dot--safe">盾</view>
+        <view class="status-cell__text">
+          <view class="status-cell__title">运行状态：{{systemState}}</view>
+          <view class="status-cell__meta">所有系统运行正常</view>
+        </view>
+      </view>
+    </view>
+  </view>
+
+  <view class="feature-list">
+    <view
+      class="feature-card"
+      wx:for="{{featureEntries}}"
+      wx:key="key"
+      bind:tap="openFeature"
+      data-route="{{item.route}}"
+    >
+      <view class="feature-card__icon feature-card__icon--{{item.tone}}">{{item.icon}}</view>
+      <view class="feature-card__main">
+        <view class="feature-card__title">{{item.title}}</view>
+        <view class="feature-card__subtitle">{{item.subtitle}}</view>
+      </view>
+      <view class="feature-card__arrow">›</view>
+    </view>
+  </view>
+
+  <view class="smartbag-debug-entry" bind:tap="openFeature" data-route="/pages/monitor/index">
+    <view class="smartbag-debug-entry__main">
+      <view class="smartbag-debug-entry__title">SS928-SmartBag 调试入口</view>
+      <view class="smartbag-debug-entry__subtitle">连接报警主控，测试 L1-L4 / R1-R4 震动和语音</view>
+    </view>
+    <view class="smartbag-debug-entry__action">进入</view>
+  </view>
+</view>

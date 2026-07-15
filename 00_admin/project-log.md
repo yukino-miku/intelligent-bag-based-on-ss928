@@ -1,5 +1,14 @@
 # Project Log
 
+## 2026-07-15
+
+- 完成 `sanda-tt/ss928` 的板端功能审计与选择性迁移，固定来源提交为 `d7e10fd06dc553f94d2db3a3d19987ec8648f7dc`，未修改来源仓库。
+- 当前正式路线明确为纯视觉避障；雷达实验从活动目录移除，历史保留在 Git。
+- 建立 vision -> stabilized haptic JSONL -> controller -> PWM/optional audio 事件链，并统一 GNSS、BMI270、fall event 和单一 BLE NUS。
+- 默认部署使用一个摄像头和一个 detector；双摄仅作为兼容配置，SS928 NPU/OM 后端待真实 SDK/API 验证。
+- 新增统一 `/root/smartbag` 部署包、systemd 服务、硬件资源文档和集成测试。
+- 本地验证 181 项 Python 测试与 8 项小程序断言通过，`compileall`、JSON 解析和 9 个 shell 脚本语法检查通过；真实板端外设仍待验证。
+
 ## 2026-06-06
 
 - Vision prototype updated for review feedback: native-scale preview by default, 1920x1080 live input request, YOLO imgsz 640, confidence 0.15, max detections 1000, and default target classes set to car/bicycle/motorcycle/bus/truck.

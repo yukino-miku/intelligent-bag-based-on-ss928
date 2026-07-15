@@ -1,5 +1,15 @@
 # 更新记录
 
+## 2026-07-15
+
+- 从只读来源 `sanda-tt/ss928@d7e10fd06dc553f94d2db3a3d19987ec8648f7dc` 选择性整合 IMX347、BMI270、跌倒检测、DX-GP21、震动/音频控制、小程序和板端调试工具，没有合并来源 Git 历史。
+- 视觉程序新增 `board_cpu`、`DetectorBackend`、`--camera-device`、单/双摄方向参数和稳定 haptic `vision_alert` JSONL；stdout 只输出事件，普通日志转 stderr。
+- Controller 增加配置化四路 PWM、事件过期/格式校验、detector 退出清振、单摄默认模式、统一 BLE 命令路由和可选非阻塞音频。
+- GNSS/BMI 默认关闭独立 BLE，统一广播名为 `SS928-SmartBag`；BMI 样本直接进入独立 fall detector 事件链。
+- 建立 SS928 40Pin 唯一事实源、板端需求/设计/来源清单、统一部署包和跨模块集成测试。
+- 删除活动 `radar_visualizer`、旧雷达实现计划、跟踪的 YOLO/ONNX 权重和本地生成物；当前风险判断保持纯视觉。
+- 来源 SDK、二进制、BMI270 blob、原始校准 CSV 和许可不明音频未迁移；部署提示音为本项目生成的短测试音且默认关闭。
+
 本文件记录已经上传到 GitHub 的项目更新。以后每次有实质功能、参数、文档或调试流程变化，都要在提交前增加对应记录。
 
 ## 2026-07-07

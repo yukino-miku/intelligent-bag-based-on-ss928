@@ -559,3 +559,19 @@ The numbers are useful for early algorithm testing, but they are not final safet
 cd D:\mywork\code\embedded-contest-project\06_software\vision_obstacle_tracker
 py -m unittest discover -s tests -v
 ```
+
+## SS928 板端事件输出
+
+`board_cpu` 是 CPU 协议联调基线，不表示已经使用 SS928 NPU：
+
+```sh
+python3 vision_obstacle_tracker.py \
+  --source camera --camera-device /dev/video0 \
+  --runtime-profile board_cpu --model /root/smartbag/models/yolo11n.pt \
+  --no-display --side auto --center-side both \
+  --emit-alert-jsonl --alert-min-level 1 --alert-rate-limit 0.5
+```
+
+stdout 只输出 compact `vision_alert` JSONL，模型加载、profile 和普通日志写 stderr。事件等级来自多帧稳定后的 `haptic_level`；风险消失会立即发 level 0。同侧同等级受 rate limit 限制。`--side left|right` 用于双摄固定方向；单摄 `auto` 根据 `x_m` 和 `--side-dead-zone` 路由。
+
+`--detector-backend ultralytics` 是当前完整实现。`--detector-backend ss928_om` 只保留明确接口和未实现错误；OpenVINO 不等于 SS928 NPU，不能用它冒充 `.om` 后端。
