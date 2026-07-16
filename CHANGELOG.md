@@ -1,5 +1,16 @@
 # 更新记录
 
+## 2026-07-16
+
+- 正式板端部署从单摄默认改为左右两个固定 USB detector：每个进程只打开一次对应相机，左事件只驱动左 PWM，右事件只驱动右 PWM；旧 `--single-camera/--side auto` 仅保留兼容测试。
+- 新增 `board_dual_balanced`、容量 1 latest-frame capture、`--camera-fps`、`--inference-fps-limit`、`--process-every-n`、有限断流重连和左右 `[left]/[right]` profile；保留原 Future Conflict Gate、多帧稳定和 haptic 输出。
+- 新增 detector-local snapshot/MJPEG 服务和 `dual_camera_gateway.py`，提供双路状态、raw/overlay snapshot、MJPEG 与浏览器调试页；手机慢客户端不阻塞检测，摄像头不会被第二个推流进程重复打开。
+- Controller 新增双摄配置生成、跨侧事件拒绝、单侧退出清振/有限重启、自动 BLE alert、资源/重启状态文件；`SYS STATUS` 不再伪造电量。
+- 微信小程序新增“双摄实时画面”、板端地址/path/token/storage、raw/overlay、暂停/重连、左右风险与自动告警历史；视频明确只走 Wi-Fi/LAN，不走 BLE。
+- 新增双标定模板、双摄/依赖/stream 测试脚本、`smartbag-video.service`、双摄默认 target、完整部署说明和本地 SS928 归档审计。MIPI/VO 不进入默认启动链。
+- 真实 SS928 只读验证确认双 UVC 枚举和单路出帧，但当前两台相机共用 USB 2.0 hub，双路 640x480/320x240 均出现一侧 `ENOSPC`；当前 952 MiB 内存且缺少板端视觉依赖，未宣称双 detector 已运行。
+- 本地通过 203 项 Python 测试、4 个小程序测试文件、compileall、16 个 JSON、14 个 JavaScript、15 个 shell 语法和 `git diff --check`。不同 USB 根控制器复测、视觉依赖、温度、微信真机和 `.om` 后端仍待验证。
+
 ## 2026-07-15
 
 - 从只读来源 `sanda-tt/ss928@d7e10fd06dc553f94d2db3a3d19987ec8648f7dc` 选择性整合 IMX347、BMI270、跌倒检测、DX-GP21、震动/音频控制、小程序和板端调试工具，没有合并来源 Git 历史。

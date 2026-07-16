@@ -23,6 +23,8 @@ class Point:
 class Target:
     track_id: int
     ground_point: Point
+    class_name: str = ""
+    distance_m: float | None = None
 
 
 @dataclass
@@ -81,6 +83,17 @@ class AlertJsonlEmitterTest(unittest.TestCase):
         self.assertEqual(0, cleared[0]["level"])
         rows = [json.loads(line) for line in stream.getvalue().splitlines()]
         self.assertEqual([3, 0], [row["level"] for row in rows])
+
+    def test_fixed_camera_side_overrides_target_ground_position_and_adds_context(self) -> None:
+        stream = io.StringIO()
+        emitter = AlertJsonlEmitter(stream, fixed_side="left", clock=lambda: 2.0)
+        target = Target(8, Point(5.0), class_name="truck", distance_m=4.2)
+
+        emitted = emitter.update([target], {8: Risk(Level.CAUTION, 0.7)})
+
+        self.assertEqual("left", emitted[0]["side"])
+        self.assertEqual("truck", emitted[0]["class"])
+        self.assertEqual(4.2, emitted[0]["distance_m"])
 
 
 if __name__ == "__main__":

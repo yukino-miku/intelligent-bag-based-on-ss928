@@ -425,3 +425,12 @@ page {
 .log-panel__line:first-child {
   border-top: 0;
 }
+.auto-alert-panel { margin: 22rpx 0; padding: 20rpx; background: #fff; border: 1rpx solid #d1d7dd; }
+.auto-alert-panel__header { display: flex; align-items: center; justify-content: space-between; }
+.auto-alert-panel__title { font-size: 30rpx; font-weight: 700; }
+.auto-alert-panel__clear { margin: 0; border-radius: 6rpx; font-size: 24rpx; }
+.auto-alert-panel__current { display: grid; grid-template-columns: 1fr 1fr; gap: 12rpx; margin-top: 14rpx; }
+.auto-risk { display: flex; justify-content: space-between; padding: 14rpx; border-left: 8rpx solid #26835b; background: #f2f6f4; }
+.auto-risk--1 { border-left-color: #9b7b13; }.auto-risk--2 { border-left-color: #c56b16; }.auto-risk--3,.auto-risk--4 { border-left-color: #ba2f27; }
+.auto-alert-history { margin-top: 14rpx; }
+.auto-alert-row { display: grid; grid-template-columns: 110rpx 60rpx 150rpx 1fr 100rpx; gap: 8rpx; padding: 10rpx 0; border-top: 1rpx solid #e1e5e8; font-size: 23rpx; }

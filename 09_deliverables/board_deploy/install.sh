@@ -12,7 +12,7 @@ DEST=/root/smartbag
 }
 
 install -d "$DEST/vision" "$DEST/controller" "$DEST/gnss" "$DEST/imu" "$DEST/audio" "$DEST/models"
-install -d /etc/smartbag /var/lib/smartbag/tracks /var/lib/smartbag/calibration /var/log/smartbag
+install -d /etc/smartbag /run/smartbag /var/lib/smartbag/tracks /var/lib/smartbag/calibration /var/log/smartbag
 
 cp -a "$REPO_ROOT/06_software/vision_obstacle_tracker/." "$DEST/vision/"
 cp -a "$REPO_ROOT/06_software/board_runtime/smartbag_alert_controller/." "$DEST/controller/"
@@ -29,9 +29,12 @@ find "$DEST/vision" -type d \( -name build -o -name dist -o -name dist_onefile -
 find "$DEST/vision" -type f \( -name 'yolo*.pt' -o -name 'yolo*.onnx' -o -name '*.om' \) -delete
 
 [ -f /etc/smartbag/config.json ] || cp "$SCRIPT_DIR/config.example.json" /etc/smartbag/config.json
+[ -f /etc/smartbag/calibration-left.json ] || cp "$SCRIPT_DIR/calibration-left.example.json" /etc/smartbag/calibration-left.json
+[ -f /etc/smartbag/calibration-right.json ] || cp "$SCRIPT_DIR/calibration-right.example.json" /etc/smartbag/calibration-right.json
 cp "$SCRIPT_DIR/systemd/"*.service "$SCRIPT_DIR/systemd/smartbag.target" /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable smartbag.target
 
 echo "Installed under $DEST. Place the model at $DEST/models/yolo11n.pt before starting."
-echo "Then run: $SCRIPT_DIR/preflight.sh && systemctl start smartbag.target"
+echo "Review /etc/smartbag/config.json and both calibration files before starting."
+echo "Then run: $SCRIPT_DIR/check-runtime-deps.sh && $SCRIPT_DIR/preflight.sh && systemctl start smartbag.target"

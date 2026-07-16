@@ -1,8 +1,24 @@
 # SS928 SmartBag 微信小程序
 
-原生小程序保留首页、GNSS 轨迹、BMI270 姿态、monitor、tracks、BLE NUS 工具、WGS84 到 GCJ-02、alarm-utils 和 track-utils。已移除 example、placeholder、quickstart cloudfunction、默认脚手架图片和 private config。
+原生小程序包含首页、双摄画面、GNSS 轨迹、BMI270 姿态、monitor、tracks、BLE NUS、WGS84 到 GCJ-02 和本地告警历史。默认只扫描统一设备名 `SS928-SmartBag`。
 
-默认只扫描统一设备名 `SS928-SmartBag`，不再同时要求 `DX-GP21-Track` 与 `BMI270-Backpack` 两个 NUS。命令使用：
+## 双摄实时画面
+
+首页进入“**双摄实时画面**”后可配置：
+
+- `boardHost`：板端 IP、主机名或含协议地址；不在代码中写死；
+- `videoPort`：默认 8080；
+- `accessToken`：可选；
+- `refreshFps`：snapshot 刷新 1..10 FPS；
+- 左右 API path、raw/overlay 模式。
+
+配置保存在 `smartbagCameraConfig` (`wx.setStorageSync`)。页面同时显示左右 snapshot、在线状态、采集/推理/预览 FPS、最后帧延迟、风险、设备路径和更新时间，并支持暂停、恢复、重连和单侧大图。当前启用 `SnapshotHttpTransport`；`CameraTransport` 保留后续协议扩展边界。MJPEG endpoint 供浏览器验证，不宣称已在微信 `<image>` 中稳定连续播放。
+
+## 自动告警
+
+Controller 通过 BLE TX 推送 `typ=alert`。monitor 分别维护左右当前状态，并把最多 40 条历史保存到本地 storage；`level=0` 只清对应侧，手动清除会同步删除本地历史。BLE 行缓存会跨 notification 拼接 JSON，避免分包导致半行解析。首页的设备、系统和电量来自最近 `typ=sys` 状态；没有电池传感器时显示“未接入”，不显示虚构百分比。
+
+命令命名空间：
 
 ```text
 AL L1 / AL R2 / AL CLEAR
@@ -11,11 +27,19 @@ IMU STATUS / IMU ZERO / IMU ZERO_V / IMU SET <key>=<value>
 SYS STATUS
 ```
 
-用微信开发者工具导入本目录，`project.config.json` 使用游客 appid；真机测试前替换为自己的小程序配置。BLE 权限、定位权限和 Nordic UART 链路必须用手机验证，模拟器不能替代真实 BLE。
+## 导入和真机限制
 
-工具测试：
+用微信开发者工具导入本目录。仓库的游客 AppID 只用于工具预览；真机 BLE 和局域网必须换成自己的小程序配置。开发调试可临时勾选“不校验合法域名、TLS 版本及 HTTPS 证书”，但正式环境必须按微信当前网络规则配置 AppID、通信域名/HTTPS，并在目标 iOS、Android 微信版本上验证。
+
+官方网络规则说明局域网 IP 从基础库 2.4.0 起可用于网络接口，但手机和板端仍必须互相可达，且 AP 客户端隔离、系统网络权限、基础库版本和发布配置都可能影响结果：<https://developers.weixin.qq.com/miniprogram/dev/framework/ability/network.html>。
+
+未完成真实手机验证时，先用浏览器打开 `http://<BOARD_IP>:8080/`，再验证小程序 snapshot。不要把开发者工具成功写成正式真机已完成。
+
+## 工具测试
 
 ```sh
 node tests/alarm-utils.test.js
 node tests/track-utils.test.js
+node tests/camera-transport.test.js
+node tests/alert-state.test.js
 ```

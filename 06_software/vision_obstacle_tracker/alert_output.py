@@ -12,6 +12,8 @@ class AlertCandidate:
     level: int
     score: float
     track_id: int
+    class_name: str = ""
+    distance_m: float | None = None
 
 
 class AlertJsonlEmitter:
@@ -56,11 +58,25 @@ class AlertJsonlEmitter:
             if level < self.min_level:
                 continue
             score = float(getattr(risk, "score", 0.0))
-            candidate = AlertCandidate("", level, score, int(getattr(target, "track_id")))
+            candidate = AlertCandidate(
+                "",
+                level,
+                score,
+                int(getattr(target, "track_id")),
+                str(getattr(target, "class_name", "")),
+                _optional_float(getattr(target, "distance_m", None)),
+            )
             for side in self._sides_for_target(target):
                 current = best[side]
                 if current is None or (candidate.level, candidate.score) > (current.level, current.score):
-                    best[side] = AlertCandidate(side, level, score, candidate.track_id)
+                    best[side] = AlertCandidate(
+                        side,
+                        level,
+                        score,
+                        candidate.track_id,
+                        candidate.class_name,
+                        candidate.distance_m,
+                    )
 
         now_s = float(self.clock())
         emitted: list[dict[str, object]] = []
@@ -73,7 +89,17 @@ class AlertJsonlEmitter:
             level_changed = candidate.level != self._last_level[side]
             rate_ready = now_s - self._last_emit_s[side] >= self.rate_limit_s
             if level_changed or rate_ready:
-                emitted.append(self._emit(side, candidate.level, candidate.score, candidate.track_id, now_s))
+                emitted.append(
+                    self._emit(
+                        side,
+                        candidate.level,
+                        candidate.score,
+                        candidate.track_id,
+                        now_s,
+                        candidate.class_name,
+                        candidate.distance_m,
+                    )
+                )
         return emitted
 
     def clear_all(self) -> list[dict[str, object]]:
@@ -99,7 +125,16 @@ class AlertJsonlEmitter:
             return (self.center_mode,)
         return ("left",) if self._last_level["left"] >= self._last_level["right"] else ("right",)
 
-    def _emit(self, side: str, level: int, score: float, track_id: int, now_s: float) -> dict[str, object]:
+    def _emit(
+        self,
+        side: str,
+        level: int,
+        score: float,
+        track_id: int,
+        now_s: float,
+        class_name: str = "",
+        distance_m: float | None = None,
+    ) -> dict[str, object]:
         payload: dict[str, object] = {
             "type": "vision_alert",
             "side": side,
@@ -108,8 +143,21 @@ class AlertJsonlEmitter:
             "track_id": int(track_id),
             "ts": round(now_s, 6),
         }
+        if class_name:
+            payload["class"] = class_name
+        if distance_m is not None:
+            payload["distance_m"] = round(distance_m, 3)
         self.stream.write(json.dumps(payload, separators=(",", ":"), ensure_ascii=True) + "\n")
         self.stream.flush()
         self._last_level[side] = int(level)
         self._last_emit_s[side] = now_s
         return payload
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None

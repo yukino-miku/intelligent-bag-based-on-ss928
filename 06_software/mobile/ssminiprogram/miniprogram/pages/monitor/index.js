@@ -1,4 +1,6 @@
 const SMARTBAG_DEVICE_NAME = "SS928-SmartBag";
+const { createAlertState, applyAlertFrame } = require("../../utils/alert-state");
+const ALERT_HISTORY_STORAGE_KEY = "smartbagAlertHistory";
 const TARGET_DEVICE_NAMES = [SMARTBAG_DEVICE_NAME];
 const TARGET_DEVICE_NAME = TARGET_DEVICE_NAMES.join(" / ");
 const NUS_SERVICE_UUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E";
@@ -70,6 +72,10 @@ Page({
     commandResponse: "等待连接",
     alertCommands: ALERT_COMMANDS,
     logs: [],
+    leftRisk: createAlertState().current.left,
+    rightRisk: createAlertState().current.right,
+    alertHistory: [],
+    systemStatus: null,
     horizonStyle: "",
     bodyStyle: ""
   },
@@ -82,6 +88,12 @@ Page({
     this.rxCharacteristicId = "";
     this.receiveText = "";
     this.sampleTimes = [];
+    this.alertState = createAlertState();
+    const savedHistory = wx.getStorageSync(ALERT_HISTORY_STORAGE_KEY);
+    if (Array.isArray(savedHistory)) {
+      this.alertState.history = savedHistory.slice(0, 40);
+      this.setData({ alertHistory: this.alertState.history });
+    }
 
     wx.onBluetoothDeviceFound((res) => this.handleDeviceFound(res));
     wx.onBLECharacteristicValueChange((res) => this.handleCharacteristicValue(res));
@@ -305,7 +317,11 @@ Page({
     if (text.charAt(0) === "{") {
       try {
         const frame = JSON.parse(text);
-        if (typeof frame.r !== "undefined" && typeof frame.p !== "undefined" && typeof frame.y !== "undefined") {
+        if (frame.typ === "alert") {
+          this.applyAutomaticAlert(frame);
+        } else if (frame.typ === "sys") {
+          this.applySystemStatus(frame);
+        } else if (typeof frame.r !== "undefined" && typeof frame.p !== "undefined" && typeof frame.y !== "undefined") {
           this.updateFrame(frame);
         } else {
           this.setData({ commandResponse: text });
@@ -317,6 +333,27 @@ Page({
     }
     this.setData({ commandResponse: text });
     this.addLog(text);
+  },
+
+  applyAutomaticAlert(frame) {
+    this.alertState = applyAlertFrame(this.alertState, frame, 40);
+    this.setData({
+      leftRisk: this.alertState.current.left,
+      rightRisk: this.alertState.current.right,
+      alertHistory: this.alertState.history
+    });
+    wx.setStorageSync(ALERT_HISTORY_STORAGE_KEY, this.alertState.history);
+  },
+
+  applySystemStatus(frame) {
+    this.setData({ systemStatus: frame, commandResponse: "SYS STATUS 已更新" });
+    wx.setStorageSync("smartbagSystemStatus", frame);
+  },
+
+  clearAlertHistory() {
+    this.alertState.history = [];
+    this.setData({ alertHistory: [] });
+    wx.removeStorageSync(ALERT_HISTORY_STORAGE_KEY);
   },
 
   updateFrame(frame) {

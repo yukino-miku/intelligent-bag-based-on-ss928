@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import os
 import queue
 import shlex
 import signal
@@ -19,6 +20,7 @@ if str(COMMON_DIR) not in sys.path:
     sys.path.insert(0, str(COMMON_DIR))
 
 from ble_protocol import route_ble_command
+from runtime_metrics import ResourceSampler, atomic_write_json, status_timestamp
 
 from alert_core import (
     DEFAULT_PWM_PERIOD_NS,
@@ -37,6 +39,7 @@ from ble_nus import BleNusServer
 AUDIO_ROOT = Path("/root/smartbag/audio")
 SAMPLE_AUDIO = "/opt/sample/audio/sample_audio"
 BLE_NAME = "SS928-SmartBag"
+RISK_NAMES = ("SAFE", "ATTENTION", "CAUTION", "DANGER", "EMERGENCY")
 I2S_PINMUX = (
     ("0x102F010C", "0x1202", "Pin12 I2S_BCLK"),
     ("0x102F0108", "0x1102", "Pin38 I2S_WS"),
@@ -267,6 +270,8 @@ class DetectorProcess:
         command: str,
         event_queue: "queue.Queue[AlertEvent]",
         cwd: Path | None = None,
+        restart_limit: int = 5,
+        restart_backoff_s: float = 1.0,
     ) -> None:
         self.side = side
         self.command = command
@@ -274,10 +279,16 @@ class DetectorProcess:
         self.cwd = cwd
         self.process: subprocess.Popen[str] | None = None
         self.thread: threading.Thread | None = None
+        self.restart_limit = max(0, int(restart_limit))
+        self.restart_backoff_s = max(0.1, float(restart_backoff_s))
+        self.restart_count = 0
+        self.next_restart_s = 0.0
+        self.last_exit_code: int | None = None
+        self._stopping = False
 
-    def start(self) -> None:
+    def start(self, *, restarted: bool = False) -> None:
         argv = build_detector_command(self.command, self.side)
-        self.process = subprocess.Popen(
+        process = subprocess.Popen(
             argv,
             cwd=str(self.cwd) if self.cwd else None,
             stdout=subprocess.PIPE,
@@ -287,11 +298,15 @@ class DetectorProcess:
             errors="replace",
             bufsize=1,
         )
-        self.thread = threading.Thread(target=self._reader, daemon=True)
+        self.process = process
+        if restarted:
+            self.restart_count += 1
+        self.thread = threading.Thread(target=self._reader, args=(process,), daemon=True)
         self.thread.start()
-        eprint(f"started {self.side or 'single-camera'} detector pid={self.process.pid}: {' '.join(argv)}")
+        eprint(f"started {self.side or 'single-camera'} detector pid={process.pid}: {' '.join(argv)}")
 
     def stop(self) -> None:
+        self._stopping = True
         if self.process is not None and self.process.poll() is None:
             self.process.terminate()
             try:
@@ -299,11 +314,34 @@ class DetectorProcess:
             except subprocess.TimeoutExpired:
                 self.process.kill()
 
-    def _reader(self) -> None:
-        if self.process is None or self.process.stdout is None:
+    def maybe_restart(self, now_s: float | None = None) -> bool:
+        now_s = time.monotonic() if now_s is None else now_s
+        if self._stopping or self.process is None or self.process.poll() is None:
+            return False
+        if self.thread is not None and self.thread.is_alive():
+            return False
+        if self.restart_count >= self.restart_limit or now_s < self.next_restart_s:
+            return False
+        self.start(restarted=True)
+        return True
+
+    def status(self) -> dict[str, object]:
+        process = self.process
+        return {
+            "side": self.side or "auto",
+            "running": bool(process is not None and process.poll() is None),
+            "pid": process.pid if process is not None and process.poll() is None else None,
+            "restart_count": self.restart_count,
+            "restart_limit": self.restart_limit,
+            "last_exit_code": self.last_exit_code,
+        }
+
+    def _reader(self, process: subprocess.Popen[str] | None = None) -> None:
+        process = process or self.process
+        if process is None or process.stdout is None:
             return
         try:
-            for line in self.process.stdout:
+            for line in process.stdout:
                 text = line.strip()
                 if not text:
                     continue
@@ -313,11 +351,25 @@ class DetectorProcess:
                     eprint(f"[{self.side or 'single-camera'}] ignored malformed alert: {text[:160]} ({exc})")
                     continue
                 if event is not None:
+                    if self.side in ("left", "right") and event.side != self.side:
+                        eprint(
+                            f"[{self.side}] rejected cross-side event side={event.side} "
+                            f"level={event.level}"
+                        )
+                        continue
                     self.event_queue.put(event)
         finally:
+            try:
+                self.last_exit_code = process.poll()
+            except AttributeError:
+                self.last_exit_code = None
             clear_sides = (self.side,) if self.side in ("left", "right") else ("left", "right")
             for clear_side in clear_sides:
                 self.event_queue.put(AlertEvent(side=clear_side, level=0, ts=time.monotonic()))
+            self.next_restart_s = time.monotonic() + self.restart_backoff_s * min(
+                8.0,
+                2.0**self.restart_count,
+            )
             eprint(f"detector {self.side or 'single-camera'} exited; queued vibration clear")
 
 
@@ -328,6 +380,150 @@ def build_detector_command(command: str, side: str | None) -> list[str]:
     if "--emit-alert-jsonl" not in argv:
         argv.append("--emit-alert-jsonl")
     return argv
+
+
+def validate_dual_camera_config(config: dict[str, object]) -> None:
+    cameras = config.get("cameras")
+    if not isinstance(cameras, dict):
+        return
+    left = cameras.get("left")
+    right = cameras.get("right")
+    if not isinstance(left, dict) or not isinstance(right, dict):
+        raise ValueError("cameras.left and cameras.right must both be configured")
+    left_device = str(left.get("camera_device") or "").strip()
+    right_device = str(right.get("camera_device") or "").strip()
+    if not left_device or not right_device:
+        raise ValueError("both camera_device values are required")
+    if left_device == right_device or os.path.realpath(left_device) == os.path.realpath(right_device):
+        raise ValueError("left and right camera_device must be different")
+    left_port = int(left.get("stream_port", 18081))
+    right_port = int(right.get("stream_port", 18082))
+    if left_port == right_port:
+        raise ValueError("left and right detector stream_port must be different")
+    expected_pwm = {"left": {"left_1", "left_2"}, "right": {"right_1", "right_2"}}
+    for side, camera in (("left", left), ("right", right)):
+        configured_pwm = camera.get("pwm_channels")
+        if configured_pwm is not None and set(configured_pwm) != expected_pwm[side]:
+            raise ValueError(f"cameras.{side}.pwm_channels must stay on the {side} side")
+
+
+def detector_commands_from_config(
+    config: dict[str, object],
+    *,
+    left_video: str = "",
+    right_video: str = "",
+) -> tuple[str, str]:
+    cameras = config.get("cameras")
+    if not isinstance(cameras, dict):
+        return "", ""
+    validate_dual_camera_config(config)
+    paths = config.get("paths") if isinstance(config.get("paths"), dict) else {}
+    python_executable = str(paths.get("python", "/usr/bin/python3"))
+    vision_root = Path(str(paths.get("vision", "/root/smartbag/vision")))
+    model_path = str(paths.get("model", "/root/smartbag/models/yolo11n.pt"))
+    detector_script = str(vision_root / "vision_obstacle_tracker.py")
+    videos = {"left": left_video, "right": right_video}
+    commands: dict[str, str] = {}
+
+    for side in ("left", "right"):
+        camera = cameras.get(side)
+        if not isinstance(camera, dict):
+            raise ValueError(f"cameras.{side} must be an object")
+        video_path = videos[side]
+        argv = [python_executable, detector_script]
+        if video_path:
+            argv.extend(["--source", "video", "--video", video_path, "--video-every-frame"])
+        else:
+            argv.extend(["--source", "camera", "--camera-device", str(camera["camera_device"])])
+        argv.extend(
+            [
+                "--runtime-profile",
+                str(camera.get("detector_profile", "board_dual_balanced")),
+                "--model",
+                model_path,
+                "--side",
+                side,
+                "--emit-alert-jsonl",
+                "--no-display",
+                "--camera-height",
+                str(camera.get("camera_height", 1.2)),
+                "--camera-pitch",
+                str(camera.get("camera_pitch", 5.0)),
+                "--camera-fps",
+                str(camera.get("camera_fps", 30.0)),
+                "--inference-fps-limit",
+                str(camera.get("inference_fps_limit", 8.0)),
+                "--process-every-n",
+                str(camera.get("process_every_n", 1)),
+                "--camera-reconnect-attempts",
+                str(camera.get("camera_reconnect_attempts", 5)),
+                "--camera-reconnect-backoff",
+                str(camera.get("camera_reconnect_backoff_s", 0.5)),
+                "--alert-min-level",
+                str(camera.get("alert_min_level", 1)),
+                "--alert-rate-limit",
+                str(camera.get("alert_rate_limit_s", 0.25)),
+                "--stream-bind",
+                "127.0.0.1",
+                "--stream-port",
+                str(camera.get("stream_port", 18081 if side == "left" else 18082)),
+                "--jpeg-stream-width",
+                str(camera.get("jpeg_stream_width", 480)),
+                "--jpeg-stream-height",
+                str(camera.get("jpeg_stream_height", 360)),
+                "--jpeg-quality",
+                str(camera.get("jpeg_quality", 70)),
+                "--stream-fps-limit",
+                str(camera.get("stream_fps_limit", 8.0)),
+                "--risk-log-csv",
+                str(camera.get("risk_log_csv", f"/var/log/smartbag/risk-{side}.csv")),
+                "--profile",
+            ]
+        )
+        calibration_file = str(camera.get("calibration_file") or "").strip()
+        if calibration_file:
+            argv.extend(["--calibration-file", calibration_file])
+        commands[side] = shlex.join(argv)
+    return commands["left"], commands["right"]
+
+
+def alert_event_ble_payload(event: AlertEvent) -> str:
+    level = max(0, min(4, int(event.level)))
+    payload: dict[str, object] = {
+        "typ": "alert",
+        "side": event.side,
+        "level": level,
+        "name": RISK_NAMES[level],
+        "ts": event.ts,
+    }
+    if event.score is not None:
+        payload["score"] = round(float(event.score), 4)
+    if event.track_id is not None:
+        payload["track_id"] = int(event.track_id)
+    if event.class_name:
+        payload["class"] = event.class_name
+    if event.distance_m is not None:
+        payload["distance_m"] = round(float(event.distance_m), 3)
+    return json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+
+
+def controller_status_payload(
+    state: AlertState,
+    detectors: list[DetectorProcess],
+    modules: dict[str, "RoutedModuleProcess"],
+    resource_sampler: ResourceSampler,
+) -> dict[str, object]:
+    return {
+        "typ": "sys",
+        "ts": status_timestamp(),
+        "pid": os.getpid(),
+        "levels": dict(state.levels_by_side),
+        "detectors": [detector.status() for detector in detectors],
+        "modules": sorted(modules),
+        "resources": resource_sampler.sample(),
+        "battery": None,
+        "ble_video": False,
+    }
 
 
 class RoutedModuleProcess:
@@ -440,6 +636,7 @@ def best_effort_stop_all(pwm: PwmController) -> None:
 
 def run_controller(args: argparse.Namespace) -> int:
     config = load_controller_config(args.config)
+    validate_dual_camera_config(config)
     pwm_config = config.get("pwm", {}) if isinstance(config.get("pwm", {}), dict) else {}
     audio_config = config.get("audio", {}) if isinstance(config.get("audio", {}), dict) else {}
     timing_config = config.get("timing", {}) if isinstance(config.get("timing", {}), dict) else {}
@@ -448,6 +645,10 @@ def run_controller(args: argparse.Namespace) -> int:
     event_timeout_s = float(args.event_timeout or timing_config.get("event_timeout_s", 1.0))
     max_event_age_s = float(args.max_event_age or timing_config.get("max_event_age_s", 2.0))
     ble_name = str(args.ble_name or ble_config.get("name", BLE_NAME))
+    restart_config = config.get("detector_restart", {}) if isinstance(config.get("detector_restart", {}), dict) else {}
+    restart_limit = int(args.detector_restart_limit if args.detector_restart_limit is not None else restart_config.get("limit", 5))
+    restart_backoff_s = float(args.detector_restart_backoff if args.detector_restart_backoff is not None else restart_config.get("backoff_s", 1.0))
+    status_file = str(args.status_file or config.get("controller_status_file", ""))
     level_duties = pwm_config.get("level_duty_percent")
     event_queue: "queue.Queue[AlertEvent]" = queue.Queue()
     command_queue: "queue.Queue[str]" = queue.Queue()
@@ -476,6 +677,8 @@ def run_controller(args: argparse.Namespace) -> int:
     detectors: list[DetectorProcess] = []
     modules: dict[str, RoutedModuleProcess] = {}
     ble: BleNusServer | None = None
+    resource_sampler = ResourceSampler()
+    last_status_write_s = float("-inf")
 
     def _stop(_signum: int | None = None, _frame: object | None = None) -> None:
         stop_event.set()
@@ -501,17 +704,38 @@ def run_controller(args: argparse.Namespace) -> int:
                 eprint(f"WARN BLE disabled: {exc}")
 
         detector_cwd = Path(args.detector_cwd) if args.detector_cwd else None
+        configured_left, configured_right = detector_commands_from_config(
+            config,
+            left_video=args.left_video,
+            right_video=args.right_video,
+        )
+        left_detector_command = args.left_detector or configured_left
+        right_detector_command = args.right_detector or configured_right
         if args.single_camera and not args.detector:
             raise ValueError("--single-camera requires --detector COMMAND")
         if args.detector:
-            detector = DetectorProcess(None, args.detector, event_queue, cwd=detector_cwd)
+            detector = DetectorProcess(
+                None,
+                args.detector,
+                event_queue,
+                cwd=detector_cwd,
+                restart_limit=restart_limit,
+                restart_backoff_s=restart_backoff_s,
+            )
             detector.start()
             detectors.append(detector)
         else:
-            for side, command in (("left", args.left_detector), ("right", args.right_detector)):
+            for side, command in (("left", left_detector_command), ("right", right_detector_command)):
                 if not command:
                     continue
-                detector = DetectorProcess(side, command, event_queue, cwd=detector_cwd)
+                detector = DetectorProcess(
+                    side,
+                    command,
+                    event_queue,
+                    cwd=detector_cwd,
+                    restart_limit=restart_limit,
+                    restart_backoff_s=restart_backoff_s,
+                )
                 detector.start()
                 detectors.append(detector)
 
@@ -531,6 +755,15 @@ def run_controller(args: argparse.Namespace) -> int:
             )
 
         while not stop_event.is_set() or not event_queue.empty() or not command_queue.empty() or not response_queue.empty():
+            for detector in detectors:
+                detector.maybe_restart()
+            if args.exit_when_detectors_exit and detectors and all(
+                detector.process is not None
+                and detector.process.poll() is not None
+                and (detector.thread is None or not detector.thread.is_alive())
+                for detector in detectors
+            ):
+                stop_event.set()
             while True:
                 try:
                     event = event_queue.get_nowait()
@@ -541,6 +774,8 @@ def run_controller(args: argparse.Namespace) -> int:
                     continue
                 output = state.apply_event(event)
                 apply_output(output, pwm, audio)
+                if ble is not None:
+                    ble.send_line(alert_event_ble_payload(event))
 
             while True:
                 try:
@@ -566,7 +801,12 @@ def run_controller(args: argparse.Namespace) -> int:
                         if route.command.upper() != "STATUS":
                             raise ValueError("SYS supports only STATUS")
                         if ble is not None:
-                            ble.send_line(json.dumps({"typ": "sys", "levels": state.levels_by_side, "detectors": len(detectors), "modules": sorted(modules)}, separators=(",", ":")))
+                            ble.send_line(
+                                json.dumps(
+                                    controller_status_payload(state, detectors, modules, resource_sampler),
+                                    separators=(",", ":"),
+                                )
+                            )
                 except Exception as exc:
                     if ble is not None:
                         ble.send_line("ERR " + str(exc))
@@ -584,6 +824,19 @@ def run_controller(args: argparse.Namespace) -> int:
             expired = state.expire()
             if expired.expired_sides:
                 pwm.apply(expired.duties_ns)
+                if ble is not None:
+                    for side in expired.expired_sides:
+                        ble.send_line(alert_event_ble_payload(AlertEvent(side=side, level=0, ts=time.monotonic())))
+            now_s = time.monotonic()
+            if status_file and now_s - last_status_write_s >= 1.0:
+                try:
+                    atomic_write_json(
+                        status_file,
+                        controller_status_payload(state, detectors, modules, resource_sampler),
+                    )
+                except OSError as exc:
+                    eprint(f"WARN could not update controller status file: {exc}")
+                last_status_write_s = now_s
             time.sleep(args.poll_interval)
     finally:
         stop_event.set()
@@ -603,9 +856,11 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="SS928 single/dual-camera smart-bag alert controller.")
     parser.add_argument("--config", default="", help="JSON config for PWM duty levels, timeout, and optional audio.")
     parser.add_argument("--detector", default="", help="Single-camera detector base command. The controller appends --side auto and --emit-alert-jsonl.")
-    parser.add_argument("--single-camera", action="store_true", help="Require and use the single --detector command.")
+    parser.add_argument("--single-camera", action="store_true", help="Legacy compatibility: require and use the single --detector command.")
     parser.add_argument("--left-detector", default="", help="Base command for the left vision detector.")
     parser.add_argument("--right-detector", default="", help="Base command for the right vision detector.")
+    parser.add_argument("--left-video", default="", help="Override configured left camera with a video file for dual simulation.")
+    parser.add_argument("--right-video", default="", help="Override configured right camera with a video file for dual simulation.")
     parser.add_argument("--gnss-command", default="", help="Optional GNSS subprocess command with --command-stdin --no-ble.")
     parser.add_argument("--imu-command", default="", help="Optional BMI270 subprocess command with --command-stdin --no-ble.")
     parser.add_argument("--detector-cwd", default="", help="Working directory for detector commands.")
@@ -615,6 +870,10 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--event-timeout", type=float, default=None, help="Seconds before stale side vibration is stopped; overrides config.")
     parser.add_argument("--max-event-age", type=float, default=None, help="Reject vision events older than this many seconds; overrides config.")
     parser.add_argument("--poll-interval", type=float, default=0.05, help="Controller loop sleep interval in seconds.")
+    parser.add_argument("--detector-restart-limit", type=int, default=None, help="Maximum child detector restarts; overrides config.")
+    parser.add_argument("--detector-restart-backoff", type=float, default=None, help="Initial child detector restart backoff seconds.")
+    parser.add_argument("--status-file", default="", help="Controller JSON status file consumed by the video gateway.")
+    parser.add_argument("--exit-when-detectors-exit", action="store_true", help="Exit after all detector children finish; intended for finite video simulation.")
     parser.add_argument("--audio-root", default="", help="Root containing L1..R4 audio folders; overrides config.")
     parser.add_argument("--sample-audio", default=SAMPLE_AUDIO, help="Path to sample_audio player.")
     parser.add_argument("--audio-sleep-s", type=float, default=5.0, help="Fallback seconds before sending ENTER to sample_audio.")

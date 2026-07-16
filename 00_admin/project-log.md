@@ -1,5 +1,15 @@
 # Project Log
 
+## 2026-07-16
+
+- 通过 USB-UART 在真实 SS928 板上完成只读审计：确认 Ubuntu 22.04.1/aarch64、SDK V2.0.2.2、952 MiB 内存，以及 `/dev/video0`/`video2` 两路 UVC。两台相机序列号相同且共用同一 USB 2.0 hub；单路底层 MJPEG 短测约 8.42/7.46 FPS，双路 640x480/320x240 均出现一侧 `ENOSPC`。板上缺少 cv2/torch/ultralytics/lap，故未宣称视觉检测已在板端运行。
+- 审计本地 `10_archive/ss928` 的产品规格书、UVC sample、MPP VENC/RTSP、OpenCV/Python、Wi-Fi/BlueZ 和 NPU/`.om` 资料，形成 `02_research/dual-usb-camera-board-analysis.md`；区分“归档存在”与“当前板上已验证”。
+- 默认架构改为左右固定双 USB 摄像头、两个独立 detector、统一 Controller、双路 LAN video gateway 和统一 BLE。每侧 tracker、风险模型、stabilizer、限流和 risk CSV 独立。
+- 完成 latest-frame 单所有者采集、按需 JPEG、snapshot/MJPEG、离线状态、有限重连、子进程有限重启和资源状态；没有实现或伪造 SS928 NPU 后端。
+- 完成微信小程序双摄页、自动视觉告警历史和真实 SYS 状态，移除首页假在线/假电量信息。
+- 默认 systemd 只启动 `smartbag-alert.service` 与 `smartbag-video.service`；IMX347/VO 和单摄诊断 unit 不进入 `smartbag.target`。
+- 本地验证：视觉 145 项、四个板端模块 24 项、跨模块 26 项、USB 录像工具 8 项，共 203 项 Python 测试通过；小程序 4 个测试文件和全部静态检查通过。真实板端只完成 UVC 底层诊断，视觉 detector、双路流和手机仍未跑通，不记录推理性能估计。
+
 ## 2026-07-15
 
 - 完成 `sanda-tt/ss928` 的板端功能审计与选择性迁移，固定来源提交为 `d7e10fd06dc553f94d2db3a3d19987ec8648f7dc`，未修改来源仓库。

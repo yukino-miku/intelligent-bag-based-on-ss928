@@ -1,0 +1,7 @@
+{
+  "image_width": 640,
+  "image_height": 480,
+  "camera_height_m": 1.2,
+  "camera_pitch_deg": 5.0,
+  "distance_scale": 1.0
+}

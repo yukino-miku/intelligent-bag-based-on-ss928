@@ -1,32 +1,32 @@
 const FEATURE_ENTRIES = [
   {
-    key: "health",
-    title: "板子健康数据",
-    subtitle: "电量 / 运行状态",
-    icon: "电",
-    tone: "green",
-    route: "/pages/monitor/index"
+    key: "cameras",
+    title: "双摄实时画面",
+    subtitle: "左后 / 右后检测画面",
+    icon: "视",
+    tone: "blue",
+    route: "/pages/cameras/index"
   },
   {
     key: "alerts",
-    title: "危险报警历史",
-    subtitle: "报警记录 / 时间线",
+    title: "视觉告警与控制",
+    subtitle: "左右风险 / 震动调试",
     icon: "警",
     tone: "red",
     route: "/pages/monitor/index"
   },
   {
     key: "tracks",
-    title: "儿童安全轨迹跟踪",
-    subtitle: "位置轨迹 / 实时查看",
+    title: "安全轨迹跟踪",
+    subtitle: "GNSS 位置轨迹",
     icon: "轨",
-    tone: "blue",
+    tone: "green",
     route: "/pages/tracks/index"
   },
   {
     key: "posture",
     title: "姿态分析和记录",
-    subtitle: "姿态识别 / 历史记录",
+    subtitle: "BMI270 姿态 / 标定",
     icon: "姿",
     tone: "purple",
     route: "/pages/index/index"
@@ -36,17 +36,38 @@ const FEATURE_ENTRIES = [
 Page({
   data: {
     featureEntries: FEATURE_ENTRIES,
-    onlineCount: 1,
-    battery: 86,
-    systemState: "正常",
-    monitorState: "实时监控中"
+    onlineText: "未连接",
+    batteryText: "未接入",
+    systemState: "等待 SYS STATUS",
+    monitorState: "状态未知",
+    resourceText: "CPU / 内存 / 温度未读取"
+  },
+
+  onShow() {
+    const status = wx.getStorageSync("smartbagSystemStatus");
+    if (!status || status.typ !== "sys") {
+      return;
+    }
+    const detectors = Array.isArray(status.detectors) ? status.detectors : [];
+    const running = detectors.filter((item) => item.running).length;
+    const resources = status.resources || {};
+    const parts = [];
+    if (typeof resources.cpu_percent === "number") parts.push("CPU " + resources.cpu_percent + "%");
+    if (typeof resources.memory_percent === "number") parts.push("内存 " + resources.memory_percent + "%");
+    if (typeof resources.temperature_c === "number") parts.push("温度 " + resources.temperature_c + "°C");
+    this.setData({
+      onlineText: running + "/" + detectors.length + " detector 在线",
+      batteryText: status.battery === null || typeof status.battery === "undefined" ? "未接入" : status.battery + "%",
+      systemState: running === detectors.length && running > 0 ? "双摄运行" : "需检查",
+      monitorState: "SYS STATUS 已更新",
+      resourceText: parts.length ? parts.join(" · ") : "CPU / 内存 / 温度未读取"
+    });
   },
 
   openFeature(e) {
     const route = e.currentTarget.dataset.route;
-    if (!route) {
-      return;
+    if (route) {
+      wx.navigateTo({ url: route });
     }
-    wx.navigateTo({ url: route });
   }
 });

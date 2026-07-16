@@ -49,6 +49,23 @@
     </view>
   </view>
 
+  <view class="auto-alert-panel">
+    <view class="auto-alert-panel__header">
+      <view class="auto-alert-panel__title">自动视觉告警</view>
+      <button class="auto-alert-panel__clear" bindtap="clearAlertHistory">清除历史</button>
+    </view>
+    <view class="auto-alert-panel__current">
+      <view class="auto-risk auto-risk--{{leftRisk.level}}"><text>左侧</text><text>{{leftRisk.name}}</text></view>
+      <view class="auto-risk auto-risk--{{rightRisk.level}}"><text>右侧</text><text>{{rightRisk.name}}</text></view>
+    </view>
+    <view class="auto-alert-history" wx:if="{{alertHistory.length}}">
+      <view class="auto-alert-row" wx:for="{{alertHistory}}" wx:key="key">
+        <text>{{item.receivedAt}}</text><text>{{item.side === 'left' ? '左' : '右'}}</text><text>{{item.name}}</text>
+        <text>{{item.className || '目标'}}</text><text>{{item.distanceM === null ? '--' : item.distanceM + 'm'}}</text>
+      </view>
+    </view>
+  </view>
+
   <view class="attitude-panel">
     <view class="attitude-panel__visual">
       <view class="attitude-panel__sky"></view>

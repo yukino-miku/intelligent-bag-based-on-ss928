@@ -69,6 +69,8 @@ class AlertEvent:
     score: float | None = None
     track_id: int | None = None
     ts: float | None = None
+    class_name: str | None = None
+    distance_m: float | None = None
 
 
 @dataclass(frozen=True)
@@ -178,6 +180,8 @@ def parse_vision_alert_jsonl(line: str) -> AlertEvent | None:
         score=float(data["score"]) if data.get("score") is not None else None,
         track_id=int(data["track_id"]) if data.get("track_id") is not None else None,
         ts=float(data["ts"]) if data.get("ts") is not None else None,
+        class_name=str(data["class"]) if data.get("class") is not None else None,
+        distance_m=float(data["distance_m"]) if data.get("distance_m") is not None else None,
     )
 
 

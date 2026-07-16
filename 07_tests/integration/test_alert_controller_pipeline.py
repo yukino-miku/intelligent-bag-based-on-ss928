@@ -12,7 +12,12 @@ if str(CONTROLLER) not in sys.path:
     sys.path.insert(0, str(CONTROLLER))
 
 from alert_core import AlertEvent, AlertState, event_is_stale, parse_vision_alert_jsonl
-from smartbag_alert_controller import DetectorProcess
+from smartbag_alert_controller import (
+    DetectorProcess,
+    alert_event_ble_payload,
+    detector_commands_from_config,
+    validate_dual_camera_config,
+)
 
 
 class AlertControllerPipelineTest(unittest.TestCase):
@@ -51,6 +56,32 @@ class AlertControllerPipelineTest(unittest.TestCase):
         self.assertEqual(0, clear.level)
         self.assertLessEqual(clear.ts, time.monotonic())
 
+    def test_right_detector_exit_queues_only_right_clear(self) -> None:
+        event_queue = queue.Queue()
+        detector = DetectorProcess("right", "unused", event_queue)
+
+        class FakeProcess:
+            stdout = io.StringIO("")
+
+        detector.process = FakeProcess()
+        detector._reader()
+
+        clear = event_queue.get_nowait()
+        self.assertEqual(("right", 0), (clear.side, clear.level))
+        self.assertTrue(event_queue.empty())
+
+    def test_clearing_left_side_preserves_active_right_side(self) -> None:
+        state = AlertState(event_timeout_s=1.0)
+        state.apply_event(AlertEvent("left", 2), now=1.0)
+        state.apply_event(AlertEvent("right", 3), now=1.0)
+
+        output = state.apply_event(AlertEvent("left", 0), now=1.1)
+
+        self.assertEqual(0, output.duties_ns["left_1"])
+        self.assertEqual(0, output.duties_ns["left_2"])
+        self.assertGreater(output.duties_ns["right_1"], 0)
+        self.assertGreater(output.duties_ns["right_2"], 0)
+
     def test_single_camera_detector_exit_clears_both_sides(self) -> None:
         event_queue = queue.Queue()
         detector = DetectorProcess(None, "unused", event_queue)
@@ -64,6 +95,63 @@ class AlertControllerPipelineTest(unittest.TestCase):
         clears = [event_queue.get_nowait(), event_queue.get_nowait()]
         self.assertEqual({"left", "right"}, {event.side for event in clears})
         self.assertTrue(all(event.level == 0 for event in clears))
+
+    def test_fixed_side_detector_rejects_cross_side_events(self) -> None:
+        event_queue = queue.Queue()
+        detector = DetectorProcess("left", "unused", event_queue)
+
+        class FakeProcess:
+            stdout = io.StringIO('{"type":"vision_alert","side":"right","level":3,"ts":1}\n')
+
+            @staticmethod
+            def poll():
+                return 1
+
+        detector.process = FakeProcess()
+        detector._reader()
+
+        clear = event_queue.get_nowait()
+        self.assertEqual(("left", 0), (clear.side, clear.level))
+        self.assertTrue(event_queue.empty())
+
+    def test_dual_config_rejects_same_camera_device(self) -> None:
+        config = {
+            "cameras": {
+                "left": {"camera_device": "/dev/video0", "stream_port": 18081},
+                "right": {"camera_device": "/dev/video0", "stream_port": 18082},
+            }
+        }
+        with self.assertRaisesRegex(ValueError, "must be different"):
+            validate_dual_camera_config(config)
+
+    def test_configured_detector_commands_are_fixed_side_and_independent(self) -> None:
+        config = {
+            "paths": {"python": "python3", "vision": "/vision", "model": "/models/yolo.pt"},
+            "cameras": {
+                "left": {"camera_device": "/dev/video0", "stream_port": 18081},
+                "right": {"camera_device": "/dev/video2", "stream_port": 18082},
+            },
+        }
+
+        left, right = detector_commands_from_config(config)
+
+        self.assertIn("--camera-device /dev/video0", left)
+        self.assertIn("--side left", left)
+        self.assertIn("--alert-min-level 1", left)
+        self.assertIn("--camera-reconnect-attempts 5", left)
+        self.assertNotIn("--side right", left)
+        self.assertIn("--camera-device /dev/video2", right)
+        self.assertIn("--side right", right)
+        self.assertNotIn("--side left", right)
+
+    def test_ble_alert_payload_keeps_optional_target_context(self) -> None:
+        payload = alert_event_ble_payload(
+            AlertEvent("right", 3, score=0.78, track_id=123, ts=12.3, class_name="car", distance_m=4.2)
+        )
+        self.assertIn('"typ":"alert"', payload)
+        self.assertIn('"name":"DANGER"', payload)
+        self.assertIn('"class":"car"', payload)
+        self.assertIn('"distance_m":4.2', payload)
 
 
 if __name__ == "__main__":

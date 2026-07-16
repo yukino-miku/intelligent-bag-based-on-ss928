@@ -1,6 +1,7 @@
 {
   "pages": [
     "pages/home/index",
+    "pages/cameras/index",
     "pages/tracks/index",
     "pages/index/index",
     "pages/monitor/index"

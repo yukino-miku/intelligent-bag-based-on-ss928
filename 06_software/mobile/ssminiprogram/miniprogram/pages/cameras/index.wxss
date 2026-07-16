@@ -1,0 +1,27 @@
+.page { min-height: 100vh; padding: 24rpx; box-sizing: border-box; background: #f3f5f7; color: #17212b; }
+.header { margin-bottom: 20rpx; }
+.header__title { font-size: 38rpx; font-weight: 700; }
+.header__address { margin-top: 8rpx; color: #64717d; word-break: break-all; }
+.settings { padding: 20rpx 0; border-top: 1rpx solid #ccd3da; border-bottom: 1rpx solid #ccd3da; }
+.field { display: grid; grid-template-columns: 150rpx 1fr; align-items: center; min-height: 72rpx; }
+.field input { height: 60rpx; padding: 0 16rpx; background: #fff; border: 1rpx solid #c7d0d8; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 12rpx; margin-top: 16rpx; align-items: center; }
+.toolbar button { margin: 0; min-width: 120rpx; border-radius: 6rpx; font-size: 26rpx; }
+.toolbar__primary { background: #1769aa; color: #fff; }
+.segments { display: flex; gap: 4rpx; }
+.segments .active { background: #273746; color: #fff; }
+.message { margin-top: 10rpx; color: #64717d; }
+.camera-grid { display: grid; gap: 20rpx; margin-top: 24rpx; }
+.camera { background: #fff; border: 1rpx solid #cbd3da; padding: 16rpx; }
+.camera__heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12rpx; }
+.camera__label { font-size: 30rpx; font-weight: 650; }
+.camera__status { font-size: 24rpx; }
+.camera__status--online { color: #16764a; }
+.camera__status--offline { color: #a33b32; }
+.camera__image { width: 100%; aspect-ratio: 16/9; background: #101316; }
+.camera__risk { margin-top: 12rpx; font-weight: 700; }
+.camera__risk--0 { color: #16764a; }.camera__risk--1 { color: #846100; }.camera__risk--2 { color: #b15700; }.camera__risk--3,.camera__risk--4 { color: #b42318; }
+.metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 8rpx; margin-top: 10rpx; color: #43515d; font-size: 24rpx; }
+.camera__meta { margin-top: 10rpx; color: #74808a; font-size: 22rpx; word-break: break-all; }
+.camera__endpoint { margin-top: 8rpx; color: #6b7785; font-size: 22rpx; word-break: break-all; }
+.notice { margin: 24rpx 0 40rpx; color: #5f6c76; font-size: 24rpx; line-height: 1.6; }

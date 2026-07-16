@@ -25,6 +25,21 @@ class MiniProgramRouteTest(unittest.TestCase):
         self.assertNotIn('"DX-GP21-Track"', source)
         self.assertNotIn('"BMI270-Backpack"', source)
 
+    def test_home_has_dual_camera_entry_and_no_fake_status_values(self) -> None:
+        home = "\n".join(
+            (MINI / "pages" / "home" / name).read_text(encoding="utf-8")
+            for name in ("index.js", "index.wxml")
+        )
+        app = json.loads((MINI / "app.json").read_text(encoding="utf-8"))
+
+        self.assertIn("双摄实时画面", home)
+        self.assertIn("pages/cameras/index", app["pages"])
+        self.assertNotIn("在线设备 1 台", home)
+        self.assertNotIn("86%", home)
+        monitor = (MINI / "pages" / "monitor" / "index.js").read_text(encoding="utf-8")
+        self.assertIn("smartbagAlertHistory", monitor)
+        self.assertIn("wx.removeStorageSync", monitor)
+
 
 if __name__ == "__main__":
     unittest.main()

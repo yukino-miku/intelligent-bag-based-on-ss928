@@ -6,6 +6,7 @@ systemctl stop smartbag.target 2>/dev/null || true
 systemctl disable smartbag.target 2>/dev/null || true
 rm -f /etc/systemd/system/smartbag-vision.service \
       /etc/systemd/system/smartbag-alert.service \
+      /etc/systemd/system/smartbag-video.service \
       /etc/systemd/system/smartbag-gnss.service \
       /etc/systemd/system/smartbag-imu.service \
       /etc/systemd/system/smartbag.target

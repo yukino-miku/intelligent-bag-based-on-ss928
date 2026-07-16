@@ -135,6 +135,36 @@ class RuntimeOptionsTest(unittest.TestCase):
         self.assertEqual(2, args.alert_min_level)
         self.assertEqual(0.4, args.alert_rate_limit)
 
+    def test_board_dual_balanced_separates_inference_and_stream_quality(self) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "vision_obstacle_tracker.py",
+                "--runtime-profile",
+                "board_dual_balanced",
+                "--side",
+                "left",
+                "--stream-port",
+                "18081",
+            ],
+        ):
+            args = parse_args()
+
+        self.assertEqual((640, 480), (args.width, args.height))
+        self.assertEqual(512, args.imgsz)
+        self.assertEqual(0.05, args.conf)
+        self.assertEqual(40, args.max_det)
+        self.assertEqual(30.0, args.fps)
+        self.assertEqual(8.0, args.inference_fps_limit)
+        self.assertEqual((640, 360), (args.jpeg_stream_width, args.jpeg_stream_height))
+        self.assertEqual(70, args.jpeg_quality)
+
+    def test_stream_port_requires_fixed_physical_side(self) -> None:
+        with patch.object(sys, "argv", ["vision_obstacle_tracker.py", "--stream-port", "18081"]):
+            with self.assertRaises(SystemExit):
+                parse_args()
+
     def test_ss928_om_backend_is_explicitly_selectable_but_not_faked(self) -> None:
         with patch.object(
             sys,

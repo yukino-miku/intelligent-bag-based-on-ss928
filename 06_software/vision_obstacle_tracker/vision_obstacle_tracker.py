@@ -11,57 +11,86 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from alert_output import AlertJsonlEmitter
+from camera_runtime import LatestOpenCvCameraCapture
 from camera_source import FfmpegCameraConfig, FfmpegMjpegCameraCapture
 from calibration import CameraCalibration, calibration_from_mapping, estimate_ground_point_from_bbox, load_calibration_file
 from detector_backend import DetectorBackend, Ss928OmBackend, UltralyticsBackend
 from risk_model import MotionPattern, RiskAssessment, RiskLevel, RiskModel, corridor_zone_name, motion_pattern_name, warning_action_for_level
 from vision_core import DetectionObservation, StableTrackIdManager, TrackState, TrackedObject, compute_observation_quality, format_overlay_label, parse_target_classes, should_keep_class
+from video_stream_server import DetectorVideoServer
 
 
 WINDOW_NAME = "YOLO Tracking Distance Speed"
+_LOG_PREFIX = ""
 
 
 RUNTIME_PROFILES = {
     "realtime": {
         "width": 960,
         "height": 540,
+        "fps": 30.0,
         "imgsz": 512,
         "conf": 0.03,
         "max_det": 50,
+        "inference_fps_limit": 0.0,
+        "process_every_n": 1,
     },
     "cpu_demo": {
         "width": 960,
         "height": 540,
+        "fps": 30.0,
         "imgsz": 640,
         "conf": 0.05,
         "max_det": 40,
+        "inference_fps_limit": 0.0,
+        "process_every_n": 1,
     },
     "balanced": {
         "width": 1280,
         "height": 720,
+        "fps": 30.0,
         "imgsz": 1024,
         "conf": 0.02,
         "max_det": 50,
+        "inference_fps_limit": 0.0,
+        "process_every_n": 1,
     },
     "quality": {
         "width": 1920,
         "height": 1080,
+        "fps": 30.0,
         "imgsz": 1024,
         "conf": 0.02,
         "max_det": 50,
+        "inference_fps_limit": 0.0,
+        "process_every_n": 1,
     },
     "board_cpu": {
         "width": 640,
         "height": 480,
+        "fps": 30.0,
         "imgsz": 416,
         "conf": 0.06,
         "max_det": 30,
+        "inference_fps_limit": 0.0,
+        "process_every_n": 1,
+    },
+    "board_dual_balanced": {
+        "width": 640,
+        "height": 480,
+        "fps": 30.0,
+        "imgsz": 512,
+        "conf": 0.05,
+        "max_det": 40,
+        "inference_fps_limit": 8.0,
+        "process_every_n": 1,
     },
 }
 
 
 def eprint(message: str) -> None:
-    print(message, file=sys.stderr, flush=True)
+    prefix = f"[{_LOG_PREFIX}] " if _LOG_PREFIX else ""
+    print(prefix + message, file=sys.stderr, flush=True)
 
 
 @dataclass(frozen=True)
@@ -74,10 +103,11 @@ class InferenceFrame:
 class FrameVisualizationPlan:
     should_draw_for_output: bool
     should_show_window: bool
+    should_draw_for_stream: bool = False
 
     @property
     def should_draw_overlay(self) -> bool:
-        return self.should_draw_for_output or self.should_show_window
+        return self.should_draw_for_output or self.should_show_window or self.should_draw_for_stream
 
 
 @dataclass(frozen=True)
@@ -317,7 +347,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--runtime-profile", choices=tuple(RUNTIME_PROFILES), default="balanced", help="Runtime preset: cpu_demo targets PC CPU demos, board_cpu is the SS928 CPU baseline, and quality favors far-object recognition.")
     parser.add_argument("--width", type=int, default=None, help="Requested camera width. Defaults come from --runtime-profile.")
     parser.add_argument("--height", type=int, default=None, help="Requested camera height. Defaults come from --runtime-profile.")
-    parser.add_argument("--fps", type=float, default=30.0, help="Requested camera FPS or fallback video FPS.")
+    parser.add_argument("--fps", "--camera-fps", dest="fps", type=float, default=None, help="Requested camera FPS or fallback video FPS.")
     parser.add_argument("--model", default="yolo11n.pt", help="Ultralytics YOLO model path/name.")
     parser.add_argument("--detector-backend", choices=("ultralytics", "ss928_om"), default="ultralytics", help="Detection backend. ss928_om is an explicit integration placeholder until a verified board runtime is available.")
     parser.add_argument("--tracker", default="vehicle_botsort.yaml", help="Ultralytics tracker config, for example vehicle_botsort.yaml.")
@@ -360,6 +390,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--emit-alert-jsonl", action="store_true", help="Emit stabilized haptic vision_alert events to stdout; all diagnostics stay on stderr.")
     parser.add_argument("--alert-min-level", type=int, default=1, help="Minimum stabilized haptic level to emit, 0..4.")
     parser.add_argument("--alert-rate-limit", type=float, default=0.25, help="Minimum seconds between repeated same-side/same-level events.")
+    parser.add_argument("--process-every-n", type=int, default=None, help="Deliver every Nth captured camera frame to inference; capture keeps draining the device.")
+    parser.add_argument("--inference-fps-limit", type=float, default=None, help="Maximum detector loop FPS for live cameras. 0 disables the limit.")
+    parser.add_argument("--camera-reconnect-attempts", type=int, default=5, help="Bounded live-camera reconnect attempts after a read failure.")
+    parser.add_argument("--camera-reconnect-backoff", type=float, default=0.5, help="Initial seconds between bounded camera reconnect attempts.")
+    parser.add_argument("--stream-bind", default="127.0.0.1", help="Detector-local HTTP bind address. The dual gateway normally proxies it.")
+    parser.add_argument("--stream-port", type=int, default=0, help="Detector-local HTTP port. 0 disables video serving.")
+    parser.add_argument("--jpeg-stream-width", type=int, default=640, help="Phone/debug JPEG width, independent from inference width.")
+    parser.add_argument("--jpeg-stream-height", type=int, default=360, help="Phone/debug JPEG height, independent from inference height.")
+    parser.add_argument("--jpeg-quality", type=int, default=70, help="JPEG stream quality from 20 to 95.")
+    parser.add_argument("--stream-fps-limit", type=float, default=8.0, help="Maximum per-client MJPEG FPS.")
+    parser.add_argument("--stream-access-token", default="", help="Optional detector-local HTTP access token.")
     parser.add_argument("--profile", action="store_true", help="Print sliding-average stage timings once per second.")
     parser.add_argument("--max-frames", type=int, default=0, help="Stop after N processed frames. 0 means no limit.")
     parser.add_argument("--no-display", action="store_true", help="Process without opening an OpenCV window.")
@@ -391,6 +432,20 @@ def apply_runtime_profile_defaults(args: argparse.Namespace) -> argparse.Namespa
         raise SystemExit("--alert-min-level must be 0..4.")
     if args.alert_rate_limit < 0.0:
         raise SystemExit("--alert-rate-limit must be >= 0.")
+    if args.process_every_n < 1:
+        raise SystemExit("--process-every-n must be >= 1.")
+    if args.inference_fps_limit < 0.0:
+        raise SystemExit("--inference-fps-limit must be >= 0.")
+    if args.camera_reconnect_attempts < 0:
+        raise SystemExit("--camera-reconnect-attempts must be >= 0.")
+    if args.camera_reconnect_backoff <= 0.0:
+        raise SystemExit("--camera-reconnect-backoff must be > 0.")
+    if not 20 <= args.jpeg_quality <= 95:
+        raise SystemExit("--jpeg-quality must be 20..95.")
+    if args.stream_port < 0 or args.stream_port > 65535:
+        raise SystemExit("--stream-port must be 0..65535.")
+    if args.stream_port and args.side not in ("left", "right"):
+        raise SystemExit("--stream-port requires a fixed --side left or --side right.")
     return args
 
 
@@ -575,6 +630,19 @@ class StageProfiler:
             eprint(text)
         return text
 
+    def maybe_report_with_stream(self, stream_status: dict[str, object] | None = None) -> str | None:
+        text = self.maybe_report()
+        if text is None or not stream_status:
+            return text
+        eprint(
+            "stream profile: "
+            f"jpeg_encode={float(stream_status.get('jpeg_encode_ms', 0.0)):.1f}ms | "
+            f"clients={int(stream_status.get('video_client_count', 0))} | "
+            f"stream_fps={float(stream_status.get('stream_fps', 0.0)):.1f} | "
+            f"dropped={int(stream_status.get('dropped_frames', 0))}"
+        )
+        return text
+
     def overlay_text(self) -> str:
         return self.last_report_text if self.enabled else ""
 
@@ -594,7 +662,16 @@ def open_capture(args: argparse.Namespace):
         return capture
 
     if args.camera_device:
-        capture = cv2.VideoCapture(str(args.camera_device), cv2.CAP_ANY)
+        capture = LatestOpenCvCameraCapture(
+            str(args.camera_device),
+            args.width,
+            args.height,
+            args.fps,
+            process_every_n=args.process_every_n,
+            inference_fps_limit=args.inference_fps_limit,
+            max_reconnect_attempts=args.camera_reconnect_attempts,
+            reconnect_backoff_s=args.camera_reconnect_backoff,
+        )
         if not capture.isOpened():
             raise SystemExit(f"Could not open camera device {args.camera_device}.")
     elif args.camera_backend == "ffmpeg":
@@ -1344,6 +1421,7 @@ def visualization_plan_for_frame(
     display_every_n: int,
     no_display: bool,
     has_writer: bool,
+    draw_for_stream: bool = False,
 ) -> FrameVisualizationPlan:
     if display_every_n < 1:
         raise ValueError("display_every_n must be >= 1")
@@ -1352,6 +1430,7 @@ def visualization_plan_for_frame(
     return FrameVisualizationPlan(
         should_draw_for_output=should_draw_for_output,
         should_show_window=should_show_window,
+        should_draw_for_stream=draw_for_stream,
     )
 
 
@@ -1466,9 +1545,14 @@ def enhance_frame_for_detection(frame, mode: str):
 
 
 def main() -> None:
+    args = parse_args()
+    alert_stdout = sys.stdout
+    if args.emit_alert_jsonl:
+        sys.stdout = sys.stderr
     import cv2
 
-    args = parse_args()
+    global _LOG_PREFIX
+    _LOG_PREFIX = args.side if args.side in ("left", "right") else ""
     profiler = StageProfiler(enabled=args.profile)
     capture = open_capture(args)
     capture_fps = float(capture.get(cv2.CAP_PROP_FPS) or args.fps or 30.0) if hasattr(capture, "get") else float(args.fps or 30.0)
@@ -1487,6 +1571,26 @@ def main() -> None:
     )
 
     writer = create_writer(args, first_frame.shape, capture_fps)
+    video_server = None
+    if args.stream_port:
+        stream_device = (
+            str(args.video)
+            if args.source == "video"
+            else (args.camera_device or str(args.camera_index))
+        )
+        video_server = DetectorVideoServer(
+            side=args.side,
+            device=stream_device,
+            bind=args.stream_bind,
+            port=args.stream_port,
+            stream_width=args.jpeg_stream_width,
+            stream_height=args.jpeg_stream_height,
+            jpeg_quality=args.jpeg_quality,
+            stream_fps_limit=args.stream_fps_limit,
+            access_token=args.stream_access_token,
+            status_provider=capture.status if hasattr(capture, "status") else None,
+        )
+        video_server.start()
     target_classes = parse_target_classes(args.target_classes)
     detector = create_detector_backend(args)
     target_class_ids = target_class_ids_from_model_names(detector.names, target_classes)
@@ -1516,7 +1620,7 @@ def main() -> None:
     risk_logger = RiskCsvLogger(args.risk_log_csv)
     alert_emitter = (
         AlertJsonlEmitter(
-            sys.stdout,
+            alert_stdout,
             fixed_side=args.side,
             min_level=args.alert_min_level,
             rate_limit_s=args.alert_rate_limit,
@@ -1532,6 +1636,7 @@ def main() -> None:
     source_frame_index = 0
     paused = False
     last_loop = time.monotonic()
+    inference_times: deque[float] = deque(maxlen=120)
     current_frame = first_frame
 
     if not args.no_display:
@@ -1583,6 +1688,7 @@ def main() -> None:
 
             with profiler.stage("infer+track"):
                 results = detector.track(inference_frame, **track_kwargs)
+            inference_times.append(time.monotonic())
             with profiler.stage("postprocess"):
                 result = restore_result_boxes_to_full_frame(results[0], inference_view.y_offset_px)
                 observations = result_to_observations(
@@ -1634,6 +1740,7 @@ def main() -> None:
                 display_every_n=args.display_every_n,
                 no_display=args.no_display,
                 has_writer=writer is not None,
+                draw_for_stream=bool(video_server is not None and video_server.wants_overlay()),
             )
             display_frame = None
             if visualization_plan.should_draw_overlay:
@@ -1661,6 +1768,37 @@ def main() -> None:
                 else:
                     key = -1
 
+            if video_server is not None:
+                inference_fps = 0.0
+                if len(inference_times) >= 2:
+                    inference_fps = (len(inference_times) - 1) / max(inference_times[-1] - inference_times[0], 1e-6)
+                capture_status = capture.status() if hasattr(capture, "status") else {
+                    "online": True,
+                    "device": args.camera_device or str(args.camera_index),
+                    "capture_width": frame_width,
+                    "capture_height": frame_height,
+                    "capture_fps": capture_fps,
+                    "last_frame_age_ms": 0.0,
+                    "dropped_frames": 0,
+                    "camera_reconnect_count": 0,
+                }
+                highest_level = max(
+                    (
+                        int(getattr(assessment.haptic_level, "value", assessment.haptic_level))
+                        for assessment in risk_by_track_id.values()
+                    ),
+                    default=0,
+                )
+                capture_status.update(
+                    {
+                        "inference_fps": round(inference_fps, 2),
+                        "risk_level": highest_level,
+                        "risk_name": RiskLevel(highest_level).name,
+                        "processed_frames": processed_frames + 1,
+                    }
+                )
+                video_server.publish(frame, display_frame, capture_status)
+
             processed_frames += 1
         else:
             display_frame = current_frame.copy()
@@ -1680,14 +1818,18 @@ def main() -> None:
             delta = -1 if key == ord("[") else 1
             pitch = pitch_controller.adjust(delta)
             eprint(f"camera pitch: {pitch:.2f} deg")
-        profiler.maybe_report()
+        profiler.maybe_report_with_stream(video_server.status() if video_server is not None else None)
 
     if alert_emitter is not None:
         alert_emitter.clear_all()
     capture.release()
+    if video_server is not None:
+        video_server.stop()
     if writer is not None:
         writer.release()
     risk_logger.close()
+    if args.emit_alert_jsonl:
+        sys.stdout = alert_stdout
     if not args.no_display:
         cv2.destroyAllWindows()
 

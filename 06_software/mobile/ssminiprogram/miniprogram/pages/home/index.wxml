@@ -24,29 +24,29 @@
       <view class="status-cell">
         <view class="status-cell__dot status-cell__dot--blue">连</view>
         <view class="status-cell__text">
-          <view class="status-cell__title">设备在线</view>
-          <view class="status-cell__meta">在线设备：{{onlineCount}}台</view>
+          <view class="status-cell__title">进程状态</view>
+          <view class="status-cell__meta">{{onlineText}}</view>
         </view>
       </view>
       <view class="status-cell">
         <view class="status-cell__dot status-cell__dot--green">监</view>
         <view class="status-cell__text">
           <view class="status-cell__title">{{monitorState}}</view>
-          <view class="status-cell__meta">系统运行正常</view>
+          <view class="status-cell__meta">来自 BLE SYS STATUS</view>
         </view>
       </view>
       <view class="status-cell">
         <view class="status-cell__dot status-cell__dot--mint">电</view>
         <view class="status-cell__text">
-          <view class="status-cell__title">电量 {{battery}}%</view>
-          <view class="status-cell__meta">剩余电量充足</view>
+          <view class="status-cell__title">电量：{{batteryText}}</view>
+          <view class="status-cell__meta">未接入传感器时不显示虚假百分比</view>
         </view>
       </view>
       <view class="status-cell">
         <view class="status-cell__dot status-cell__dot--safe">盾</view>
         <view class="status-cell__text">
           <view class="status-cell__title">运行状态：{{systemState}}</view>
-          <view class="status-cell__meta">所有系统运行正常</view>
+          <view class="status-cell__meta">{{resourceText}}</view>
         </view>
       </view>
     </view>
