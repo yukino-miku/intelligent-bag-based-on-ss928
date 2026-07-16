@@ -559,3 +559,53 @@ The numbers are useful for early algorithm testing, but they are not final safet
 cd D:\mywork\code\embedded-contest-project\06_software\vision_obstacle_tracker
 py -m unittest discover -s tests -v
 ```
+
+## SS928 板端事件输出（旧单摄兼容示例）
+
+`board_cpu` 是 CPU 协议联调基线，不表示已经使用 SS928 NPU。下面的 `side auto` 只用于旧单摄兼容测试，不是正式 systemd 默认：
+
+```sh
+python3 vision_obstacle_tracker.py \
+  --source camera --camera-device /dev/video0 \
+  --runtime-profile board_cpu --model /root/smartbag/models/yolo11n.pt \
+  --no-display --side auto --center-side both \
+  --emit-alert-jsonl --alert-min-level 1 --alert-rate-limit 0.5
+```
+
+stdout 只输出 compact `vision_alert` JSONL，模型加载、profile 和普通日志写 stderr。事件等级来自多帧稳定后的 `haptic_level`；风险消失会立即发 level 0。同侧同等级受 rate limit 限制。`--side left|right` 用于双摄固定方向；单摄 `auto` 根据 `x_m` 和 `--side-dead-zone` 路由。
+
+`--detector-backend ultralytics` 是当前完整实现。`--detector-backend ss928_om` 只保留明确接口和未实现错误；OpenVINO 不等于 SS928 NPU，不能用它冒充 `.om` 后端。
+
+## SS928 双 USB 摄像头运行
+
+正式板端每个进程固定占有一个物理相机，不使用 `--side auto`：
+
+```sh
+python3 vision_obstacle_tracker.py --source camera \
+  --camera-device /dev/v4l/by-id/LEFT-video-index0 \
+  --runtime-profile board_dual_balanced --side left \
+  --calibration-file /etc/smartbag/calibration-left.json \
+  --model /root/smartbag/models/yolo11n.pt --no-display \
+  --emit-alert-jsonl --profile --stream-bind 127.0.0.1 --stream-port 18081
+```
+
+右侧使用另一设备、`--side right`、`calibration-right.json` 和端口 18082。`board_dual_balanced` 默认请求已在当前 UVC 描述符中确认的 640x480@30、YOLO `imgsz=512`、推理上限 8 FPS；描述符 30 FPS 不代表实测能持续达到。直接命令行的预览默认 640x360，部署配置使用保持 4:3 的 480x360、JPEG quality 70、8 FPS。板上不足时改 `board_cpu`，不要先牺牲风险稳定器或让 raw risk 直接驱动震动。
+
+新增参数：
+
+```text
+--camera-fps/--fps              相机请求帧率
+--inference-fps-limit           live detector 循环上限，0 表示不限
+--process-every-n               每 N 个采集帧交付一个；capture 仍持续排空
+--camera-reconnect-attempts     断流后的有限重连次数
+--camera-reconnect-backoff      重连初始退避秒数
+--stream-bind/--stream-port     detector 本地 HTTP 服务；port=0 关闭
+--jpeg-stream-width/height      手机 JPEG 尺寸，不改变 YOLO 输入
+--jpeg-quality                  20..95
+--stream-fps-limit              每个 MJPEG 客户端上限
+--stream-access-token           可选 detector 本地 token
+```
+
+相机采集使用容量 1 的 latest-frame buffer，旧帧被覆盖而不是排队。HTTP 只读取本进程已有 raw/overlay 帧，不二次打开相机；手机慢或断开不会阻塞检测。没有视频客户端时不会主动执行 JPEG 编码。profile 保留 `capture`、`infer+track`、postprocess、risk、draw、display/write、total，并额外报告 JPEG、客户端数、stream FPS 和 dropped frames；当前 Ultralytics `model.track()` 无法可靠拆分 inference 与 tracker，因此不伪造两项独立耗时。
+
+detector HTTP 提供 `/api/v1/camera/<side>/status`、`snapshot.jpg` 和 `mjpeg`。外部双路聚合 API 和浏览器页由 `dual_camera_gateway.py` 提供，部署方法见 `09_deliverables/board_deploy/README.md`。

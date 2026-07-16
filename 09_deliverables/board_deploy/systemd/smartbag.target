@@ -1,0 +1,7 @@
+[Unit]
+Description=SS928 SmartBag default dual-USB-camera runtime
+Requires=smartbag-alert.service smartbag-video.service
+After=smartbag-alert.service smartbag-video.service
+
+[Install]
+WantedBy=multi-user.target

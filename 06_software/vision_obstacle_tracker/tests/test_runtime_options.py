@@ -4,10 +4,29 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from vision_obstacle_tracker import create_yolo_model, display_wait_ms, open_capture, parse_args, video_should_skip_frames
+from vision_obstacle_tracker import create_yolo_model, display_wait_ms, open_capture, parse_args, read_initial_frame, video_should_skip_frames
 
 
 class RuntimeOptionsTest(unittest.TestCase):
+    def test_initial_camera_frame_waits_through_startup_misses(self) -> None:
+        class SlowFirstFrameCapture:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def read(self):
+                self.calls += 1
+                if self.calls < 3:
+                    return False, None
+                return True, "frame"
+
+        capture = SlowFirstFrameCapture()
+
+        ok, frame = read_initial_frame(capture, timeout_s=1.0, sleep_s=0.0)
+
+        self.assertTrue(ok)
+        self.assertEqual("frame", frame)
+        self.assertEqual(3, capture.calls)
+
     def test_default_runtime_options_use_sensitive_camera_profile(self) -> None:
         with patch.object(sys, "argv", ["vision_obstacle_tracker.py"]):
             args = parse_args()
@@ -80,6 +99,81 @@ class RuntimeOptionsTest(unittest.TestCase):
         self.assertEqual(640, args.imgsz)
         self.assertEqual(0.05, args.conf)
         self.assertEqual(40, args.max_det)
+
+    def test_board_cpu_profile_and_alert_options(self) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "vision_obstacle_tracker.py",
+                "--runtime-profile",
+                "board_cpu",
+                "--camera-device",
+                "/dev/video0",
+                "--side",
+                "auto",
+                "--center-side",
+                "both",
+                "--emit-alert-jsonl",
+                "--alert-min-level",
+                "2",
+                "--alert-rate-limit",
+                "0.4",
+            ],
+        ):
+            args = parse_args()
+
+        self.assertEqual(640, args.width)
+        self.assertEqual(480, args.height)
+        self.assertEqual(416, args.imgsz)
+        self.assertEqual(0.06, args.conf)
+        self.assertEqual(30, args.max_det)
+        self.assertEqual("/dev/video0", args.camera_device)
+        self.assertEqual("auto", args.side)
+        self.assertEqual("both", args.center_side)
+        self.assertTrue(args.emit_alert_jsonl)
+        self.assertEqual(2, args.alert_min_level)
+        self.assertEqual(0.4, args.alert_rate_limit)
+
+    def test_board_dual_balanced_separates_inference_and_stream_quality(self) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "vision_obstacle_tracker.py",
+                "--runtime-profile",
+                "board_dual_balanced",
+                "--side",
+                "left",
+                "--stream-port",
+                "18081",
+            ],
+        ):
+            args = parse_args()
+
+        self.assertEqual((640, 480), (args.width, args.height))
+        self.assertEqual(512, args.imgsz)
+        self.assertEqual(0.05, args.conf)
+        self.assertEqual(40, args.max_det)
+        self.assertEqual(30.0, args.fps)
+        self.assertEqual(8.0, args.inference_fps_limit)
+        self.assertEqual((640, 360), (args.jpeg_stream_width, args.jpeg_stream_height))
+        self.assertEqual(70, args.jpeg_quality)
+
+    def test_stream_port_requires_fixed_physical_side(self) -> None:
+        with patch.object(sys, "argv", ["vision_obstacle_tracker.py", "--stream-port", "18081"]):
+            with self.assertRaises(SystemExit):
+                parse_args()
+
+    def test_ss928_om_backend_is_explicitly_selectable_but_not_faked(self) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            ["vision_obstacle_tracker.py", "--detector-backend", "ss928_om", "--model", "model.om"],
+        ):
+            args = parse_args()
+
+        self.assertEqual("ss928_om", args.detector_backend)
 
     def test_runtime_profile_can_be_overridden_by_explicit_values(self) -> None:
         with patch.object(

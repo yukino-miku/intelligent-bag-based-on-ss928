@@ -1,0 +1,117 @@
+<view class="dashboard">
+  <view class="dashboard__header">
+    <view>
+      <view class="dashboard__title">BMI270 实时姿态</view>
+      <view class="dashboard__subtitle">{{deviceLabel}}</view>
+    </view>
+    <view class="dashboard__status dashboard__status--{{statusLevel}}">{{statusText}}</view>
+  </view>
+
+  <view class="mode-switch">
+    <button class="mode-switch__item" bindtap="goHome">采集校准</button>
+    <button class="mode-switch__item mode-switch__item--active">实时姿态</button>
+  </view>
+
+  <view class="toolbar">
+    <button class="toolbar__button toolbar__button--primary" bindtap="startScan" loading="{{scanning}}" disabled="{{connecting}}">{{scanButtonText}}</button>
+    <button class="toolbar__button" wx:if="{{scanning}}" bindtap="stopScan">停止</button>
+    <button class="toolbar__button toolbar__button--danger" wx:if="{{connected}}" bindtap="disconnectDevice">断开</button>
+  </view>
+
+  <view class="device-list" wx:if="{{hasDevices}}">
+    <view class="device-list__title">候选设备</view>
+    <view class="device-row" wx:for="{{devices}}" wx:key="deviceId">
+      <view class="device-row__main">
+        <view class="device-row__name">{{item.name}}</view>
+        <view class="device-row__meta">{{item.deviceId}} · RSSI {{item.rssi}}</view>
+      </view>
+      <button class="device-row__button" bindtap="connectFromTap" data-device-id="{{item.deviceId}}" data-device-name="{{item.name}}" disabled="{{connecting || connected}}">连接</button>
+    </view>
+  </view>
+
+  <view class="empty-scan" wx:if="{{scanning && !hasDevices}}">正在扫描 {{targetName}}</view>
+
+  <view class="pose-grid">
+    <view class="pose-metric">
+      <view class="pose-metric__label">ROLL</view>
+      <view class="pose-metric__value">{{frame.roll}}</view>
+      <view class="pose-metric__unit">deg</view>
+    </view>
+    <view class="pose-metric pose-metric--pitch">
+      <view class="pose-metric__label">PITCH</view>
+      <view class="pose-metric__value">{{frame.pitch}}</view>
+      <view class="pose-metric__unit">deg</view>
+    </view>
+    <view class="pose-metric pose-metric--yaw">
+      <view class="pose-metric__label">YAW</view>
+      <view class="pose-metric__value">{{frame.yaw}}</view>
+      <view class="pose-metric__unit">deg</view>
+    </view>
+  </view>
+
+  <view class="auto-alert-panel">
+    <view class="auto-alert-panel__header">
+      <view class="auto-alert-panel__title">自动视觉告警</view>
+      <button class="auto-alert-panel__clear" bindtap="clearAlertHistory">清除历史</button>
+    </view>
+    <view class="auto-alert-panel__current">
+      <view class="auto-risk auto-risk--{{leftRisk.level}}"><text>左侧</text><text>{{leftRisk.name}}</text></view>
+      <view class="auto-risk auto-risk--{{rightRisk.level}}"><text>右侧</text><text>{{rightRisk.name}}</text></view>
+    </view>
+    <view class="auto-alert-history" wx:if="{{alertHistory.length}}">
+      <view class="auto-alert-row" wx:for="{{alertHistory}}" wx:key="key">
+        <text>{{item.receivedAt}}</text><text>{{item.side === 'left' ? '左' : '右'}}</text><text>{{item.name}}</text>
+        <text>{{item.className || '目标'}}</text><text>{{item.distanceM === null ? '--' : item.distanceM + 'm'}}</text>
+      </view>
+    </view>
+  </view>
+
+  <view class="attitude-panel">
+    <view class="attitude-panel__visual">
+      <view class="attitude-panel__sky"></view>
+      <view class="attitude-panel__ground"></view>
+      <view class="attitude-panel__horizon" style="{{horizonStyle}}"></view>
+      <view class="attitude-panel__body" style="{{bodyStyle}}">
+        <view class="attitude-panel__wing"></view>
+        <view class="attitude-panel__nose"></view>
+      </view>
+    </view>
+    <view class="attitude-panel__facts">
+      <view class="fact-row"><text class="fact-row__label">速度</text><text class="fact-row__value">{{frame.speed}} m/s</text></view>
+      <view class="fact-row"><text class="fact-row__label">合加速度</text><text class="fact-row__value">{{frame.accelG}} g</text></view>
+      <view class="fact-row"><text class="fact-row__label">角速度</text><text class="fact-row__value">{{frame.gyroDps}} deg/s</text></view>
+      <view class="fact-row"><text class="fact-row__label">静止</text><text class="fact-row__value">{{frame.stationary}}</text></view>
+    </view>
+  </view>
+
+  <view class="data-panel">
+    <view class="data-row"><text class="data-row__label">ACC XYZ(g)</text><text class="data-row__value">{{frame.ax}} / {{frame.ay}} / {{frame.az}}</text></view>
+    <view class="data-row"><text class="data-row__label">GYRO XYZ(deg/s)</text><text class="data-row__value">{{frame.gx}} / {{frame.gy}} / {{frame.gz}}</text></view>
+    <view class="data-row"><text class="data-row__label">最近告警</text><text class="data-row__value data-row__value--alert">{{frame.alerts}}</text></view>
+    <view class="data-row"><text class="data-row__label">采集状态</text><text class="data-row__value">{{frame.record}}</text></view>
+    <view class="data-row"><text class="data-row__label">更新时间</text><text class="data-row__value">{{frame.lastUpdate}}</text></view>
+    <view class="data-row"><text class="data-row__label">帧数 / 频率</text><text class="data-row__value">{{frameCount}} / {{sampleHz}} Hz</text></view>
+  </view>
+
+  <view class="command-panel">
+    <view class="command-panel__buttons">
+      <button class="command-panel__button" bindtap="sendCommand" data-command="IMU ZERO" disabled="{{!connected}}">ZERO</button>
+      <button class="command-panel__button" bindtap="sendCommand" data-command="IMU STATUS" disabled="{{!connected}}">STATUS</button>
+      <button class="command-panel__button" bindtap="sendCommand" data-command="IMU C?" disabled="{{!connected}}">C?</button>
+    </view>
+    <view class="command-panel__response">{{commandResponse}}</view>
+  </view>
+
+<view class="alert-debug-panel">
+    <view class="alert-debug-panel__header">
+      <view class="alert-debug-panel__title">SS928-SmartBag 报警调试</view>
+      <button class="alert-debug-panel__clear" bindtap="sendCommand" data-command="AL CLEAR" disabled="{{!connected}}">CLEAR</button>
+    </view>
+    <view class="alert-debug-panel__grid">
+      <button class="alert-debug-panel__button alert-debug-panel__button--{{item.side}}" wx:for="{{alertCommands}}" wx:key="command" bindtap="sendCommand" data-command="{{item.command}}" disabled="{{!connected}}">{{item.label}}</button>
+    </view>
+  </view>
+  <view class="log-panel" wx:if="{{logs.length}}">
+    <view class="log-panel__line" wx:for="{{logs}}" wx:key="*this">{{item}}</view>
+  </view>
+</view>

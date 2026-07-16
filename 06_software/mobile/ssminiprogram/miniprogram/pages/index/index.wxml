@@ -1,0 +1,99 @@
+<view class="page">
+  <view class="topbar">
+    <view>
+      <view class="title">BMI270 姿态采集</view>
+      <view class="subtitle">{{deviceLabel}}</view>
+    </view>
+    <view class="status status--{{statusLevel}}">{{statusText}}</view>
+  </view>
+
+  <view class="mode-switch">
+    <button class="mode-switch__item mode-switch__item--active">采集校准</button>
+    <button class="mode-switch__item" bindtap="goMonitor">实时姿态</button>
+  </view>
+
+  <view class="panel connection-panel">
+    <view class="panel__head">
+      <view class="panel__title">连接</view>
+      <view class="panel__meta">{{targetName}}</view>
+    </view>
+    <view class="toolbar">
+      <button class="button button--primary" bindtap="startScan" loading="{{scanning}}" disabled="{{connecting}}">{{scanButtonText}}</button>
+      <button class="button" wx:if="{{scanning}}" bindtap="stopScan">停止</button>
+      <button class="button button--danger" wx:if="{{connected}}" bindtap="disconnectDevice">断开</button>
+    </view>
+    <view class="device-list" wx:if="{{hasDevices}}">
+      <view class="device-row" wx:for="{{devices}}" wx:key="deviceId">
+        <view class="device-row__main">
+          <view class="device-row__name">{{item.name}}</view>
+          <view class="device-row__meta">{{item.deviceId}} · RSSI {{item.rssi}}</view>
+        </view>
+        <button class="device-row__button" bindtap="connectFromTap" data-device-id="{{item.deviceId}}" data-device-name="{{item.name}}" disabled="{{connecting || connected}}">连接</button>
+      </view>
+    </view>
+    <view class="empty" wx:if="{{scanning && !hasDevices}}">正在等待设备广播</view>
+  </view>
+
+  <view class="panel">
+    <view class="panel__head">
+      <view class="panel__title">采集模式</view>
+      <view class="panel__meta">{{selectedMode.duration}} 秒</view>
+    </view>
+    <view class="capture-grid">
+      <view class="capture-card {{selectedModeKey === item.key ? 'capture-card--active' : ''}}" wx:for="{{modes}}" wx:key="key" bindtap="selectMode" data-key="{{item.key}}">
+        <view class="capture-card__title">{{item.title}}</view>
+        <view class="capture-card__detail">{{item.detail}}</view>
+        <view class="capture-card__foot">{{item.fileHint}} · {{item.duration}}s</view>
+      </view>
+    </view>
+  </view>
+
+  <view class="panel record-panel">
+    <view class="panel__head">
+      <view class="panel__title">采集</view>
+      <view class="panel__meta">{{recordFile}}</view>
+    </view>
+    <view class="record-stats">
+      <view class="record-stat">
+        <view class="record-stat__label">模式</view>
+        <view class="record-stat__value">{{recordModeLabel}}</view>
+      </view>
+      <view class="record-stat">
+        <view class="record-stat__label">时长</view>
+        <view class="record-stat__value">{{recordElapsed}} / {{recordDuration}}s</view>
+      </view>
+      <view class="record-stat">
+        <view class="record-stat__label">行数</view>
+        <view class="record-stat__value">{{recordRows}}</view>
+      </view>
+    </view>
+    <view class="progress"><view class="progress__bar" style="{{recordProgressStyle}}"></view></view>
+    <view class="record-actions">
+      <button class="button button--primary" bindtap="startCapture" disabled="{{!connected || recording}}">开始</button>
+      <button class="button button--danger" bindtap="stopCapture" disabled="{{!connected || !recording}}">结束</button>
+      <button class="button" bindtap="sendStatus" disabled="{{!connected}}">状态</button>
+    </view>
+    <view class="command-line">{{commandResponse}}</view>
+    <view class="saved-line">最近保存：{{lastCompleted}}</view>
+  </view>
+
+  <view class="panel latest-panel">
+    <view class="panel__head">
+      <view class="panel__title">实时姿态</view>
+      <view class="panel__meta">{{sampleHz}} Hz</view>
+    </view>
+    <view class="pose-mini">
+      <view class="pose-mini__item"><text>Roll</text><strong>{{latestPose.roll}}</strong></view>
+      <view class="pose-mini__item"><text>Pitch</text><strong>{{latestPose.pitch}}</strong></view>
+      <view class="pose-mini__item"><text>Yaw</text><strong>{{latestPose.yaw}}</strong></view>
+    </view>
+    <view class="data-row"><text>加速度</text><text>{{latestPose.accelG}} g</text></view>
+    <view class="data-row"><text>角速度</text><text>{{latestPose.gyroDps}} deg/s</text></view>
+    <view class="data-row"><text>状态</text><text>{{latestPose.stationary}}</text></view>
+    <view class="data-row"><text>更新</text><text>{{latestPose.lastUpdate}}</text></view>
+  </view>
+
+  <view class="log-panel" wx:if="{{logs.length}}">
+    <view class="log-line" wx:for="{{logs}}" wx:key="*this">{{item}}</view>
+  </view>
+</view>

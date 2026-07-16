@@ -1,0 +1,2 @@
+sleep_seconds=0.4
+timeout_seconds=2.0

@@ -1,0 +1,12 @@
+[Unit]
+Description=SS928 SmartBag GNSS diagnostic service
+Conflicts=smartbag-alert.service
+
+[Service]
+Type=simple
+WorkingDirectory=/root/smartbag/gnss
+ExecStart=/usr/bin/python3 /root/smartbag/gnss/dx_gp21_tracker.py --config /root/smartbag/gnss/config.ss928_uart4.json --no-ble
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

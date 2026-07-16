@@ -1,0 +1,12 @@
+[Unit]
+Description=SS928 SmartBag BMI270 diagnostic service
+Conflicts=smartbag-alert.service
+
+[Service]
+Type=simple
+WorkingDirectory=/root/smartbag/imu
+ExecStart=/usr/bin/python3 /root/smartbag/imu/bmi270_backpack.py --config /root/smartbag/imu/config.example.json --no-ble
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

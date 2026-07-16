@@ -1,0 +1,17 @@
+{
+  "serial": {
+    "device": "/dev/ttyAMA4",
+    "baud": 115200,
+    "dump_nmea": false
+  },
+  "track": {
+    "data_dir": "/var/lib/smartbag/tracks",
+    "chunk_size": 25
+  },
+  "output": {
+    "console": true,
+    "ble_enabled": false,
+    "ble_name": "SS928-SmartBag",
+    "live_hz": 1.0
+  }
+}

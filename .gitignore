@@ -14,12 +14,13 @@
 *.h264
 *.yuv
 *.bag
-risk_log.csv
+risk_log*.csv
 *_risk_log.csv
 
 # Generated build outputs and dependency downloads
 build/
 dist/
+dist_onefile/
 out/
 bin/
 lib/
@@ -70,3 +71,14 @@ Thumbs.db
 *.tgz
 *.gz
 *.iso
+
+# Generated models and board-local state
+yolo*.pt
+yolo*.onnx
+*_openvino_model/
+*.om
+/06_software/board_runtime/bmi270_backpack/calibration_data/*.csv
+/06_software/board_runtime/bmi270_backpack/bmi270_config.bin
+*.local.json
+.env
+*.board.log

@@ -1,0 +1,82 @@
+{
+  "paths": {
+    "python": "/usr/bin/python3",
+    "vision": "/root/smartbag/vision",
+    "model": "/root/smartbag/models/yolo11n.pt"
+  },
+  "controller_status_file": "/run/smartbag/controller-status.json",
+  "detector_restart": {
+    "limit": 5,
+    "backoff_s": 1.0
+  },
+  "cameras": {
+    "left": {
+      "camera_device": "/dev/video0",
+      "detector_profile": "board_dual_balanced",
+      "calibration_file": "/etc/smartbag/calibration-left.json",
+      "camera_height": 1.2,
+      "camera_pitch": 5.0,
+      "camera_fps": 30,
+      "inference_fps_limit": 8,
+      "process_every_n": 1,
+      "camera_reconnect_attempts": 5,
+      "camera_reconnect_backoff_s": 0.5,
+      "alert_min_level": 1,
+      "alert_rate_limit_s": 0.25,
+      "jpeg_stream_width": 480,
+      "jpeg_stream_height": 360,
+      "jpeg_quality": 70,
+      "stream_fps_limit": 8,
+      "stream_port": 18081,
+      "risk_log_csv": "/var/log/smartbag/risk-left.csv",
+      "pwm_channels": ["left_1", "left_2"]
+    },
+    "right": {
+      "camera_device": "/dev/video2",
+      "detector_profile": "board_dual_balanced",
+      "calibration_file": "/etc/smartbag/calibration-right.json",
+      "camera_height": 1.2,
+      "camera_pitch": 5.0,
+      "camera_fps": 30,
+      "inference_fps_limit": 8,
+      "process_every_n": 1,
+      "camera_reconnect_attempts": 5,
+      "camera_reconnect_backoff_s": 0.5,
+      "alert_min_level": 1,
+      "alert_rate_limit_s": 0.25,
+      "jpeg_stream_width": 480,
+      "jpeg_stream_height": 360,
+      "jpeg_quality": 70,
+      "stream_fps_limit": 8,
+      "stream_port": 18082,
+      "risk_log_csv": "/var/log/smartbag/risk-right.csv",
+      "pwm_channels": ["right_1", "right_2"]
+    }
+  },
+  "stream_gateway": {
+    "bind": "0.0.0.0",
+    "port": 8080,
+    "access_token": ""
+  },
+  "pwm": {
+    "period_ns": 1000000,
+    "level_duty_percent": {
+      "0": [0, 0],
+      "1": [60, 0],
+      "2": [60, 60],
+      "3": [100, 60],
+      "4": [100, 100]
+    }
+  },
+  "timing": {
+    "event_timeout_s": 1.0,
+    "max_event_age_s": 2.0
+  },
+  "audio": {
+    "enabled": false,
+    "root": "/root/smartbag/audio"
+  },
+  "ble": {
+    "name": "SS928-SmartBag"
+  }
+}

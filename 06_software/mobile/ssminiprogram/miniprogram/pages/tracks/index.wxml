@@ -1,0 +1,97 @@
+<view class="tracks">
+  <view class="map-shell">
+    <map
+      id="trackMap"
+      class="track-map"
+      latitude="{{latitude}}"
+      longitude="{{longitude}}"
+      scale="{{scale}}"
+      markers="{{markers}}"
+      polyline="{{polyline}}"
+      show-location
+    ></map>
+
+    <cover-view class="map-status map-status--{{statusLevel}}">
+      <cover-view class="map-status__main">{{statusText}}</cover-view>
+      <cover-view class="map-status__sub">{{deviceLabel}}</cover-view>
+    </cover-view>
+
+    <cover-view class="map-toolbar">
+      <cover-view class="map-toolbar__button map-toolbar__button--primary" bindtap="startScan">{{scanButtonText}}</cover-view>
+      <cover-view class="map-toolbar__button" wx:if="{{scanning}}" bindtap="stopScan">停止</cover-view>
+      <cover-view class="map-toolbar__button" wx:if="{{connected}}" bindtap="requestTrackList">列表</cover-view>
+      <cover-view class="map-toolbar__button" wx:if="{{connected}}" bindtap="requestStatus">状态</cover-view>
+      <cover-view class="map-toolbar__button map-toolbar__button--live" wx:if="{{connected}}" bindtap="toggleLive">{{liveEnabled ? '实时关' : '实时开'}}</cover-view>
+      <cover-view class="map-toolbar__button" wx:if="{{hasTrack}}" bindtap="centerMap">居中</cover-view>
+      <cover-view class="map-toolbar__button map-toolbar__button--danger" wx:if="{{hasTrack}}" bindtap="clearTrack">清空</cover-view>
+    </cover-view>
+  </view>
+
+  <view class="summary-panel">
+    <view class="summary-panel__head">
+      <view>
+        <view class="summary-panel__title">{{currentTrackLabel}}</view>
+        <view class="summary-panel__meta">{{latestMeta}}</view>
+      </view>
+      <view class="summary-panel__badge">{{pointCount}} 点</view>
+    </view>
+    <view class="summary-grid">
+      <view class="summary-grid__item">
+        <text>地图点数</text>
+        <strong>{{displayCount}}</strong>
+      </view>
+      <view class="summary-grid__item">
+        <text>实时推送</text>
+        <strong>{{liveEnabled ? '开启' : '关闭'}}</strong>
+      </view>
+      <view class="summary-grid__item">
+        <text>加载状态</text>
+        <strong>{{loadingTrack ? '加载中' : '空闲'}}</strong>
+      </view>
+    </view>
+    <view class="command-line">{{commandResponse}}</view>
+  </view>
+
+  <view class="panel" wx:if="{{hasDevices}}">
+    <view class="panel__title">候选设备</view>
+    <view class="device-row" wx:for="{{devices}}" wx:key="deviceId">
+      <view class="device-row__main">
+        <view class="device-row__name">{{item.name}}</view>
+        <view class="device-row__meta">{{item.deviceId}} · RSSI {{item.rssi}}</view>
+      </view>
+      <button
+        class="device-row__button"
+        bindtap="connectFromTap"
+        data-device-id="{{item.deviceId}}"
+        data-device-name="{{item.name}}"
+        disabled="{{connecting || connected}}"
+      >连接</button>
+    </view>
+  </view>
+
+  <view class="panel" wx:if="{{hasTrackItems}}">
+    <view class="panel__title">板端本地轨迹</view>
+    <view
+      class="track-row {{selectedTrackIndex === item.listIndex ? 'track-row--active' : ''}}"
+      wx:for="{{trackItems}}"
+      wx:key="id"
+      bindtap="selectTrack"
+      data-list-index="{{item.listIndex}}"
+    >
+      <view class="track-row__main">
+        <view class="track-row__name">{{item.title}}</view>
+        <view class="track-row__meta">{{item.timeRange}}</view>
+      </view>
+      <view class="track-row__count">{{item.n}} 点</view>
+    </view>
+  </view>
+
+  <view class="panel empty-panel" wx:if="{{connected && !hasTrackItems}}">
+    <view class="panel__title">板端本地轨迹</view>
+    <view class="empty-panel__text">尚未收到轨迹列表，可点击“列表”重新请求。</view>
+  </view>
+
+  <view class="log-panel" wx:if="{{logs.length}}">
+    <view class="log-line" wx:for="{{logs}}" wx:key="*this">{{item}}</view>
+  </view>
+</view>

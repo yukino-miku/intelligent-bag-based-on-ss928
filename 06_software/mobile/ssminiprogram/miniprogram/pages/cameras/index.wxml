@@ -1,0 +1,43 @@
+<view class="page">
+  <view class="header">
+    <view class="header__title">双摄实时画面</view>
+    <view class="header__address">{{baseUrl}}</view>
+  </view>
+
+  <view class="settings">
+    <view class="field"><text>板端地址</text><input value="{{config.boardHost}}" data-field="boardHost" bindinput="updateConfigField" placeholder="例如 192.168.x.x" /></view>
+    <view class="field"><text>端口</text><input type="number" value="{{config.videoPort}}" data-field="videoPort" bindinput="updateConfigField" /></view>
+    <view class="field"><text>左路 Path</text><input value="{{config.leftPath}}" data-field="leftPath" bindinput="updateConfigField" /></view>
+    <view class="field"><text>右路 Path</text><input value="{{config.rightPath}}" data-field="rightPath" bindinput="updateConfigField" /></view>
+    <view class="field"><text>刷新 FPS</text><input type="number" value="{{config.refreshFps}}" data-field="refreshFps" bindinput="updateConfigField" /></view>
+    <view class="field"><text>访问令牌</text><input password value="{{config.accessToken}}" data-field="accessToken" bindinput="updateConfigField" placeholder="可选" /></view>
+    <view class="toolbar">
+      <button class="toolbar__primary" bindtap="saveAndReconnect">保存并重连</button>
+      <button bindtap="togglePause">{{paused ? "恢复" : "暂停"}}</button>
+      <view class="segments">
+        <button class="{{viewMode === 'overlay' ? 'active' : ''}}" data-mode="overlay" bindtap="setViewMode">检测框</button>
+        <button class="{{viewMode === 'raw' ? 'active' : ''}}" data-mode="raw" bindtap="setViewMode">原始</button>
+      </view>
+    </view>
+    <view class="message">{{connectionMessage}}</view>
+  </view>
+
+  <view class="camera-grid">
+    <view class="camera" wx:for="{{[left, right]}}" wx:key="side">
+      <view class="camera__heading">
+        <text class="camera__label">{{item.label}}</text>
+        <text class="camera__status camera__status--{{item.online ? 'online' : 'offline'}}">{{item.statusText}}</text>
+      </view>
+      <image class="camera__image" src="{{item.imageUrl}}" mode="aspectFit" data-side="{{item.side}}" bindtap="previewSide" />
+      <view class="camera__risk camera__risk--{{item.riskLevel}}">{{item.riskName}}</view>
+      <view class="metrics">
+        <text>采集 {{item.captureFps}} FPS</text><text>推理 {{item.inferenceFps}} FPS</text>
+        <text>预览 {{item.streamFps}} FPS</text><text>延迟 {{item.lastFrameAge}} ms</text>
+      </view>
+      <view class="camera__meta">{{item.device}} · JPEG Q{{item.jpegQuality}} · {{item.updatedAt}}</view>
+      <view class="camera__endpoint">{{item.endpoint}}</view>
+    </view>
+  </view>
+
+  <view class="notice">视频使用 Wi-Fi/LAN HTTP snapshot；BLE 只传告警、状态和控制，不传视频。</view>
+</view>
