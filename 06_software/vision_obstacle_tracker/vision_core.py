@@ -41,6 +41,7 @@ class DetectionObservation:
     self_object_score: float = 0.0
     bbox_bottom_ratio: float = 0.0
     bbox_truncated_edges: str = ""
+    camera_ground_point: GroundPoint | None = None
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,7 @@ class TrackedObject:
     self_object_score: float = 0.0
     bbox_bottom_ratio: float = 0.0
     bbox_truncated_edges: str = ""
+    camera_ground_point: GroundPoint | None = None
 
 
 @dataclass
@@ -295,6 +297,7 @@ class TrackState:
             self_object_score=observation.self_object_score,
             bbox_bottom_ratio=observation.bbox_bottom_ratio,
             bbox_truncated_edges=observation.bbox_truncated_edges,
+            camera_ground_point=observation.camera_ground_point,
         )
 
     def _smooth_point(self, track_id: int, point: GroundPoint) -> GroundPoint:

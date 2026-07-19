@@ -4,16 +4,94 @@ from pathlib import Path
 
 from calibration import (
     CameraCalibration,
+    CameraExtrinsics,
+    GroundPoint,
     _load_simple_yaml_mapping,
     calibration_from_mapping,
     estimate_ground_point_from_bbox,
     estimate_size_distance_m,
     load_calibration_file,
     pixel_to_ground,
+    extrinsics_from_mapping,
 )
+from tools.check_camera_calibration import validate_calibration
 
 
 class CalibrationTest(unittest.TestCase):
+    def test_production_checker_rejects_placeholder_or_mirrored_mount(self) -> None:
+        data = {
+            "camera_matrix": [[500.0, 0.0, 320.0], [0.0, 500.0, 240.0], [0.0, 0.0, 1.0]],
+            "dist_coeffs": [],
+            "image_width": 640,
+            "image_height": 480,
+            "camera_height_m": 1.2,
+            "camera_pitch_deg": 5.0,
+            "distance_scale": 1.0,
+            "calibration_version": "test",
+            "extrinsics": {
+                "mount_yaw_deg": 0.0,
+                "mount_roll_deg": 0.0,
+                "mount_x_m": 0.2,
+                "mount_z_m": 0.0,
+                "calibrated": False,
+            },
+        }
+
+        errors = validate_calibration(data, side="left", production=True)
+
+        self.assertIn("left mount_x_m must be negative", errors)
+        self.assertIn("production mode requires extrinsics.calibrated=true", errors)
+
+    def test_production_checker_accepts_calibrated_right_mount(self) -> None:
+        data = {
+            "camera_matrix": [[500.0, 0.0, 320.0], [0.0, 500.0, 240.0], [0.0, 0.0, 1.0]],
+            "dist_coeffs": [],
+            "image_width": 640,
+            "image_height": 480,
+            "camera_height_m": 1.2,
+            "camera_pitch_deg": 5.0,
+            "distance_scale": 1.0,
+            "calibration_version": "test",
+            "extrinsics": {
+                "mount_yaw_deg": 15.0,
+                "mount_roll_deg": 0.0,
+                "mount_x_m": 0.2,
+                "mount_z_m": 0.0,
+                "calibrated": True,
+            },
+        }
+
+        self.assertEqual([], validate_calibration(data, side="right", production=True))
+
+    def test_dual_camera_extrinsics_transform_into_backpack_coordinates(self) -> None:
+        point = GroundPoint(0.0, 5.0)
+        left = CameraExtrinsics(mount_x_m=-0.2, calibrated=True)
+        right = CameraExtrinsics(mount_x_m=0.2, calibrated=True)
+
+        self.assertAlmostEqual(-0.2, left.camera_to_backpack(point).x_m)
+        self.assertAlmostEqual(0.2, right.camera_to_backpack(point).x_m)
+        self.assertGreater(
+            CameraExtrinsics(yaw_deg=10.0).camera_to_backpack(point).x_m,
+            0.0,
+        )
+
+    def test_extrinsics_can_be_loaded_from_nested_calibration_mapping(self) -> None:
+        extrinsics = extrinsics_from_mapping(
+            {
+                "extrinsics": {
+                    "yaw_deg": -8.0,
+                    "roll_deg": 1.5,
+                    "mount_x_m": -0.18,
+                    "mount_z_m": 0.04,
+                    "calibrated": True,
+                }
+            }
+        )
+
+        self.assertTrue(extrinsics.calibrated)
+        self.assertEqual(-8.0, extrinsics.yaw_deg)
+        self.assertEqual(-0.18, extrinsics.mount_x_m)
+
     def test_center_bottom_pixel_returns_forward_ground_point(self) -> None:
         calibration = CameraCalibration(
             image_width=2560,

@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import nullcontext, redirect_stdout
 from dataclasses import dataclass
 import inspect
+import math
 from pathlib import Path
 import time
 from typing import Any, Callable, Protocol, TextIO
@@ -60,7 +61,10 @@ class SharedModelAlternatingEngine:
     ) -> object:
         if side not in self.contexts:
             raise ValueError(f"invalid camera side: {side!r}")
+        timeline = context.get("timeline")
         inference_started_s = time.perf_counter()
+        if timeline is not None:
+            timeline.inference_start_s = time.monotonic()
         output_context = (
             redirect_stdout(self.predict_stdout)
             if self.predict_stdout is not None
@@ -69,6 +73,8 @@ class SharedModelAlternatingEngine:
         with output_context:
             results = self.model.predict(image, **self.predict_kwargs)
         self.last_inference_ms = (time.perf_counter() - inference_started_s) * 1000.0
+        if timeline is not None:
+            timeline.inference_end_s = time.monotonic()
         self.inference_count += 1
         if not results:
             raise RuntimeError("detector returned no Results object")
@@ -100,6 +106,28 @@ class SharedModelAlternatingEngine:
 class TrackerRuntimeConfig:
     tracker_yaml: str
     frame_rate: float = 30.0
+    effective_fps_mode: str = "fixed"
+    expected_side_fps: float | None = None
+    minimum_buffer_frames: int = 2
+
+    def __post_init__(self) -> None:
+        if self.frame_rate <= 0.0:
+            raise ValueError("tracker frame_rate must be positive")
+        if self.effective_fps_mode not in ("fixed", "negotiated", "effective_side"):
+            raise ValueError("tracker effective_fps_mode must be fixed, negotiated, or effective_side")
+
+
+def tracker_buffer_frames(
+    effective_fps: float,
+    track_buffer: int,
+    *,
+    reference_fps: float = 30.0,
+    minimum_frames: int = 2,
+) -> int:
+    """Convert Ultralytics' 30 FPS track buffer to an equivalent time window."""
+
+    retention_s = max(1, int(track_buffer)) / max(float(reference_fps), 1.0)
+    return max(int(minimum_frames), min(300, int(math.ceil(max(effective_fps, 0.1) * retention_s))))
 
 
 class IndependentUltralyticsTracker:
@@ -119,11 +147,34 @@ class IndependentUltralyticsTracker:
             tracker_cls = BYTETracker
         else:
             raise ValueError(f"unsupported Ultralytics tracker_type: {tracker_type!r}")
+        initial_fps = (
+            config.expected_side_fps
+            if config.effective_fps_mode == "effective_side" and config.expected_side_fps
+            else config.frame_rate
+        )
         tracker_parameters = inspect.signature(tracker_cls).parameters
         tracker_kwargs: dict[str, object] = {"args": tracker_args}
         if "frame_rate" in tracker_parameters:
-            tracker_kwargs["frame_rate"] = max(1, int(round(config.frame_rate)))
+            tracker_kwargs["frame_rate"] = max(1, int(round(initial_fps)))
         self.tracker = tracker_cls(**tracker_kwargs)
+        self.config = config
+        self.tracker_args = tracker_args
+        self.configured_track_buffer = max(1, int(getattr(tracker_args, "track_buffer", 30)))
+        self.current_effective_fps = float(initial_fps)
+        self.update_effective_fps(float(initial_fps))
+
+    def update_effective_fps(self, effective_fps: float) -> None:
+        if self.config.effective_fps_mode != "effective_side" or effective_fps <= 0.0:
+            return
+        self.current_effective_fps = float(effective_fps)
+        if hasattr(self.tracker, "frame_rate"):
+            self.tracker.frame_rate = max(1, int(round(effective_fps)))
+        if hasattr(self.tracker, "max_time_lost"):
+            self.tracker.max_time_lost = tracker_buffer_frames(
+                effective_fps,
+                self.configured_track_buffer,
+                minimum_frames=self.config.minimum_buffer_frames,
+            )
 
     def update(self, result: Any, image: object) -> Any:
         boxes = getattr(result, "boxes", None)

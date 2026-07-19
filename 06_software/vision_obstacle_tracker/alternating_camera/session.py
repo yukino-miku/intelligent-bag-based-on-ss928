@@ -24,10 +24,14 @@ except ImportError:  # pragma: no cover - Windows development host
 
 SWITCH_EVENT_FIELDS = (
     "session_id",
+    "slice_id",
     "switch_index",
     "from_side",
     "to_side",
     "switch_start_monotonic_s",
+    "capture_slice_start_s",
+    "capture_slice_end_s",
+    "streamoff_complete_s",
     "streamoff_start_s",
     "streamoff_end_s",
     "streamoff_latency_ms",
@@ -45,6 +49,14 @@ SWITCH_EVENT_FIELDS = (
     "actual_slice_fps",
     "left_blind_interval_ms",
     "right_blind_interval_ms",
+    "connection_state",
+    "disconnect_time_s",
+    "offline_detect_latency_ms",
+    "reconnect_start_s",
+    "reconnect_success_s",
+    "reconnect_duration_ms",
+    "tracker_reset",
+    "first_recovered_frame_latency_ms",
     "success",
     "error_type",
     "error_message",
@@ -60,6 +72,28 @@ CAMERA_EVENT_FIELDS = (
     "width",
     "height",
     "pixel_format",
+    "slice_id",
+    "selected_for_inference",
+    "capture_slice_start_s",
+    "capture_slice_end_s",
+    "streamoff_complete_s",
+    "decode_start_s",
+    "decode_end_s",
+    "inference_start_s",
+    "inference_end_s",
+    "tracking_start_s",
+    "tracking_end_s",
+    "risk_start_s",
+    "risk_end_s",
+    "overlay_start_s",
+    "overlay_end_s",
+    "jpeg_encode_start_s",
+    "jpeg_encode_end_s",
+    "next_camera_streamon_s",
+    "next_camera_first_frame_s",
+    "processing_complete_s",
+    "end_to_end_observation_gap_ms",
+    "side_to_side_latency_ms",
     "decode_ms",
     "camera_online",
     "active_side",
@@ -93,6 +127,21 @@ PERFORMANCE_FIELDS = (
     "load_1m",
     "usb_errors",
     "camera_errors",
+    "capture_only_max_blind_ms",
+    "end_to_end_left_max_gap_ms",
+    "end_to_end_right_max_gap_ms",
+    "end_to_end_max_gap_ms",
+    "end_to_end_p50_gap_ms",
+    "end_to_end_p95_gap_ms",
+    "end_to_end_p99_gap_ms",
+    "left_to_right_p95_latency_ms",
+    "right_to_left_p95_latency_ms",
+    "captured_valid_frames",
+    "selected_inference_frames",
+    "skipped_inference_frames",
+    "inference_frames_per_slice",
+    "inference_queue_depth",
+    "oldest_pending_frame_age_ms",
 )
 
 ALERT_FIELDS = (
@@ -115,6 +164,11 @@ ALERT_FIELDS = (
     "stabilizer_pending_level",
     "stabilizer_pending_count",
     "stabilizer_required_frames",
+    "slice_id",
+    "pending_slice_count",
+    "required_slices",
+    "confirmed_across_slices",
+    "fast_path_reason",
     "event_kind",
     "clear_reason",
     "observation_age_ms",
@@ -178,9 +232,26 @@ class AlternatingSessionRecorder:
         self.switch_events: list[SwitchEvent] = []
         self.performance_rows: list[dict[str, object]] = []
         self.frame_counts = {"left": 0, "right": 0}
+        self.selected_frame_counts = {"left": 0, "right": 0}
+        self.skipped_inference_frames = 0
+        self.end_to_end_gaps_ms = {"left": [], "right": []}
+        self.side_to_side_latencies_ms = {"left_to_right": [], "right_to_left": []}
+        self.camera_reconnects = 0
+        self.camera_offline_clear_verified: bool | None = None
         self.alert_count = 0
         self.clear_count = 0
+        self.state_change_count = 0
+        self.heartbeat_count = 0
+        self.stale_clear_count = 0
+        self.observed_safe_clear_count = 0
+        self.detector_exit_clear_count = 0
+        self.camera_disconnect_clear_count = 0
+        self.cross_slice_confirmed_count = 0
+        self.fast_path_count = 0
+        self.risk_level_counts = {str(level): 0 for level in range(5)}
         self.single_frame_jump_suppressed_count = 0
+        self.dropped_frame_count = 0
+        self._last_sequence_by_side: dict[str, int] = {}
         self._last_process_time_s = time.process_time()
         self._last_cpu_wall_s = self.started_monotonic_s
         self.metadata: dict[str, object] = self._base_metadata()
@@ -229,11 +300,35 @@ class AlternatingSessionRecorder:
         *,
         active_side: str | None,
         decode_ms: float | str = "",
+        selected_for_inference: bool = True,
+        timeline: object | None = None,
+        end_to_end_observation_gap_ms: float | None = None,
+        side_to_side_latency_ms: float | None = None,
         dropped_frames: int = 0,
         reconnect_count: int = 0,
         last_error: str = "",
     ) -> None:
+        previous_sequence = self._last_sequence_by_side.get(frame.side)
+        sequence_gap = (
+            max(0, int(frame.sequence) - previous_sequence - 1)
+            if previous_sequence is not None and int(frame.sequence) > previous_sequence
+            else 0
+        )
+        self._last_sequence_by_side[frame.side] = int(frame.sequence)
+        frame_drops = max(0, int(dropped_frames)) + sequence_gap
+        self.dropped_frame_count += frame_drops
         self.frame_counts[frame.side] += 1
+        if selected_for_inference:
+            self.selected_frame_counts[frame.side] += 1
+        else:
+            self.skipped_inference_frames += 1
+        if end_to_end_observation_gap_ms is not None:
+            self.end_to_end_gaps_ms[frame.side].append(float(end_to_end_observation_gap_ms))
+        if side_to_side_latency_ms is not None:
+            other = "right" if frame.side == "left" else "left"
+            self.side_to_side_latencies_ms[f"{other}_to_{frame.side}"].append(float(side_to_side_latency_ms))
+        self.camera_reconnects = max(self.camera_reconnects, int(reconnect_count))
+        timeline_values = timeline.as_dict() if timeline is not None else {}
         self.camera_csv.write(
             {
                 "session_id": self.session_id,
@@ -245,22 +340,41 @@ class AlternatingSessionRecorder:
                 "width": frame.width,
                 "height": frame.height,
                 "pixel_format": frame.pixel_format,
+                "slice_id": frame.slice_id,
+                "selected_for_inference": bool(selected_for_inference),
+                **timeline_values,
+                "end_to_end_observation_gap_ms": (
+                    round(float(end_to_end_observation_gap_ms), 3)
+                    if end_to_end_observation_gap_ms is not None
+                    else ""
+                ),
+                "side_to_side_latency_ms": (
+                    round(float(side_to_side_latency_ms), 3)
+                    if side_to_side_latency_ms is not None
+                    else ""
+                ),
                 "decode_ms": round(float(decode_ms), 3) if decode_ms != "" else "",
                 "camera_online": True,
                 "active_side": active_side or "none",
-                "dropped_frames": dropped_frames,
+                "dropped_frames": frame_drops,
                 "reconnect_count": reconnect_count,
                 "last_error": last_error,
             }
         )
+
+    def mark_camera_offline_clear_verified(self) -> None:
+        self.camera_offline_clear_verified = True
+
+    def record_single_frame_jump_suppressed(self, count: int = 1) -> None:
+        self.single_frame_jump_suppressed_count += max(0, int(count))
 
     def record_performance(
         self,
         status: dict[str, object],
         *,
         gateway_clients: int = 0,
-        usb_errors: int = 0,
-        camera_errors: int = 0,
+        usb_errors: int | None = None,
+        camera_errors: int | None = None,
         stage_metrics: dict[str, float] | None = None,
     ) -> dict[str, object]:
         stage_metrics = stage_metrics or {}
@@ -298,8 +412,29 @@ class AlternatingSessionRecorder:
             "process_rss_mb": round(process_rss_mb(), 3),
             "temperature_c": read_temperature_c(),
             "load_1m": round(os.getloadavg()[0], 3) if hasattr(os, "getloadavg") else "",
-            "usb_errors": usb_errors,
-            "camera_errors": camera_errors,
+            "usb_errors": self._usb_error_count() if usb_errors is None else usb_errors,
+            "camera_errors": self._camera_error_count() if camera_errors is None else camera_errors,
+            "capture_only_max_blind_ms": stage_metrics.get("capture_only_max_blind_ms", 0.0),
+            "end_to_end_left_max_gap_ms": stage_metrics.get("end_to_end_left_max_gap_ms", 0.0),
+            "end_to_end_right_max_gap_ms": stage_metrics.get("end_to_end_right_max_gap_ms", 0.0),
+            "end_to_end_max_gap_ms": stage_metrics.get("end_to_end_max_gap_ms", 0.0),
+            "end_to_end_p50_gap_ms": stage_metrics.get("end_to_end_p50_gap_ms", ""),
+            "end_to_end_p95_gap_ms": stage_metrics.get("end_to_end_p95_gap_ms", ""),
+            "end_to_end_p99_gap_ms": stage_metrics.get("end_to_end_p99_gap_ms", ""),
+            "left_to_right_p95_latency_ms": stage_metrics.get("left_to_right_p95_latency_ms", ""),
+            "right_to_left_p95_latency_ms": stage_metrics.get("right_to_left_p95_latency_ms", ""),
+            "captured_valid_frames": stage_metrics.get(
+                "captured_valid_frames", sum(self.frame_counts.values())
+            ),
+            "selected_inference_frames": stage_metrics.get(
+                "selected_inference_frames", sum(self.selected_frame_counts.values())
+            ),
+            "skipped_inference_frames": stage_metrics.get(
+                "skipped_inference_frames", self.skipped_inference_frames
+            ),
+            "inference_frames_per_slice": stage_metrics.get("inference_frames_per_slice", ""),
+            "inference_queue_depth": stage_metrics.get("inference_queue_depth", 0),
+            "oldest_pending_frame_age_ms": stage_metrics.get("oldest_pending_frame_age_ms", 0.0),
         }
         self.performance_csv.write(row)
         self.performance_rows.append(row)
@@ -308,8 +443,39 @@ class AlternatingSessionRecorder:
     def record_alert(self, row: dict[str, object]) -> None:
         self.alerts_csv.write(row)
         self.alert_count += 1
-        if int(row.get("haptic_level", 0) or 0) == 0:
+        level_value = int(row.get("haptic_level", 0) or 0)
+        event_kind = str(row.get("event_kind", "state_change"))
+        clear_reason = str(row.get("clear_reason", ""))
+        if level_value == 0:
             self.clear_count += 1
+            if clear_reason == "stale_observation":
+                self.stale_clear_count += 1
+            elif clear_reason == "observed_safe":
+                self.observed_safe_clear_count += 1
+            elif clear_reason == "camera_disconnect":
+                self.camera_disconnect_clear_count += 1
+            elif clear_reason == "shutdown":
+                self.detector_exit_clear_count += 1
+        if event_kind == "state_change":
+            self.state_change_count += 1
+            level = str(level_value)
+            self.risk_level_counts[level] = self.risk_level_counts.get(level, 0) + 1
+        elif event_kind == "heartbeat":
+            self.heartbeat_count += 1
+        if _as_bool(row.get("confirmed_across_slices")):
+            self.cross_slice_confirmed_count += 1
+        if row.get("fast_path_reason"):
+            self.fast_path_count += 1
+
+    def _usb_error_count(self) -> int:
+        return sum(
+            1
+            for event in self.switch_events
+            if event.error_type == "enospc" or event.error_type.startswith("oserror_")
+        )
+
+    def _camera_error_count(self) -> int:
+        return sum(1 for event in self.switch_events if not event.success)
 
     def save_snapshot(self, frame: CapturedFrame, switch_index: int) -> Path:
         path = self.snapshots_dir / f"{switch_index:06d}-{frame.side}.jpg"
@@ -354,6 +520,12 @@ class AlternatingSessionRecorder:
         inference_fps_values = [float(row["inference_fps"]) for row in self.performance_rows]
         jpeg_encode_values = [float(row["jpeg_encode_ms"]) for row in self.performance_rows]
         maximum_blind = max((value for values in blind_by_side.values() for value in values), default=0.0)
+        end_to_end_combined = self.end_to_end_gaps_ms["left"] + self.end_to_end_gaps_ms["right"]
+        end_to_end_maximum = max(end_to_end_combined, default=0.0)
+        acceptance_gap = end_to_end_maximum if end_to_end_combined else maximum_blind
+        acceptance_gap_metric = (
+            "end_to_end_observation_gap_ms" if end_to_end_combined else "capture_switch_blind_interval_ms"
+        )
         has_enospc = "enospc" in error_types
         acceptance_met = (
             elapsed_s >= acceptance_min_duration_s
@@ -364,7 +536,7 @@ class AlternatingSessionRecorder:
             and first_frame_timeouts == 0
             and (
                 acceptance_max_blind_interval_ms is None
-                or maximum_blind <= acceptance_max_blind_interval_ms
+                or acceptance_gap <= acceptance_max_blind_interval_ms
             )
         )
         summary = {
@@ -376,14 +548,43 @@ class AlternatingSessionRecorder:
             "streamon_failures": streamon_failures,
             "streamoff_failures": sum(1 for event in self.switch_events if event.error_type == "streamoff_failure"),
             "first_frame_timeouts": first_frame_timeouts,
-            "camera_reconnects": 0,
+            "camera_reconnects": self.camera_reconnects,
+            "dropped_frames": self.dropped_frame_count,
+            "usb_errors": self._usb_error_count(),
+            "camera_errors": self._camera_error_count(),
             "left_valid_frames": self.frame_counts["left"],
             "right_valid_frames": self.frame_counts["right"],
+            "captured_valid_frames": sum(self.frame_counts.values()),
+            "selected_inference_frames": sum(self.selected_frame_counts.values()),
+            "skipped_inference_frames": self.skipped_inference_frames,
             "left_effective_fps": round(self.frame_counts["left"] / max(elapsed_s, 1e-9), 3),
             "right_effective_fps": round(self.frame_counts["right"] / max(elapsed_s, 1e-9), 3),
             "left_max_blind_interval_ms": round(max(blind_by_side["left"], default=0.0), 3),
             "right_max_blind_interval_ms": round(max(blind_by_side["right"], default=0.0), 3),
             "maximum_blind_interval_ms": round(maximum_blind, 3),
+            "capture_only_max_blind_ms": round(maximum_blind, 3),
+            "end_to_end_left_max_gap_ms": round(max(self.end_to_end_gaps_ms["left"], default=0.0), 3),
+            "end_to_end_right_max_gap_ms": round(max(self.end_to_end_gaps_ms["right"], default=0.0), 3),
+            "end_to_end_max_gap_ms": round(end_to_end_maximum, 3),
+            "end_to_end_p50_gap_ms": (
+                round(percentile(end_to_end_combined, 0.50), 3) if end_to_end_combined else None
+            ),
+            "end_to_end_p95_gap_ms": (
+                round(percentile(end_to_end_combined, 0.95), 3) if end_to_end_combined else None
+            ),
+            "end_to_end_p99_gap_ms": (
+                round(percentile(end_to_end_combined, 0.99), 3) if end_to_end_combined else None
+            ),
+            "left_to_right_p95_latency_ms": (
+                round(percentile(self.side_to_side_latencies_ms["left_to_right"], 0.95), 3)
+                if self.side_to_side_latencies_ms["left_to_right"]
+                else None
+            ),
+            "right_to_left_p95_latency_ms": (
+                round(percentile(self.side_to_side_latencies_ms["right_to_left"], 0.95), 3)
+                if self.side_to_side_latencies_ms["right_to_left"]
+                else None
+            ),
             "mean_blind_interval_ms": round(mean([value for values in blind_by_side.values() for value in values]), 3)
             if any(blind_by_side.values())
             else 0.0,
@@ -400,11 +601,24 @@ class AlternatingSessionRecorder:
             "jpeg_encode_ms": round(mean(jpeg_encode_values), 3) if jpeg_encode_values else 0.0,
             "alert_count": self.alert_count,
             "clear_count": self.clear_count,
+            "alerts_by_level": dict(self.risk_level_counts),
+            "state_change_count": self.state_change_count,
+            "heartbeat_count": self.heartbeat_count,
+            "stale_clear_count": self.stale_clear_count,
+            "observed_safe_clear_count": self.observed_safe_clear_count,
+            "detector_exit_clear_count": self.detector_exit_clear_count,
+            "camera_disconnect_clear_count": self.camera_disconnect_clear_count,
             "single_frame_jump_suppressed_count": self.single_frame_jump_suppressed_count,
-            "camera_offline_clear_verified": False,
+            "cross_slice_confirmed_count": self.cross_slice_confirmed_count,
+            "emergency_fast_path_count": self.fast_path_count,
+            "fast_path_count": self.fast_path_count,
+            "risk_level_counts": dict(self.risk_level_counts),
+            "camera_offline_clear_verified": self.camera_offline_clear_verified,
             "enospc_observed": has_enospc,
             "acceptance_min_duration_s": acceptance_min_duration_s,
             "acceptance_max_blind_interval_ms": acceptance_max_blind_interval_ms,
+            "acceptance_gap_metric": acceptance_gap_metric,
+            "acceptance_gap_ms": round(acceptance_gap, 3),
             "acceptance_met": acceptance_met,
             "recommended_next_parameters": "Run the 2-minute matrix, then select the lowest p95 switch latency without incomplete slices.",
         }
@@ -452,6 +666,12 @@ def percentile_summary(values: list[float]) -> dict[str, float | None]:
     }
 
 
+def _as_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes"}
+
+
 def render_summary_markdown(summary: dict[str, object]) -> str:
     switch_latency = summary["switch_latency_ms"]
     first_latency = summary["first_frame_latency_ms"]
@@ -460,22 +680,32 @@ def render_summary_markdown(summary: dict[str, object]) -> str:
 - Session：`{summary['session_id']}`
 - 运行时长：{summary['duration_s']} s
 - 切换：{summary['successful_switches']}/{summary['switch_count']}，成功率 {summary['switch_success_rate_percent']}%
-- 左/右有效帧：{summary['left_valid_frames']} / {summary['right_valid_frames']}
+- 左/右有效采集帧：{summary['left_valid_frames']} / {summary['right_valid_frames']}
+- 已选推理帧/跳过旧帧：{summary['selected_inference_frames']} / {summary['skipped_inference_frames']}
 - 左/右有效 FPS：{summary['left_effective_fps']} / {summary['right_effective_fps']}
-- 最大单侧盲区：{summary['maximum_blind_interval_ms']} ms
+- 纯摄像头切换最大盲区：{summary['capture_only_max_blind_ms']} ms
+- 完整处理链端到端最大观测间隔：{summary['end_to_end_max_gap_ms']} ms
+- 端到端 p50/p95/p99：{summary['end_to_end_p50_gap_ms']} / {summary['end_to_end_p95_gap_ms']} / {summary['end_to_end_p99_gap_ms']} ms
 - 切换延迟 p50/p95/p99：{switch_latency['p50']} / {switch_latency['p95']} / {switch_latency['p99']} ms
 - 首帧延迟 p50/p95/p99：{first_latency['p50']} / {first_latency['p95']} / {first_latency['p99']} ms
 - STREAMON/STREAMOFF/首帧超时：{summary['streamon_failures']} / {summary['streamoff_failures']} / {summary['first_frame_timeouts']}
+- 相机重连：{summary['camera_reconnects']}
+- 序列丢帧/USB 错误/相机错误：{summary['dropped_frames']} / {summary['usb_errors']} / {summary['camera_errors']}
 - ENOSPC：{summary['enospc_observed']}
 - CPU 峰值/平均：{summary['max_cpu_percent']}% / {summary['average_cpu_percent']}%
 - RSS 峰值/平均：{summary['max_process_rss_mb']} / {summary['average_process_rss_mb']} MiB
 - 内存使用峰值/平均：{summary['max_memory_used_mb']} / {summary['average_memory_used_mb']} MiB
 - 温度峰值：{summary['max_temperature_c']}
+- 验收指标：{summary['acceptance_gap_metric']} = {summary['acceptance_gap_ms']} ms
 - 验收最短时长：{summary['acceptance_min_duration_s']} s
-- 验收最大盲区阈值：{summary['acceptance_max_blind_interval_ms']} ms
+- 验收最大间隔阈值：{summary['acceptance_max_blind_interval_ms']} ms
 - 当前验收条件满足：{summary['acceptance_met']}
+- 状态变化/心跳：{summary['state_change_count']} / {summary['heartbeat_count']}
+- stale/观测安全/相机断开/detector 退出清振：{summary['stale_clear_count']} / {summary['observed_safe_clear_count']} / {summary['camera_disconnect_clear_count']} / {summary['detector_exit_clear_count']}
+- 跨时间片确认/单帧跳变抑制/紧急 fast path：{summary['cross_slice_confirmed_count']} / {summary['single_frame_jump_suppressed_count']} / {summary['emergency_fast_path_count']}
+- Controller/PWM 相机离线清振闭环确认：{summary['camera_offline_clear_verified']}
 
-该摘要仅代表交替采集，不代表同步双摄、YOLO 推理、风险判断或 PWM 已验证。
+时间复用不是同步双摄。纯切换盲区只描述 STREAMOFF/STREAMON/首帧；端到端观测间隔才包含解码、推理、跟踪、风险、overlay、JPEG 和轮回调度。
 """
 
 

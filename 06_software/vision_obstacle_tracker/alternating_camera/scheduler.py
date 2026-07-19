@@ -45,11 +45,17 @@ class AlternatingCaptureConfig:
     fps: float = 5.0
     slice_ms: int = 500
     frames_per_slice: int = 4
+    inference_frames_per_slice: int = 1
     warmup_frames: int = 2
     frame_timeout_ms: int = 1000
     switch_failure_limit: int = 3
     switch_backoff_ms: int = 200
     max_blind_interval_ms: int = 1200
+    camera_reconnect_enabled: bool = True
+    camera_reconnect_attempts: int = 5
+    camera_reconnect_initial_backoff_s: float = 0.5
+    camera_reconnect_max_backoff_s: float = 8.0
+    tracker_reset_after_disconnect_s: float = 3.0
 
     def __post_init__(self) -> None:
         if self.width <= 0 or self.height <= 0:
@@ -60,12 +66,20 @@ class AlternatingCaptureConfig:
             raise ValueError("slice_ms must be positive")
         if self.frames_per_slice <= 0:
             raise ValueError("frames_per_slice must be positive")
+        if not 1 <= self.inference_frames_per_slice <= self.frames_per_slice:
+            raise ValueError("inference_frames_per_slice must be between 1 and frames_per_slice")
         if self.warmup_frames < 0:
             raise ValueError("warmup_frames must be non-negative")
         if self.frame_timeout_ms <= 0:
             raise ValueError("frame_timeout_ms must be positive")
         if self.switch_failure_limit < 1:
             raise ValueError("switch_failure_limit must be at least 1")
+        if self.camera_reconnect_attempts < 1:
+            raise ValueError("camera_reconnect_attempts must be at least 1")
+        if self.camera_reconnect_initial_backoff_s < 0.0:
+            raise ValueError("camera_reconnect_initial_backoff_s must be non-negative")
+        if self.camera_reconnect_max_backoff_s < self.camera_reconnect_initial_backoff_s:
+            raise ValueError("camera_reconnect_max_backoff_s must be >= initial backoff")
 
 
 @dataclass(frozen=True)
@@ -119,14 +133,19 @@ class CapturedFrame:
     height: int
     pixel_format: str
     warmup: bool = False
+    slice_id: int = -1
 
 
 @dataclass
 class SwitchEvent:
+    slice_id: int
     switch_index: int
     from_side: str
     to_side: str
     switch_start_monotonic_s: float
+    capture_slice_start_s: float | None = None
+    capture_slice_end_s: float | None = None
+    streamoff_complete_s: float | None = None
     streamoff_start_s: float | None = None
     streamoff_end_s: float | None = None
     streamoff_latency_ms: float = 0.0
@@ -144,6 +163,14 @@ class SwitchEvent:
     actual_slice_fps: float = 0.0
     left_blind_interval_ms: float | None = None
     right_blind_interval_ms: float | None = None
+    connection_state: str = ""
+    disconnect_time_s: float | None = None
+    offline_detect_latency_ms: float | None = None
+    reconnect_start_s: float | None = None
+    reconnect_success_s: float | None = None
+    reconnect_duration_ms: float | None = None
+    tracker_reset: bool | None = None
+    first_recovered_frame_latency_ms: float | None = None
     success: bool = False
     error_type: str = ""
     error_message: str = ""
@@ -166,6 +193,23 @@ class _SideState:
     reconnect_count: int = 0
     last_error: str = ""
     capture_times: list[float] = field(default_factory=list)
+    connection_state: str = "OFFLINE"
+    disconnected_at_s: float | None = None
+    reconnect_started_at_s: float | None = None
+    recovered_at_s: float | None = None
+    recovery_latency_ms: float | None = None
+    reopen_attempts: int = 0
+    next_reopen_s: float = 0.0
+    tracker_reset_required: bool = False
+    recovery_event_pending: bool = False
+    last_disconnect_s: float | None = None
+    last_reconnect_start_s: float | None = None
+    last_reconnect_success_s: float | None = None
+    last_tracker_reset: bool | None = None
+
+
+class CameraReconnectPending(RuntimeError):
+    pass
 
 
 def percentile(values: list[float], quantile: float) -> float | None:
@@ -202,6 +246,8 @@ class AlternatingV4l2Capture:
         factory = device_factory or (
             lambda path, width, height, fps: V4l2MjpegDevice(path, width, height, fps)
         )
+        self._device_factory = factory
+        self._device_paths = {"left": left_device, "right": right_device}
         self.devices: dict[str, CaptureDevice] = {
             "left": factory(left_device, config.width, config.height, config.fps),
             "right": factory(right_device, config.width, config.height, config.fps),
@@ -227,6 +273,7 @@ class AlternatingV4l2Capture:
         try:
             for side in VALID_SIDES:
                 negotiated[side] = self.devices[side].open()
+                self.side_state[side].connection_state = "ONLINE"
         except Exception:
             self.close()
             raise
@@ -247,6 +294,7 @@ class AlternatingV4l2Capture:
         if not self._opened:
             self.open()
         event = SwitchEvent(
+            slice_id=self.switch_count,
             switch_index=self.switch_count,
             from_side=self.active_side or self.last_side or "none",
             to_side=side,
@@ -254,12 +302,14 @@ class AlternatingV4l2Capture:
             warmup_frames_requested=self.config.warmup_frames,
             requested_fps=self.config.fps,
         )
+        event.capture_slice_start_s = event.switch_start_monotonic_s
         frames: list[CapturedFrame] = []
         slice_started_s = event.switch_start_monotonic_s
         streamon_failures_before = self.streamon_failures
         streamoff_failures_before = self.streamoff_failures
         try:
             self._stop_active(event)
+            self._ensure_side_ready(side)
             self._start_side(side, event)
             slice_started_s = self.clock()
             requested_slice_ms = self.config.slice_ms if slice_ms is None else max(1, int(slice_ms))
@@ -284,6 +334,7 @@ class AlternatingV4l2Capture:
                     height=raw.height,
                     pixel_format=raw.pixel_format,
                     warmup=is_warmup,
+                    slice_id=event.slice_id,
                 )
                 if event.first_frame_s is None:
                     event.first_frame_s = raw.captured_at_s
@@ -310,6 +361,7 @@ class AlternatingV4l2Capture:
                 )
             if streamoff_after_slice:
                 self._stop_active(event, update_from_side=False)
+                event.streamoff_complete_s = event.streamoff_end_s
         except Exception as exc:
             if self.streamoff_failures > streamoff_failures_before:
                 event.error_type = "streamoff_failure"
@@ -322,11 +374,14 @@ class AlternatingV4l2Capture:
             event.error_message = str(exc)
             event.success = False
             self.side_state[side].last_error = str(exc)
-            self._safe_stop_all()
+            if not isinstance(exc, CameraReconnectPending):
+                self._mark_side_failed(side, str(exc))
         finally:
             now_s = self.clock()
+            event.capture_slice_end_s = now_s
             event.left_blind_interval_ms = self._frame_age_ms("left", now_s)
             event.right_blind_interval_ms = self._frame_age_ms("right", now_s)
+            self._annotate_connection_event(event, side)
             self.switch_count += 1
             self.switch_events.append(event)
             self._assert_single_active()
@@ -390,6 +445,115 @@ class AlternatingV4l2Capture:
             del state.capture_times[:-240]
         state.last_error = ""
 
+    def _mark_side_failed(self, side: str, message: str) -> None:
+        state = self.side_state[side]
+        state.connection_state = "READ_FAILURE"
+        state.last_error = message
+        if state.disconnected_at_s is None:
+            state.disconnected_at_s = self.clock()
+            state.last_disconnect_s = state.disconnected_at_s
+            state.reconnect_started_at_s = None
+        if self.active_side == side:
+            self.active_side = None
+        try:
+            self.devices[side].close()
+        except Exception:
+            pass
+        if not self.config.camera_reconnect_enabled:
+            state.connection_state = "OFFLINE"
+            return
+        state.connection_state = "REOPEN_WAIT"
+        state.reopen_attempts = 0
+        state.next_reopen_s = self.clock() + self.config.camera_reconnect_initial_backoff_s
+
+    def _ensure_side_ready(self, side: str) -> None:
+        state = self.side_state[side]
+        if state.connection_state in ("ONLINE", "RECOVERED"):
+            return
+        if state.connection_state == "OFFLINE" and not self.config.camera_reconnect_enabled:
+            raise CameraReconnectPending(f"{side} camera is offline")
+        now_s = self.clock()
+        if now_s < state.next_reopen_s:
+            raise CameraReconnectPending(
+                f"{side} camera reopen waiting {state.next_reopen_s - now_s:.3f}s"
+            )
+        if state.reopen_attempts >= self.config.camera_reconnect_attempts:
+            state.connection_state = "OFFLINE"
+            raise CameraReconnectPending(f"{side} camera reopen attempts exhausted")
+        state.connection_state = "REOPENING"
+        state.reopen_attempts += 1
+        if state.reconnect_started_at_s is None:
+            state.reconnect_started_at_s = now_s
+        try:
+            self.devices[side].open()
+        except Exception as exc:
+            self.camera_reopen_failures += 1
+            state.last_error = str(exc)
+            try:
+                self.devices[side].close()
+            except Exception:
+                pass
+            if state.reopen_attempts >= self.config.camera_reconnect_attempts:
+                state.connection_state = "OFFLINE"
+            else:
+                state.connection_state = "REOPEN_WAIT"
+                backoff_s = min(
+                    self.config.camera_reconnect_initial_backoff_s
+                    * (2 ** max(0, state.reopen_attempts - 1)),
+                    self.config.camera_reconnect_max_backoff_s,
+                )
+                state.next_reopen_s = self.clock() + backoff_s
+            raise CameraReconnectPending(f"{side} camera reopen failed: {exc}") from exc
+        recovered_s = self.clock()
+        disconnected_s = state.disconnected_at_s
+        state.connection_state = "RECOVERED"
+        state.reconnect_count += 1
+        state.recovered_at_s = recovered_s
+        state.recovery_latency_ms = (
+            max(0.0, recovered_s - disconnected_s) * 1000.0
+            if disconnected_s is not None
+            else 0.0
+        )
+        state.tracker_reset_required = bool(
+            disconnected_s is not None
+            and recovered_s - disconnected_s >= self.config.tracker_reset_after_disconnect_s
+        )
+        state.recovery_event_pending = True
+        state.last_disconnect_s = disconnected_s
+        state.last_reconnect_start_s = state.reconnect_started_at_s
+        state.last_reconnect_success_s = recovered_s
+        state.last_tracker_reset = state.tracker_reset_required
+        state.disconnected_at_s = None
+        state.reconnect_started_at_s = None
+        state.reopen_attempts = 0
+        state.last_error = ""
+
+    def _annotate_connection_event(self, event: SwitchEvent, side: str) -> None:
+        state = self.side_state[side]
+        event.connection_state = state.connection_state
+        event.disconnect_time_s = state.disconnected_at_s
+        event.reconnect_start_s = state.reconnect_started_at_s
+        if not state.recovery_event_pending:
+            return
+        event.connection_state = "RECOVERED"
+        event.disconnect_time_s = state.last_disconnect_s
+        event.reconnect_start_s = state.last_reconnect_start_s
+        event.reconnect_success_s = state.last_reconnect_success_s
+        event.reconnect_duration_ms = state.recovery_latency_ms
+        event.tracker_reset = state.last_tracker_reset
+        if event.first_frame_s is not None and state.last_reconnect_success_s is not None:
+            event.first_recovered_frame_latency_ms = max(
+                0.0, event.first_frame_s - state.last_reconnect_success_s
+            ) * 1000.0
+            state.recovery_event_pending = False
+            state.connection_state = "ONLINE"
+
+    def consume_tracker_reset_required(self, side: str) -> bool:
+        self._require_side(side)
+        required = self.side_state[side].tracker_reset_required
+        self.side_state[side].tracker_reset_required = False
+        return required
+
     def latest_frame(self, side: str) -> CapturedFrame | None:
         self._require_side(side)
         return self.side_state[side].last_frame
@@ -417,8 +581,14 @@ class AlternatingV4l2Capture:
             "backend": self.backend,
             "left_effective_fps": self._effective_fps("left"),
             "right_effective_fps": self._effective_fps("right"),
-            "left_online": bool(self.side_state["left"].last_frame is not None),
-            "right_online": bool(self.side_state["right"].last_frame is not None),
+            "left_online": self.side_state["left"].connection_state in ("ONLINE", "RECOVERED"),
+            "right_online": self.side_state["right"].connection_state in ("ONLINE", "RECOVERED"),
+            "left_connection_state": self.side_state["left"].connection_state,
+            "right_connection_state": self.side_state["right"].connection_state,
+            "left_reconnect_count": self.side_state["left"].reconnect_count,
+            "right_reconnect_count": self.side_state["right"].reconnect_count,
+            "left_recovery_latency_ms": self.side_state["left"].recovery_latency_ms,
+            "right_recovery_latency_ms": self.side_state["right"].recovery_latency_ms,
             "left_last_error": self.side_state["left"].last_error,
             "right_last_error": self.side_state["right"].last_error,
         }
@@ -457,6 +627,8 @@ class AlternatingV4l2Capture:
 
     @staticmethod
     def _error_type(exc: Exception) -> str:
+        if isinstance(exc, CameraReconnectPending):
+            return "camera_reopen_wait"
         if isinstance(exc, TimeoutError):
             return "first_frame_timeout"
         if isinstance(exc, OSError) and exc.errno == errno.ENOSPC:

@@ -13,6 +13,7 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from alternating_camera.gateway import AlternatingCameraGateway
+from alternating_camera.pipeline import ObservationGapTracker, select_latest_inference_frames
 from alternating_camera.scheduler import (
     AlternatingCaptureConfig,
     AlternatingRiskScheduleConfig,
@@ -29,7 +30,7 @@ from alternating_camera.session import (
     AlternatingSessionRecorder,
 )
 from alternating_camera.v4l2_capture import NegotiatedFormat, RawMjpegFrame
-from alternating_camera.vision_runtime import SharedModelAlternatingEngine
+from alternating_camera.vision_runtime import SharedModelAlternatingEngine, tracker_buffer_frames
 
 
 class FakeClock:
@@ -46,7 +47,19 @@ class FakeClock:
 class FakeDevice:
     backend = "v4l2_stream_toggle"
 
-    def __init__(self, path, width, height, fps, *, clock, shared, fail_starts=0, fail_stop_once=False):
+    def __init__(
+        self,
+        path,
+        width,
+        height,
+        fps,
+        *,
+        clock,
+        shared,
+        fail_starts=0,
+        fail_stop_once=False,
+        fail_reads=0,
+    ):
         self.path = path
         self.width = width
         self.height = height
@@ -55,6 +68,7 @@ class FakeDevice:
         self.shared = shared
         self.fail_starts = fail_starts
         self.fail_stop_once = fail_stop_once
+        self.fail_reads = fail_reads
         self.start_attempts = 0
         self.streaming = False
         self.sequence = 0
@@ -96,6 +110,10 @@ class FakeDevice:
         if not self.streaming:
             raise AssertionError("read while stopped")
         self.clock.advance(0.030)
+        if self.fail_reads > 0:
+            self.fail_reads -= 1
+            self.read_failures += 1
+            raise OSError(19, "simulated camera disconnect")
         self.sequence += 1
         return RawMjpegFrame(
             data=b"\xff\xd8fake-jpeg\xff\xd9",
@@ -203,6 +221,40 @@ class AlternatingCaptureTest(unittest.TestCase):
         self.assertNotIn(("start", "/dev/right-camera"), shared["events"])
         capture.close()
 
+    def test_one_side_reconnects_without_blocking_the_other_camera(self) -> None:
+        config = AlternatingCaptureConfig(
+            frames_per_slice=1,
+            warmup_frames=0,
+            camera_reconnect_initial_backoff_s=0.0,
+            camera_reconnect_max_backoff_s=0.0,
+            tracker_reset_after_disconnect_s=0.0,
+        )
+        capture, _clock, _shared = build_capture(
+            config=config,
+            left_options={"fail_reads": 1},
+        )
+
+        failed_left = capture.capture_slice("left", streamoff_after_slice=True)
+        healthy_right = capture.capture_slice("right", streamoff_after_slice=True)
+        recovered_left = capture.capture_slice("left", streamoff_after_slice=True)
+
+        self.assertFalse(failed_left.event.success)
+        self.assertTrue(healthy_right.event.success)
+        self.assertTrue(recovered_left.event.success)
+        self.assertEqual(1, capture.side_state["left"].reconnect_count)
+        self.assertEqual("ONLINE", capture.side_state["left"].connection_state)
+        self.assertEqual("RECOVERED", recovered_left.event.connection_state)
+        self.assertIsNotNone(recovered_left.event.disconnect_time_s)
+        self.assertIsNotNone(recovered_left.event.reconnect_start_s)
+        self.assertIsNotNone(recovered_left.event.reconnect_success_s)
+        self.assertIsNotNone(recovered_left.event.reconnect_duration_ms)
+        self.assertIsNone(recovered_left.event.offline_detect_latency_ms)
+        self.assertTrue(recovered_left.event.tracker_reset)
+        self.assertIsNotNone(recovered_left.event.first_recovered_frame_latency_ms)
+        self.assertTrue(capture.consume_tracker_reset_required("left"))
+        self.assertEqual(0, capture.side_state["right"].reconnect_count)
+        capture.close()
+
     def test_latest_frames_and_blind_intervals_are_independent(self) -> None:
         capture, clock, _shared = build_capture()
         capture.capture_slice("left")
@@ -239,6 +291,33 @@ class AlternatingCaptureTest(unittest.TestCase):
         self.assertEqual(700, policy.slice_ms_for("left"))
         self.assertEqual(250, policy.slice_ms_for("right"))
 
+    def test_only_newest_bounded_frames_are_selected_for_inference(self) -> None:
+        frames = tuple(
+            CapturedFrame("left", b"x", sequence, float(sequence), float(sequence), 640, 480, "MJPG")
+            for sequence in range(1, 5)
+        )
+
+        selected, skipped = select_latest_inference_frames(frames, 1)
+
+        self.assertEqual([4], [frame.sequence for frame in selected])
+        self.assertEqual(3, skipped)
+
+    def test_observation_gap_uses_only_frames_that_enter_processing(self) -> None:
+        gaps = ObservationGapTracker()
+        gaps.observe("left", 1.0)
+        gaps.observe("right", 1.5)
+        left = gaps.observe("left", 2.2)
+        summary = gaps.summary()
+
+        self.assertAlmostEqual(1200.0, left["end_to_end_observation_gap_ms"])
+        self.assertEqual(1200.0, summary["end_to_end_left_max_gap_ms"])
+        self.assertEqual(500.0, summary["left_to_right_p95_latency_ms"])
+
+    def test_effective_tracker_buffer_retains_time_without_unbounded_tracks(self) -> None:
+        self.assertEqual(2, tracker_buffer_frames(1.0, 30))
+        self.assertEqual(30, tracker_buffer_frames(30.0, 30))
+        self.assertLessEqual(tracker_buffer_frames(1000.0, 300), 300)
+
 
 class SessionRecorderTest(unittest.TestCase):
     def test_session_files_have_required_headers_and_summary_percentiles(self) -> None:
@@ -260,6 +339,28 @@ class SessionRecorderTest(unittest.TestCase):
             recorder.record_frame(frame, active_side="left")
             right_frame = CapturedFrame("right", b"\xff\xd8y\xff\xd9", 2, 10.15, 10.25, 640, 480, "MJPG")
             recorder.record_frame(right_frame, active_side="right")
+            next_left = CapturedFrame("left", b"\xff\xd8z\xff\xd9", 3, 11.3, 11.35, 640, 480, "MJPG")
+            recorder.record_frame(
+                next_left,
+                active_side="left",
+                end_to_end_observation_gap_ms=1200.0,
+                side_to_side_latency_ms=1150.0,
+            )
+            recorder.record_alert(
+                {
+                    "haptic_level": 3,
+                    "event_kind": "state_change",
+                    "confirmed_across_slices": True,
+                }
+            )
+            recorder.record_alert({"haptic_level": 3, "event_kind": "heartbeat"})
+            recorder.record_alert(
+                {
+                    "haptic_level": 0,
+                    "event_kind": "state_change",
+                    "clear_reason": "stale_observation",
+                }
+            )
             clock.advance(2.0)
             recorder.record_performance({"active_camera": "left", "switch_count": 1})
             summary = recorder.finish(
@@ -275,6 +376,14 @@ class SessionRecorderTest(unittest.TestCase):
             self.assertEqual(15.0, summary["switch_latency_ms"]["p95"])
             self.assertEqual(30.0, summary["first_frame_latency_ms"]["p99"])
             self.assertTrue(summary["acceptance_met"])
+            self.assertEqual("end_to_end_observation_gap_ms", summary["acceptance_gap_metric"])
+            self.assertEqual(1200.0, summary["end_to_end_max_gap_ms"])
+            self.assertEqual(1, summary["dropped_frames"])
+            self.assertEqual(2, summary["state_change_count"])
+            self.assertEqual(1, summary["heartbeat_count"])
+            self.assertEqual(1, summary["stale_clear_count"])
+            self.assertEqual(1, summary["cross_slice_confirmed_count"])
+            self.assertIsNone(summary["camera_offline_clear_verified"])
             for filename, expected in (
                 ("switch-events.csv", SWITCH_EVENT_FIELDS),
                 ("camera-events.csv", CAMERA_EVENT_FIELDS),
@@ -400,6 +509,31 @@ class GatewayTest(unittest.TestCase):
         with self.assertRaises(HTTPError) as context:
             urlopen(self.base + "/api/v1/camera/right/snapshot.jpg", timeout=2.0)
         self.assertEqual(503, context.exception.code)
+
+    def test_raw_and_overlay_views_are_distinct_cached_frames(self) -> None:
+        frame = self.capture.latest_frame("left")
+        self.assertIsNotNone(frame)
+        overlay = b"\xff\xd8overlay-jpeg\xff\xd9"
+        self.gateway.publish_overlay(
+            "left",
+            overlay,
+            sequence=frame.sequence,
+            captured_at_s=frame.captured_at_s,
+            metadata={"risk_name": "CAUTION", "slice_id": 7},
+        )
+
+        with urlopen(self.base + "/api/v1/camera/left/snapshot.jpg?view=raw", timeout=2.0) as response:
+            raw = response.read()
+        with urlopen(self.base + "/api/v1/camera/left/snapshot.jpg?view=overlay", timeout=2.0) as response:
+            rendered = response.read()
+        with urlopen(self.base + "/api/v1/camera/left/status", timeout=2.0) as response:
+            status = json.loads(response.read())
+
+        self.assertNotEqual(raw, rendered)
+        self.assertEqual(overlay, rendered)
+        self.assertTrue(status["raw_available"])
+        self.assertTrue(status["overlay_available"])
+        self.assertEqual("CAUTION", status["risk_name"])
 
 
 if __name__ == "__main__":

@@ -7,6 +7,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from camera_extrinsics import CameraExtrinsics, extrinsics_from_mapping
+
 
 @dataclass(frozen=True)
 class CameraCalibration:
