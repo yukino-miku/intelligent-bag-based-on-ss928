@@ -169,6 +169,7 @@ def run(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
                 recorder.record_frame(
                     frame,
                     active_side=capture.active_side,
+                    selected_for_inference=False,
                     reconnect_count=capture.side_state[frame.side].reconnect_count,
                 )
             if (
