@@ -79,8 +79,8 @@ class CalibrationTest(unittest.TestCase):
         extrinsics = extrinsics_from_mapping(
             {
                 "extrinsics": {
-                    "yaw_deg": -8.0,
-                    "roll_deg": 1.5,
+                    "mount_yaw_deg": -8.0,
+                    "mount_roll_deg": 1.5,
                     "mount_x_m": -0.18,
                     "mount_z_m": 0.04,
                     "calibrated": True,

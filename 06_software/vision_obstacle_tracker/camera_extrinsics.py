@@ -53,8 +53,8 @@ def extrinsics_from_mapping(
     if not isinstance(source, dict):
         source = {}
     return CameraExtrinsics(
-        yaw_deg=float(source.get("yaw_deg", fallback.yaw_deg)),
-        roll_deg=float(source.get("roll_deg", fallback.roll_deg)),
+        yaw_deg=float(source.get("mount_yaw_deg", source.get("yaw_deg", fallback.yaw_deg))),
+        roll_deg=float(source.get("mount_roll_deg", source.get("roll_deg", fallback.roll_deg))),
         mount_x_m=float(source.get("mount_x_m", fallback.mount_x_m)),
         mount_z_m=float(source.get("mount_z_m", fallback.mount_z_m)),
         calibrated=bool(source.get("calibrated", fallback.calibrated)),

@@ -17,6 +17,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--roll-deg", type=float, default=0.0)
     parser.add_argument("--mount-x-m", type=float, required=True)
     parser.add_argument("--mount-z-m", type=float, default=0.0)
+    parser.add_argument("--camera-height-m", type=float, required=True)
+    parser.add_argument("--camera-pitch-deg", type=float, required=True)
+    parser.add_argument("--distance-scale", type=float, default=1.0)
+    parser.add_argument("--calibration-version", default="1")
     return parser.parse_args()
 
 
@@ -70,11 +74,15 @@ def main() -> int:
         "image_height": image_size[1],
         "camera_matrix": matrix.tolist(),
         "dist_coeffs": distortion.reshape(-1).tolist(),
+        "camera_height_m": args.camera_height_m,
+        "camera_pitch_deg": args.camera_pitch_deg,
+        "distance_scale": args.distance_scale,
+        "calibration_version": args.calibration_version,
         "calibration_rms_px": float(rms),
         "calibration_image_count": len(accepted),
         "extrinsics": {
-            "yaw_deg": args.yaw_deg,
-            "roll_deg": args.roll_deg,
+            "mount_yaw_deg": args.yaw_deg,
+            "mount_roll_deg": args.roll_deg,
             "mount_x_m": args.mount_x_m,
             "mount_z_m": args.mount_z_m,
             "calibrated": False,
