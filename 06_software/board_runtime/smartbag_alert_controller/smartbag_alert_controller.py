@@ -548,6 +548,8 @@ def alternating_detector_command_from_config(config: dict[str, object]) -> str:
         str(alternating.get("warmup_frames", 2)),
         "--frames-per-slice",
         str(alternating.get("frames_per_slice", 4)),
+        "--inference-frames-per-slice",
+        str(alternating.get("inference_frames_per_slice", 1)),
         "--max-blind-interval-ms",
         str(alternating.get("max_blind_interval_ms", 1200)),
         "--stale-observation-timeout-ms",
@@ -556,21 +558,60 @@ def alternating_detector_command_from_config(config: dict[str, object]) -> str:
         str(alternating.get("switch_failure_limit", 3)),
         "--switch-backoff-ms",
         str(alternating.get("switch_backoff_ms", 200)),
+        "--camera-reconnect-attempts",
+        str(alternating.get("camera_reconnect_attempts", 5)),
+        "--camera-reconnect-initial-backoff-s",
+        str(alternating.get("camera_reconnect_initial_backoff_s", 0.5)),
+        "--camera-reconnect-max-backoff-s",
+        str(alternating.get("camera_reconnect_max_backoff_s", 8.0)),
+        "--tracker-reset-after-disconnect-s",
+        str(alternating.get("tracker_reset_after_disconnect_s", 3.0)),
         "--duration-s",
         str(alternating.get("duration_s", 0)),
         "--switch-count",
         str(alternating.get("switch_count", 1000000000)),
         "--output-dir",
         str(alternating.get("output_dir", "/var/log/smartbag/alternating-camera-runs")),
-        "--risk-log-dir",
-        str(alternating.get("risk_log_dir", "/var/log/smartbag")),
         "--imgsz",
         str(alternating.get("imgsz", 416)),
         "--conf",
         str(alternating.get("conf", 0.08)),
         "--max-det",
         str(alternating.get("max_det", 30)),
+        "--tracker-nominal-fps",
+        str(alternating.get("tracker_nominal_fps", alternating.get("fps", 10))),
+        "--tracker-effective-fps-mode",
+        str(alternating.get("tracker_effective_fps_mode", "effective_side")),
+        "--min-confirm-slices-caution",
+        str(alternating.get("min_confirm_slices_caution", 2)),
+        "--min-confirm-slices-danger",
+        str(alternating.get("min_confirm_slices_danger", 2)),
+        "--min-confirm-slices-emergency",
+        str(alternating.get("min_confirm_slices_emergency", 2)),
+        "--minimum-confirmation-interval-s",
+        str(alternating.get("minimum_confirmation_interval_s", 0.2)),
+        "--serve-bind",
+        str(alternating.get("serve_bind", "0.0.0.0")),
+        "--serve-port",
+        str(alternating.get("serve_port", 8080)),
+        "--access-token",
+        str(alternating.get("access_token", "")),
+        "--jpeg-quality",
+        str(alternating.get("jpeg_quality", 80)),
+        "--overlay-width",
+        str(alternating.get("overlay_width", 0)),
+        "--overlay-height",
+        str(alternating.get("overlay_height", 0)),
+        "--stream-fps-limit",
+        str(alternating.get("stream_fps_limit", 5.0)),
+        "--calibration-mode",
+        str(alternating.get("calibration_mode", "diagnostic")),
     ]
+    logging_config = config.get("logging") if isinstance(config.get("logging"), dict) else {}
+    if bool(logging_config.get("risk_csv_enabled", False)):
+        argv.extend(
+            ["--risk-log-dir", str(alternating.get("risk_log_dir", "/var/log/smartbag"))]
+        )
     if bool(alternating.get("prefer_openvino", False)):
         argv.append("--prefer-openvino")
     left_calibration = str(left.get("calibration_file", "")).strip()
@@ -581,6 +622,12 @@ def alternating_detector_command_from_config(config: dict[str, object]) -> str:
         argv.extend(["--right-calibration-file", right_calibration])
     if not bool(alternating.get("risk_priority_enabled", True)):
         argv.append("--disable-risk-priority")
+    if not bool(alternating.get("camera_reconnect_enabled", True)):
+        argv.append("--disable-camera-reconnect")
+    if not bool(alternating.get("video_gateway_enabled", True)):
+        argv.append("--disable-video-gateway")
+    if not bool(alternating.get("allow_emergency_single_slice_fast_path", True)):
+        argv.append("--disable-emergency-single-slice-fast-path")
     return shlex.join(argv)
 
 

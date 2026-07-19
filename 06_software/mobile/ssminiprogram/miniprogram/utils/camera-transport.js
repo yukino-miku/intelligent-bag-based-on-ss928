@@ -8,6 +8,11 @@ const DEFAULT_CAMERA_CONFIG = {
   rightPath: "/api/v1/camera/right"
 };
 
+const normalizePath = (value, fallback) => {
+  const path = String(value || fallback).trim().replace(/\/+$/, "");
+  return path.charAt(0) === "/" ? path : "/" + path;
+};
+
 const normalizeConfig = (input) => {
   const source = input || {};
   const config = Object.assign({}, DEFAULT_CAMERA_CONFIG, source);
@@ -20,19 +25,13 @@ const normalizeConfig = (input) => {
   return config;
 };
 
-const normalizePath = (value, fallback) => {
-  const path = String(value || fallback).trim().replace(/\/+$/, "");
-  return path.charAt(0) === "/" ? path : "/" + path;
-};
-
 const boardBaseUrl = (config) => {
   const normalized = normalizeConfig(config);
   if (!normalized.boardHost) {
     return "";
   }
   if (/^https?:\/\//i.test(normalized.boardHost)) {
-    const parsed = normalized.boardHost.replace(/:\d+$/, "");
-    return parsed + ":" + normalized.videoPort;
+    return normalized.boardHost.replace(/:\d+$/, "") + ":" + normalized.videoPort;
   }
   return "http://" + normalized.boardHost + ":" + normalized.videoPort;
 };
@@ -57,14 +56,21 @@ const normalizeCameraStatus = (input) => {
   if (!["live", "cached", "offline"].includes(frameState)) {
     frameState = online ? (active ? "live" : "cached") : "offline";
   }
-  const statusText = frameState === "live" ? "正在采集" :
-    frameState === "cached" ? "缓存帧" : "离线";
   return {
+    raw: status,
     online,
     active,
     frameState,
-    statusText,
-    captureFps: typeof status.capture_fps !== "undefined" ? status.capture_fps : status.effective_fps
+    statusText: frameState === "live" ? "正在采集" : frameState === "cached" ? "缓存帧" : "离线",
+    captureFps: typeof status.capture_fps !== "undefined" ? status.capture_fps : status.effective_fps,
+    inferenceFps: status.inference_fps,
+    inferenceMs: status.inference_ms,
+    trackingMs: status.tracking_ms,
+    riskMs: status.risk_ms,
+    overlayMs: status.overlay_ms,
+    jpegEncodeMs: status.jpeg_encode_ms,
+    observationGapMs: status.end_to_end_observation_gap_ms,
+    lastFrameAgeMs: status.last_frame_age_ms
   };
 };
 
@@ -108,8 +114,9 @@ class SnapshotHttpTransport extends CameraTransport {
     const url = appendQuery(base + cameraPath(this.config, side) + "/status", {
       token: this.config.accessToken
     });
-    return new Promise((resolve, reject) => {
-      this.wxApi.request({
+    let requestTask = null;
+    const promise = new Promise((resolve, reject) => {
+      requestTask = this.wxApi.request({
         url,
         method: "GET",
         timeout: 1500,
@@ -123,6 +130,12 @@ class SnapshotHttpTransport extends CameraTransport {
         fail: reject
       });
     });
+    promise.abort = () => {
+      if (requestTask && typeof requestTask.abort === "function") {
+        requestTask.abort();
+      }
+    };
+    return promise;
   }
 }
 

@@ -14,6 +14,7 @@
     <view class="toolbar">
       <button class="toolbar__primary" bindtap="saveAndReconnect">保存并重连</button>
       <button bindtap="togglePause">{{paused ? "恢复" : "暂停"}}</button>
+      <button wx:if="{{focusSide}}" bindtap="exitSingleView">返回双路</button>
       <view class="segments">
         <button class="{{viewMode === 'overlay' ? 'active' : ''}}" data-mode="overlay" bindtap="setViewMode">检测框</button>
         <button class="{{viewMode === 'raw' ? 'active' : ''}}" data-mode="raw" bindtap="setViewMode">原始</button>
@@ -23,21 +24,22 @@
   </view>
 
   <view class="camera-grid">
-    <view class="camera" wx:for="{{[left, right]}}" wx:key="side">
+    <view class="camera" wx:for="{{[left, right]}}" wx:key="side" hidden="{{focusSide && focusSide !== item.side}}">
       <view class="camera__heading">
         <text class="camera__label">{{item.label}}</text>
         <text class="camera__status camera__status--{{item.frameState}}">{{item.statusText}}</text>
       </view>
-      <image class="camera__image" src="{{item.imageUrl}}" mode="aspectFit" data-side="{{item.side}}" bindtap="previewSide" />
+      <image class="camera__image" src="{{item.imageUrl}}" mode="aspectFit" data-side="{{item.side}}" bindtap="enterSingleView" bindload="onSnapshotLoad" binderror="onSnapshotError" />
       <view class="camera__risk camera__risk--{{item.riskLevel}}">{{item.riskName}}</view>
       <view class="metrics">
         <text>采集 {{item.captureFps}} FPS</text><text>推理 {{item.inferenceFps}} FPS</text>
-        <text>预览 {{item.streamFps}} FPS</text><text>延迟 {{item.lastFrameAge}} ms</text>
+        <text>帧龄 {{item.lastFrameAge}} ms</text><text>E2E {{item.observationGap}} ms</text>
+        <text>slice {{item.sliceId}}</text><text>JPEG Q{{item.jpegQuality}}</text>
       </view>
-      <view class="camera__meta">{{item.device}} · JPEG Q{{item.jpegQuality}} · {{item.updatedAt}}</view>
+      <view class="camera__meta">{{item.device}} · {{item.updatedAt}}</view>
       <view class="camera__endpoint">{{item.endpoint}}</view>
     </view>
   </view>
 
-  <view class="notice">视频使用 Wi-Fi/LAN HTTP snapshot；BLE 只传告警、状态和控制，不传视频。交替实验模式下“缓存帧”不是实时画面，请结合延迟数值判断帧龄。</view>
+  <view class="notice">视频使用 Wi-Fi/LAN HTTP snapshot；BLE 只传告警、状态和控制，不传视频。交替模式下未激活侧显示最近缓存帧。点按一侧进入单侧实时查看，返回后恢复双路刷新。</view>
 </view>

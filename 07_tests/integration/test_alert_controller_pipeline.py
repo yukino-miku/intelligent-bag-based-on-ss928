@@ -173,6 +173,12 @@ class AlertControllerPipelineTest(unittest.TestCase):
         self.assertIn("--backend v4l2_stream_toggle", command)
         self.assertIn("--left-calibration-file /etc/smartbag/left.json", command)
         self.assertIn("--right-calibration-file /etc/smartbag/right.json", command)
+        self.assertIn("--inference-frames-per-slice 1", command)
+        self.assertIn("--tracker-effective-fps-mode effective_side", command)
+        self.assertIn("--min-confirm-slices-danger 2", command)
+        self.assertIn("--serve-port 8080", command)
+        self.assertIn("--camera-reconnect-attempts 5", command)
+        self.assertNotIn("--risk-log-dir", command)
         self.assertNotIn("--side", command)
 
     def test_alternating_config_can_disable_risk_priority(self) -> None:
