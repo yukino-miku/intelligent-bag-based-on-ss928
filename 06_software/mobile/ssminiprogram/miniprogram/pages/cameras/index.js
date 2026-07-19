@@ -2,7 +2,8 @@ const {
   DEFAULT_CAMERA_CONFIG,
   SnapshotHttpTransport,
   normalizeConfig,
-  boardBaseUrl
+  boardBaseUrl,
+  normalizeCameraStatus
 } = require("../../utils/camera-transport");
 
 const STORAGE_KEY = "smartbagCameraConfig";
@@ -11,6 +12,8 @@ const emptyCamera = (side, label) => ({
   side,
   label,
   online: false,
+  active: false,
+  frameState: "offline",
   statusText: "未连接",
   imageUrl: "",
   captureFps: "--",
@@ -125,6 +128,8 @@ Page({
       this.transport.status(side).then((status) => this.applyStatus(side, status)).catch((error) => {
         this.setData({
           [side + ".online"]: false,
+          [side + ".active"]: false,
+          [side + ".frameState"]: "offline",
           [side + ".statusText"]: "离线",
           connectionMessage: error.errMsg || error.message || "连接失败"
         });
@@ -133,13 +138,16 @@ Page({
   },
 
   applyStatus(side, status) {
+    const cameraStatus = normalizeCameraStatus(status);
     const now = new Date();
     const updatedAt = ("0" + now.getHours()).slice(-2) + ":" +
       ("0" + now.getMinutes()).slice(-2) + ":" + ("0" + now.getSeconds()).slice(-2);
     this.setData({
-      [side + ".online"]: status.online === true,
-      [side + ".statusText"]: status.online === true ? "在线" : "离线",
-      [side + ".captureFps"]: this.formatMetric(status.capture_fps),
+      [side + ".online"]: cameraStatus.online,
+      [side + ".active"]: cameraStatus.active,
+      [side + ".frameState"]: cameraStatus.frameState,
+      [side + ".statusText"]: cameraStatus.statusText,
+      [side + ".captureFps"]: this.formatMetric(cameraStatus.captureFps),
       [side + ".inferenceFps"]: this.formatMetric(status.inference_fps),
       [side + ".streamFps"]: this.formatMetric(status.stream_fps),
       [side + ".lastFrameAge"]: this.formatMetric(status.last_frame_age_ms),

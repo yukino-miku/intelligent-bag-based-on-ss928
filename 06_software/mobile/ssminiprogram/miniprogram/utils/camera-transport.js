@@ -49,6 +49,25 @@ const appendQuery = (url, params) => {
   return parts.length ? url + (url.indexOf("?") === -1 ? "?" : "&") + parts.join("&") : url;
 };
 
+const normalizeCameraStatus = (input) => {
+  const status = input || {};
+  const online = status.online === true;
+  const active = online && status.active === true;
+  let frameState = String(status.frame_state || "").toLowerCase();
+  if (!["live", "cached", "offline"].includes(frameState)) {
+    frameState = online ? (active ? "live" : "cached") : "offline";
+  }
+  const statusText = frameState === "live" ? "正在采集" :
+    frameState === "cached" ? "缓存帧" : "离线";
+  return {
+    online,
+    active,
+    frameState,
+    statusText,
+    captureFps: typeof status.capture_fps !== "undefined" ? status.capture_fps : status.effective_fps
+  };
+};
+
 class CameraTransport {
   constructor(config, wxApi) {
     this.config = normalizeConfig(config);
@@ -112,5 +131,6 @@ module.exports = {
   CameraTransport,
   SnapshotHttpTransport,
   normalizeConfig,
-  boardBaseUrl
+  boardBaseUrl,
+  normalizeCameraStatus
 };

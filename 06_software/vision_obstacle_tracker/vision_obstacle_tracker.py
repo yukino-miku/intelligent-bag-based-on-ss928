@@ -862,6 +862,11 @@ class RiskCsvLogger:
         "stabilizer_pending_count",
         "stabilizer_required_frames",
         "stabilizer_reason",
+        "observation_interval_s",
+        "risk_candidate_duration_s",
+        "path_conflict_duration_s",
+        "time_since_last_observation_s",
+        "effective_side_fps",
     ]
 
     def __init__(self, path: str | None) -> None:
@@ -961,6 +966,13 @@ class RiskCsvLogger:
                     "stabilizer_pending_count": str(debug.pending_count) if debug else "",
                     "stabilizer_required_frames": str(debug.required_frames) if debug else "",
                     "stabilizer_reason": debug.reason if debug else "",
+                    "observation_interval_s": _format_optional_float(debug.observation_interval_s if debug else None),
+                    "risk_candidate_duration_s": _format_optional_float(debug.risk_candidate_duration_s if debug else None),
+                    "path_conflict_duration_s": _format_optional_float(debug.path_conflict_duration_s if debug else None),
+                    "time_since_last_observation_s": _format_optional_float(
+                        debug.time_since_last_observation_s if debug else None
+                    ),
+                    "effective_side_fps": _format_optional_float(debug.effective_side_fps if debug else None),
                 }
             )
 
@@ -1130,6 +1142,11 @@ class RiskWarningStabilizerConfig:
     low_conflict_consistency_threshold: float = 0.50
     low_approach_consistency_threshold: float = 0.50
     low_conflict_extra_frames: int = 2
+    min_confirm_duration_attention_s: float = 0.0
+    min_confirm_duration_caution_s: float = 0.0
+    min_confirm_duration_danger_s: float = 0.0
+    min_confirm_duration_emergency_s: float = 0.0
+    low_quality_extra_duration_s: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -1138,6 +1155,11 @@ class StabilizerDebugInfo:
     pending_count: int = 0
     required_frames: int = 0
     reason: str = "none"
+    observation_interval_s: float = 0.0
+    risk_candidate_duration_s: float = 0.0
+    path_conflict_duration_s: float = 0.0
+    time_since_last_observation_s: float = 0.0
+    effective_side_fps: float = 0.0
 
 
 @dataclass
@@ -1147,6 +1169,9 @@ class _RiskDisplayState:
     pending_level: RiskLevel = RiskLevel.SAFE
     pending_count: int = 0
     downgrade_count: int = 0
+    pending_started_s: float | None = None
+    path_conflict_started_s: float | None = None
+    last_observation_s: float | None = None
 
 
 class RiskWarningStabilizer:
@@ -1166,8 +1191,11 @@ class RiskWarningStabilizer:
         self,
         risk_by_track_id: dict[int, RiskAssessment],
         tracked_objects_by_id: dict[int, object] | None = None,
+        observation_s_by_track_id: dict[int, float] | None = None,
+        effective_side_fps: float = 0.0,
     ) -> dict[int, RiskAssessment]:
         tracked_objects_by_id = tracked_objects_by_id or {}
+        observation_s_by_track_id = observation_s_by_track_id or {}
         stabilized: dict[int, RiskAssessment] = {}
         active_track_ids = set(risk_by_track_id)
 
@@ -1175,6 +1203,28 @@ class RiskWarningStabilizer:
             state = self._state_by_track_id.setdefault(track_id, _RiskDisplayState())
             target = tracked_objects_by_id.get(track_id)
             observation_quality = float(getattr(target, "observation_quality", 1.0))
+            observation_s = float(
+                observation_s_by_track_id.get(
+                    track_id,
+                    getattr(target, "timestamp_s", time.monotonic()),
+                )
+            )
+            observation_interval_s = (
+                max(0.0, observation_s - state.last_observation_s)
+                if state.last_observation_s is not None
+                else 0.0
+            )
+            if assessment.path_conflict:
+                if state.path_conflict_started_s is None:
+                    state.path_conflict_started_s = observation_s
+            else:
+                state.path_conflict_started_s = None
+            path_conflict_duration_s = (
+                max(0.0, observation_s - state.path_conflict_started_s)
+                if state.path_conflict_started_s is not None
+                else 0.0
+            )
+            state.last_observation_s = observation_s
 
             if self._is_fast_path(assessment, target):
                 state.displayed_level = assessment.level
@@ -1187,6 +1237,10 @@ class RiskWarningStabilizer:
                     pending_count=0,
                     required_frames=1,
                     reason="fast_path",
+                    observation_interval_s=observation_interval_s,
+                    path_conflict_duration_s=path_conflict_duration_s,
+                    time_since_last_observation_s=observation_interval_s,
+                    effective_side_fps=effective_side_fps,
                 )
                 stabilized[track_id] = self._assessment_with_display_level(
                     assessment,
@@ -1196,14 +1250,30 @@ class RiskWarningStabilizer:
                 continue
 
             if assessment.level > state.displayed_level:
-                display, debug = self._handle_upgrade(state, assessment, observation_quality, target)
+                display, debug = self._handle_upgrade(
+                    state,
+                    assessment,
+                    observation_quality,
+                    target,
+                    observation_s,
+                    observation_interval_s,
+                    path_conflict_duration_s,
+                    effective_side_fps,
+                )
             elif assessment.level < state.displayed_level:
-                display, debug = self._handle_downgrade(state, assessment)
+                display, debug = self._handle_downgrade(
+                    state,
+                    assessment,
+                    observation_interval_s,
+                    path_conflict_duration_s,
+                    effective_side_fps,
+                )
             else:
                 state.displayed_level = assessment.level
                 state.displayed_score = assessment.score
                 state.pending_level = assessment.level
                 state.pending_count = 0
+                state.pending_started_s = None
                 state.downgrade_count = 0
                 display = self._assessment_with_display_level(assessment, assessment.level, assessment.score)
                 debug = StabilizerDebugInfo(
@@ -1211,6 +1281,10 @@ class RiskWarningStabilizer:
                     pending_count=0,
                     required_frames=0,
                     reason="same_level",
+                    observation_interval_s=observation_interval_s,
+                    path_conflict_duration_s=path_conflict_duration_s,
+                    time_since_last_observation_s=observation_interval_s,
+                    effective_side_fps=effective_side_fps,
                 )
 
             self._debug_by_track_id[track_id] = debug
@@ -1232,16 +1306,24 @@ class RiskWarningStabilizer:
         assessment: RiskAssessment,
         observation_quality: float,
         target,
+        observation_s: float,
+        observation_interval_s: float,
+        path_conflict_duration_s: float,
+        effective_side_fps: float,
     ) -> tuple[RiskAssessment, StabilizerDebugInfo]:
         if state.pending_level != assessment.level:
             state.pending_level = assessment.level
             state.pending_count = 1
+            state.pending_started_s = observation_s
         else:
             state.pending_count += 1
         state.downgrade_count = 0
 
         required_frames = self._required_confirm_frames(assessment, observation_quality, target)
-        if state.pending_count >= required_frames:
+        pending_started_s = observation_s if state.pending_started_s is None else state.pending_started_s
+        candidate_duration_s = max(0.0, observation_s - pending_started_s)
+        required_duration_s = self._required_confirm_duration_s(assessment, observation_quality)
+        if state.pending_count >= required_frames and candidate_duration_s >= required_duration_s:
             state.displayed_level = assessment.level
             state.displayed_score = assessment.score
             return self._assessment_with_display_level(assessment, assessment.level, assessment.score), StabilizerDebugInfo(
@@ -1249,6 +1331,11 @@ class RiskWarningStabilizer:
                 pending_count=state.pending_count,
                 required_frames=required_frames,
                 reason="upgraded",
+                observation_interval_s=observation_interval_s,
+                risk_candidate_duration_s=candidate_duration_s,
+                path_conflict_duration_s=path_conflict_duration_s,
+                time_since_last_observation_s=observation_interval_s,
+                effective_side_fps=effective_side_fps,
             )
 
         return self._display_assessment_from_state(assessment, state), StabilizerDebugInfo(
@@ -1256,11 +1343,24 @@ class RiskWarningStabilizer:
             pending_count=state.pending_count,
             required_frames=required_frames,
             reason="waiting_confirmation",
+            observation_interval_s=observation_interval_s,
+            risk_candidate_duration_s=candidate_duration_s,
+            path_conflict_duration_s=path_conflict_duration_s,
+            time_since_last_observation_s=observation_interval_s,
+            effective_side_fps=effective_side_fps,
         )
 
-    def _handle_downgrade(self, state: _RiskDisplayState, assessment: RiskAssessment) -> tuple[RiskAssessment, StabilizerDebugInfo]:
+    def _handle_downgrade(
+        self,
+        state: _RiskDisplayState,
+        assessment: RiskAssessment,
+        observation_interval_s: float,
+        path_conflict_duration_s: float,
+        effective_side_fps: float,
+    ) -> tuple[RiskAssessment, StabilizerDebugInfo]:
         state.pending_level = assessment.level
         state.pending_count = 0
+        state.pending_started_s = None
         state.downgrade_count += 1
         if state.downgrade_count >= self.config.downgrade_hold_frames:
             state.downgrade_count = 0
@@ -1274,6 +1374,10 @@ class RiskWarningStabilizer:
             pending_count=state.downgrade_count,
             required_frames=self.config.downgrade_hold_frames,
             reason=reason,
+            observation_interval_s=observation_interval_s,
+            path_conflict_duration_s=path_conflict_duration_s,
+            time_since_last_observation_s=observation_interval_s,
+            effective_side_fps=effective_side_fps,
         )
 
     def _required_confirm_frames(self, assessment: RiskAssessment, observation_quality: float, target=None) -> int:
@@ -1300,6 +1404,19 @@ class RiskWarningStabilizer:
             ):
                 frames += self.config.low_conflict_extra_frames
         return max(1, frames)
+
+    def _required_confirm_duration_s(self, assessment: RiskAssessment, observation_quality: float) -> float:
+        durations = {
+            RiskLevel.SAFE: 0.0,
+            RiskLevel.ATTENTION: self.config.min_confirm_duration_attention_s,
+            RiskLevel.CAUTION: self.config.min_confirm_duration_caution_s,
+            RiskLevel.DANGER: self.config.min_confirm_duration_danger_s,
+            RiskLevel.EMERGENCY: self.config.min_confirm_duration_emergency_s,
+        }
+        duration_s = max(0.0, float(durations[assessment.level]))
+        if assessment.level > RiskLevel.ATTENTION and observation_quality < self.config.low_quality_threshold:
+            duration_s += max(0.0, self.config.low_quality_extra_duration_s)
+        return duration_s
 
     def _is_fast_path(self, assessment: RiskAssessment, target) -> bool:
         distance_m = getattr(target, "distance_m", None)

@@ -1,5 +1,16 @@
 # 更新记录
 
+## 2026-07-19
+
+- 新增默认关闭的 `alternating_single_model` 实验模式：一个主进程只加载一次 YOLO，左右 UVC 使用原生 V4L2 mmap 和显式 `VIDIOC_STREAMON/OFF` 交替采集；C 入口每个时间片取帧后立即 STREAMOFF，再执行推理。
+- 左右分别持有 BoT-SORT、StableTrackId、TrackState、RiskModel、RiskWarningStabilizer、SelfObjectFilter、标定和 risk CSV；共享模型使用 `predict()` 后接独立 tracker，不交替复用 `model.track(persist=True)`。
+- 告警协议区分 `state_change` 和 `heartbeat`：无观测不等于 SAFE，切换侧不误清旧状态，陈旧观测/进程退出最终清振；heartbeat 只刷新 PWM timeout，不写入 BLE/手机历史。风险优先调度只读取多帧稳定后的 haptic 等级。
+- 新增 A/B 诊断、缓存双画面 gateway、完整 session/CSV/summary 记录、实验矩阵、控制/报告脚本和互斥 systemd service；原始 session 继续放在被忽略的 `08_media/alternating_camera_runs/`。
+- SS928 实板 A1-A4 共 989 次切换，成功率 100%，无 ENOSPC；p95 切换 273.726-278.018 ms，最大盲区 539.016 ms，左右有效约 4.08-4.13 FPS。B 阶段左右 snapshot/status/debug page 可用，退出后无相机占用。
+- 额外 `1680x1050@10` 请求被驱动协商为 `1920x1080@30`；30 秒 61/61 次切换成功、无 ENOSPC，p95 278.613 ms、最大盲区 509.999 ms。文档明确不把请求值当成实际模式。
+- 驱动把请求的 5/10 FPS 均协商为 MJPEG 30 FPS；板端仍缺 OpenCV、PyTorch、Ultralytics 和 lap，C/D 未上板，且未完成 30 分钟验收，因此正式默认保持 `fixed_dual_process` 和 `alternating_camera.enabled=false`。
+- 本地分模块共 224 项 Python 测试与 4 个小程序 JavaScript 测试文件通过，真实 Ultralytics 单模型/双 BoT-SORT 冒烟通过；板端交替采集 12 项、controller 9 项、compileall、全部部署 shell 语法和 JSON 解析通过。板端风险 overlay 测试因明确缺少 cv2 未执行。
+
 ## 2026-07-16
 
 - 正式板端部署从单摄默认改为左右两个固定 USB detector：每个进程只打开一次对应相机，左事件只驱动左 PWM，右事件只驱动右 PWM；旧 `--single-camera/--side auto` 仅保留兼容测试。

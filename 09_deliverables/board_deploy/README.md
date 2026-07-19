@@ -139,3 +139,68 @@ sudo sh uninstall.sh
 ```
 
 卸载不删除 `/etc/smartbag` 和 `/var/lib/smartbag`。BMI270 I2C blob、模型、真实标定和设备身份信息由用户合法提供。音频默认关闭。
+
+## 11. 实验性交替双摄模式
+
+当两台相机位于同一 USB 2.0 Hub、第二路 `VIDIOC_STREAMON` 返回 `ENOSPC` 时，可测试单模型交替模式。它任意时刻只让一个摄像头 STREAMON，未激活侧显示缓存帧，不等同于同步实时双摄，也不适合作为最终高安全等级方案。
+
+先停止正式服务并运行无模型矩阵：
+
+```sh
+sudo systemctl stop smartbag.target smartbag-alternating-vision.service
+sudo env \
+  LEFT_DEVICE=/dev/v4l/by-path/LEFT-video-index0 \
+  RIGHT_DEVICE=/dev/v4l/by-path/RIGHT-video-index0 \
+  DURATION_S=120 \
+  sh /root/smartbag/board-deploy/alternating-experiment-matrix.sh
+sh /root/smartbag/board-deploy/alternating-report.sh
+```
+
+无模型缓存预览可直接追加参数：
+
+```sh
+sudo env LEFT_DEVICE=/dev/v4l/by-path/LEFT-video-index0 \
+  RIGHT_DEVICE=/dev/v4l/by-path/RIGHT-video-index0 \
+  DURATION_S=120 \
+  sh /root/smartbag/board-deploy/alternating-test.sh \
+  --runtime-mode stream_only --serve-bind 0.0.0.0 --serve-port 8081
+```
+
+打开 `http://<板端地址>:8081/`；非 active 侧是最后缓存帧，页面会显示帧龄。原始 session 在 `/var/log/smartbag/alternating-camera-runs/<SESSION_ID>/`，包括 `session.json`、`switch-events.csv`、`camera-events.csv`、`performance.csv`、`alerts.csv`、`errors.log` 和 summary。
+
+只有板端视觉依赖和模型已经通过 `check-runtime-deps.sh` 时，才允许配置 C/D：
+
+```json
+{
+  "vision_runtime": {"mode": "alternating_single_model"},
+  "alternating_camera": {
+    "enabled": true,
+    "backend": "v4l2_stream_toggle",
+    "normal_slice_ms": 500,
+    "risk_slice_ms": 700,
+    "minimum_other_side_slice_ms": 250,
+    "max_blind_interval_ms": 1200,
+    "stale_observation_timeout_ms": 1800,
+    "risk_priority_enabled": true
+  }
+}
+```
+
+启动、状态、日志和报告：
+
+```sh
+sudo sh /root/smartbag/board-deploy/alternating-start.sh /etc/smartbag/config.json
+sh /root/smartbag/board-deploy/alternating-status.sh
+sh /root/smartbag/board-deploy/alternating-logs.sh -f
+sh /root/smartbag/board-deploy/alternating-report.sh
+```
+
+`smartbag-alternating-vision.service` 与正式 `smartbag-alert.service`、`smartbag-video.service` 互斥。单进程模型只加载一次，但左右 tracker、轨迹、风险、稳定器、标定和 CSV 均独立。风险优先调度只读取稳定后的 haptic 等级，并保留另一侧最小时间片；无新观测不等于 SAFE。heartbeat 只维持 PWM，不进入 BLE 历史；超时、连续切换失败、detector 退出和 SIGTERM 都会清振。
+
+回退到正式模式：先运行 `alternating-stop.sh`，把配置改回 `vision_runtime.mode=fixed_dual_process` 和 `alternating_camera.enabled=false`，再执行 `sudo systemctl start smartbag.target`。紧急停振执行：
+
+```sh
+sudo systemctl stop smartbag-alternating-vision.service smartbag-alert.service smartbag.target
+```
+
+随后用 `fuser /dev/video0 /dev/video2` 确认两路均无占用。当前实板仅完成 A1-A4 每组 2 分钟和 B 30 秒测试；尚未达到 A 的 30 分钟验收，C/D 也未上板，因此不得把实验模式设为默认。

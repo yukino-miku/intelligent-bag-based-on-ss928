@@ -11,7 +11,7 @@ DEST=/root/smartbag
     exit 1
 }
 
-install -d "$DEST/vision" "$DEST/controller" "$DEST/gnss" "$DEST/imu" "$DEST/audio" "$DEST/models"
+install -d "$DEST/vision" "$DEST/controller" "$DEST/gnss" "$DEST/imu" "$DEST/audio" "$DEST/models" "$DEST/board-deploy"
 install -d /etc/smartbag /run/smartbag /var/lib/smartbag/tracks /var/lib/smartbag/calibration /var/log/smartbag
 
 cp -a "$REPO_ROOT/06_software/vision_obstacle_tracker/." "$DEST/vision/"
@@ -21,6 +21,7 @@ cp -a "$REPO_ROOT/06_software/board_runtime/dx_gp21_tracker/." "$DEST/gnss/"
 cp -a "$REPO_ROOT/06_software/board_runtime/bmi270_backpack/." "$DEST/imu/"
 cp -a "$REPO_ROOT/06_software/board_runtime/imu_fall_detector" "$DEST/"
 cp -a "$SCRIPT_DIR/assets/audio/." "$DEST/audio/"
+install -m 0755 "$SCRIPT_DIR"/alternating-*.sh "$DEST/board-deploy/"
 install -m 0755 "$REPO_ROOT/05_firmware/ss928/pinmux/apply-smartbag-pinmux.sh" "$DEST/apply-smartbag-pinmux.sh"
 
 find "$DEST" -type d -name __pycache__ -prune -exec rm -rf {} +

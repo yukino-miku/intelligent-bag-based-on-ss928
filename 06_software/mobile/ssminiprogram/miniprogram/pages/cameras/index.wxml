@@ -26,7 +26,7 @@
     <view class="camera" wx:for="{{[left, right]}}" wx:key="side">
       <view class="camera__heading">
         <text class="camera__label">{{item.label}}</text>
-        <text class="camera__status camera__status--{{item.online ? 'online' : 'offline'}}">{{item.statusText}}</text>
+        <text class="camera__status camera__status--{{item.frameState}}">{{item.statusText}}</text>
       </view>
       <image class="camera__image" src="{{item.imageUrl}}" mode="aspectFit" data-side="{{item.side}}" bindtap="previewSide" />
       <view class="camera__risk camera__risk--{{item.riskLevel}}">{{item.riskName}}</view>
@@ -39,5 +39,5 @@
     </view>
   </view>
 
-  <view class="notice">视频使用 Wi-Fi/LAN HTTP snapshot；BLE 只传告警、状态和控制，不传视频。</view>
+  <view class="notice">视频使用 Wi-Fi/LAN HTTP snapshot；BLE 只传告警、状态和控制，不传视频。交替实验模式下“缓存帧”不是实时画面，请结合延迟数值判断帧龄。</view>
 </view>

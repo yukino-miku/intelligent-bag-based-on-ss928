@@ -1,0 +1,576 @@
+from __future__ import annotations
+
+import csv
+import importlib.metadata
+import json
+import os
+import platform
+import shutil
+import subprocess
+import time
+from dataclasses import asdict
+from datetime import datetime, timezone
+from pathlib import Path
+from statistics import mean
+from typing import Iterable
+
+from .scheduler import CapturedFrame, SwitchEvent, percentile
+
+try:
+    import resource
+except ImportError:  # pragma: no cover - Windows development host
+    resource = None
+
+
+SWITCH_EVENT_FIELDS = (
+    "session_id",
+    "switch_index",
+    "from_side",
+    "to_side",
+    "switch_start_monotonic_s",
+    "streamoff_start_s",
+    "streamoff_end_s",
+    "streamoff_latency_ms",
+    "streamon_start_s",
+    "streamon_end_s",
+    "streamon_latency_ms",
+    "first_frame_s",
+    "first_frame_latency_ms",
+    "warmup_frames_requested",
+    "warmup_frames_received",
+    "warmup_frames_discarded",
+    "valid_frames",
+    "slice_duration_ms",
+    "requested_fps",
+    "actual_slice_fps",
+    "left_blind_interval_ms",
+    "right_blind_interval_ms",
+    "success",
+    "error_type",
+    "error_message",
+)
+
+CAMERA_EVENT_FIELDS = (
+    "session_id",
+    "side",
+    "frame_sequence",
+    "captured_monotonic_s",
+    "processed_monotonic_s",
+    "frame_age_ms",
+    "width",
+    "height",
+    "pixel_format",
+    "decode_ms",
+    "camera_online",
+    "active_side",
+    "dropped_frames",
+    "reconnect_count",
+    "last_error",
+)
+
+PERFORMANCE_FIELDS = (
+    "timestamp",
+    "active_side",
+    "left_effective_fps",
+    "right_effective_fps",
+    "left_last_frame_age_ms",
+    "right_last_frame_age_ms",
+    "switches_per_minute",
+    "mean_switch_latency_ms",
+    "p95_switch_latency_ms",
+    "inference_fps",
+    "inference_ms",
+    "tracking_ms",
+    "risk_ms",
+    "draw_ms",
+    "jpeg_encode_ms",
+    "gateway_clients",
+    "cpu_percent",
+    "memory_used_mb",
+    "memory_percent",
+    "process_rss_mb",
+    "temperature_c",
+    "load_1m",
+    "usb_errors",
+    "camera_errors",
+)
+
+ALERT_FIELDS = (
+    "timestamp",
+    "side",
+    "track_id",
+    "class",
+    "distance_m",
+    "raw_level",
+    "visual_level",
+    "haptic_level",
+    "score",
+    "path_conflict",
+    "moving_away",
+    "cpa_time_s",
+    "cpa_distance_m",
+    "corridor_entry_time_s",
+    "approach_consistency",
+    "path_conflict_consistency",
+    "stabilizer_pending_level",
+    "stabilizer_pending_count",
+    "stabilizer_required_frames",
+    "event_kind",
+    "clear_reason",
+    "observation_age_ms",
+)
+
+
+class _BufferedCsv:
+    def __init__(self, path: Path, fieldnames: Iterable[str], flush_interval_s: float = 1.0) -> None:
+        self.path = path
+        self.file = path.open("w", encoding="utf-8", newline="")
+        self.writer = csv.DictWriter(self.file, fieldnames=tuple(fieldnames), extrasaction="ignore")
+        self.writer.writeheader()
+        self.flush_interval_s = flush_interval_s
+        self.last_flush_s = time.monotonic()
+        self.pending_rows = 0
+
+    def write(self, row: dict[str, object]) -> None:
+        self.writer.writerow(row)
+        self.pending_rows += 1
+        now_s = time.monotonic()
+        if self.pending_rows >= 64 or now_s - self.last_flush_s >= self.flush_interval_s:
+            self.flush()
+
+    def flush(self) -> None:
+        self.file.flush()
+        self.pending_rows = 0
+        self.last_flush_s = time.monotonic()
+
+    def close(self) -> None:
+        self.flush()
+        self.file.close()
+
+
+class AlternatingSessionRecorder:
+    """Buffered experiment log writer; raw sessions stay below an ignored media root."""
+
+    def __init__(
+        self,
+        output_root: str | os.PathLike[str],
+        session_id: str,
+        *,
+        latest_summary_path: str | os.PathLike[str] | None = None,
+        clock=time.monotonic,
+    ) -> None:
+        self.output_root = Path(output_root)
+        self.session_id = session_id
+        self.session_dir = self.output_root / session_id
+        self.session_dir.mkdir(parents=True, exist_ok=False)
+        self.snapshots_dir = self.session_dir / "snapshots"
+        self.snapshots_dir.mkdir()
+        self.latest_summary_path = Path(latest_summary_path) if latest_summary_path else None
+        self.clock = clock
+        self.started_monotonic_s = float(clock())
+        self.started_utc = datetime.now(timezone.utc)
+        self.started_local = datetime.now().astimezone()
+        self.switch_csv = _BufferedCsv(self.session_dir / "switch-events.csv", SWITCH_EVENT_FIELDS)
+        self.camera_csv = _BufferedCsv(self.session_dir / "camera-events.csv", CAMERA_EVENT_FIELDS)
+        self.performance_csv = _BufferedCsv(self.session_dir / "performance.csv", PERFORMANCE_FIELDS)
+        self.alerts_csv = _BufferedCsv(self.session_dir / "alerts.csv", ALERT_FIELDS)
+        self.errors_file = (self.session_dir / "errors.log").open("w", encoding="utf-8")
+        self.switch_events: list[SwitchEvent] = []
+        self.performance_rows: list[dict[str, object]] = []
+        self.frame_counts = {"left": 0, "right": 0}
+        self.alert_count = 0
+        self.clear_count = 0
+        self.single_frame_jump_suppressed_count = 0
+        self._last_process_time_s = time.process_time()
+        self._last_cpu_wall_s = self.started_monotonic_s
+        self.metadata: dict[str, object] = self._base_metadata()
+        self._closed = False
+
+    def _base_metadata(self) -> dict[str, object]:
+        memory = read_memory_info()
+        git = git_snapshot()
+        return {
+            "session_id": self.session_id,
+            "start_utc": self.started_utc.isoformat(),
+            "start_local": self.started_local.isoformat(),
+            "git_branch": git["branch"],
+            "git_commit": git["commit"],
+            "git_worktree_status": git["status"],
+            "board_model": read_first(("/proc/device-tree/model", "/sys/firmware/devicetree/base/model")),
+            "os": read_os_release(),
+            "kernel": platform.release(),
+            "architecture": platform.machine(),
+            "cpu_count": os.cpu_count(),
+            "mem_total_mb": round(memory.get("MemTotal", 0) / 1024.0, 3),
+            "mem_available_mb": round(memory.get("MemAvailable", 0) / 1024.0, 3),
+            "swap_total_mb": round(memory.get("SwapTotal", 0) / 1024.0, 3),
+            "python_version": platform.python_version(),
+            "opencv_version": package_version("opencv-python", import_name="cv2"),
+            "torch_version": package_version("torch"),
+            "ultralytics_version": package_version("ultralytics"),
+            "lap_version": package_version("lap"),
+            "usb_topology": command_output(["lsusb", "-t"]),
+        }
+
+    def update_metadata(self, values: dict[str, object]) -> None:
+        self.metadata.update(values)
+        self._write_json(self.session_dir / "session.json", self.metadata)
+
+    def record_switch(self, event: SwitchEvent) -> None:
+        row = {"session_id": self.session_id, **event.as_dict()}
+        self.switch_csv.write(row)
+        self.switch_events.append(event)
+        if not event.success:
+            self.error(f"switch {event.switch_index} {event.to_side}: {event.error_type}: {event.error_message}")
+
+    def record_frame(
+        self,
+        frame: CapturedFrame,
+        *,
+        active_side: str | None,
+        decode_ms: float | str = "",
+        dropped_frames: int = 0,
+        reconnect_count: int = 0,
+        last_error: str = "",
+    ) -> None:
+        self.frame_counts[frame.side] += 1
+        self.camera_csv.write(
+            {
+                "session_id": self.session_id,
+                "side": frame.side,
+                "frame_sequence": frame.sequence,
+                "captured_monotonic_s": round(frame.captured_at_s, 9),
+                "processed_monotonic_s": round(frame.processed_at_s, 9),
+                "frame_age_ms": round(max(0.0, frame.processed_at_s - frame.captured_at_s) * 1000.0, 3),
+                "width": frame.width,
+                "height": frame.height,
+                "pixel_format": frame.pixel_format,
+                "decode_ms": round(float(decode_ms), 3) if decode_ms != "" else "",
+                "camera_online": True,
+                "active_side": active_side or "none",
+                "dropped_frames": dropped_frames,
+                "reconnect_count": reconnect_count,
+                "last_error": last_error,
+            }
+        )
+
+    def record_performance(
+        self,
+        status: dict[str, object],
+        *,
+        gateway_clients: int = 0,
+        usb_errors: int = 0,
+        camera_errors: int = 0,
+        stage_metrics: dict[str, float] | None = None,
+    ) -> dict[str, object]:
+        stage_metrics = stage_metrics or {}
+        now_s = float(self.clock())
+        process_now_s = time.process_time()
+        elapsed_s = max(now_s - self._last_cpu_wall_s, 1e-6)
+        cpu_percent = max(0.0, (process_now_s - self._last_process_time_s) / elapsed_s * 100.0)
+        self._last_cpu_wall_s = now_s
+        self._last_process_time_s = process_now_s
+        memory = read_memory_info()
+        total_kb = memory.get("MemTotal", 0)
+        available_kb = memory.get("MemAvailable", 0)
+        used_mb = max(0, total_kb - available_kb) / 1024.0
+        memory_percent = (total_kb - available_kb) / total_kb * 100.0 if total_kb else 0.0
+        row = {
+            "timestamp": round(now_s, 6),
+            "active_side": status.get("active_camera") or "none",
+            "left_effective_fps": status.get("left_effective_fps", 0.0),
+            "right_effective_fps": status.get("right_effective_fps", 0.0),
+            "left_last_frame_age_ms": status.get("left_last_frame_age_ms"),
+            "right_last_frame_age_ms": status.get("right_last_frame_age_ms"),
+            "switches_per_minute": round(float(status.get("switch_count", 0)) / max(now_s - self.started_monotonic_s, 1e-6) * 60.0, 3),
+            "mean_switch_latency_ms": status.get("average_switch_latency_ms"),
+            "p95_switch_latency_ms": status.get("p95_switch_latency_ms"),
+            "inference_fps": round(float(stage_metrics.get("inference_fps", 0.0)), 3),
+            "inference_ms": round(float(stage_metrics.get("inference_ms", 0.0)), 3),
+            "tracking_ms": round(float(stage_metrics.get("tracking_ms", 0.0)), 3),
+            "risk_ms": round(float(stage_metrics.get("risk_ms", 0.0)), 3),
+            "draw_ms": round(float(stage_metrics.get("draw_ms", 0.0)), 3),
+            "jpeg_encode_ms": round(float(stage_metrics.get("jpeg_encode_ms", 0.0)), 3),
+            "gateway_clients": gateway_clients,
+            "cpu_percent": round(cpu_percent, 3),
+            "memory_used_mb": round(used_mb, 3),
+            "memory_percent": round(memory_percent, 3),
+            "process_rss_mb": round(process_rss_mb(), 3),
+            "temperature_c": read_temperature_c(),
+            "load_1m": round(os.getloadavg()[0], 3) if hasattr(os, "getloadavg") else "",
+            "usb_errors": usb_errors,
+            "camera_errors": camera_errors,
+        }
+        self.performance_csv.write(row)
+        self.performance_rows.append(row)
+        return row
+
+    def record_alert(self, row: dict[str, object]) -> None:
+        self.alerts_csv.write(row)
+        self.alert_count += 1
+        if int(row.get("haptic_level", 0) or 0) == 0:
+            self.clear_count += 1
+
+    def save_snapshot(self, frame: CapturedFrame, switch_index: int) -> Path:
+        path = self.snapshots_dir / f"{switch_index:06d}-{frame.side}.jpg"
+        path.write_bytes(frame.data)
+        return path
+
+    def error(self, message: str) -> None:
+        timestamp = datetime.now().astimezone().isoformat(timespec="milliseconds")
+        self.errors_file.write(f"{timestamp} {message}\n")
+        self.errors_file.flush()
+
+    def finish(
+        self,
+        *,
+        acceptance_min_duration_s: float = 1800.0,
+        acceptance_max_blind_interval_ms: float | None = None,
+    ) -> dict[str, object]:
+        elapsed_s = max(float(self.clock()) - self.started_monotonic_s, 0.0)
+        successful = [event for event in self.switch_events if event.success]
+        switch_latencies = [event.streamoff_latency_ms + event.streamon_latency_ms for event in self.switch_events]
+        first_frame_latencies = [
+            float(event.first_frame_latency_ms)
+            for event in self.switch_events
+            if event.first_frame_latency_ms is not None
+        ]
+        blind_by_side = {
+            side: [
+                float(getattr(event, f"{side}_blind_interval_ms"))
+                for event in self.switch_events
+                if getattr(event, f"{side}_blind_interval_ms") is not None
+            ]
+            for side in ("left", "right")
+        }
+        success_rate = len(successful) / len(self.switch_events) * 100.0 if self.switch_events else 0.0
+        error_types = [event.error_type for event in self.switch_events if event.error_type]
+        streamon_failures = sum(1 for event in self.switch_events if event.error_type in ("enospc", "streamon_failure"))
+        first_frame_timeouts = sum(1 for event in self.switch_events if event.error_type == "first_frame_timeout")
+        temperatures = [float(row["temperature_c"]) for row in self.performance_rows if isinstance(row.get("temperature_c"), (int, float))]
+        cpu_values = [float(row["cpu_percent"]) for row in self.performance_rows]
+        rss_values = [float(row["process_rss_mb"]) for row in self.performance_rows]
+        memory_values = [float(row["memory_used_mb"]) for row in self.performance_rows]
+        inference_fps_values = [float(row["inference_fps"]) for row in self.performance_rows]
+        jpeg_encode_values = [float(row["jpeg_encode_ms"]) for row in self.performance_rows]
+        maximum_blind = max((value for values in blind_by_side.values() for value in values), default=0.0)
+        has_enospc = "enospc" in error_types
+        acceptance_met = (
+            elapsed_s >= acceptance_min_duration_s
+            and success_rate >= 99.0
+            and not has_enospc
+            and self.frame_counts["left"] > 0
+            and self.frame_counts["right"] > 0
+            and first_frame_timeouts == 0
+            and (
+                acceptance_max_blind_interval_ms is None
+                or maximum_blind <= acceptance_max_blind_interval_ms
+            )
+        )
+        summary = {
+            "session_id": self.session_id,
+            "duration_s": round(elapsed_s, 3),
+            "switch_count": len(self.switch_events),
+            "successful_switches": len(successful),
+            "switch_success_rate_percent": round(success_rate, 3),
+            "streamon_failures": streamon_failures,
+            "streamoff_failures": sum(1 for event in self.switch_events if event.error_type == "streamoff_failure"),
+            "first_frame_timeouts": first_frame_timeouts,
+            "camera_reconnects": 0,
+            "left_valid_frames": self.frame_counts["left"],
+            "right_valid_frames": self.frame_counts["right"],
+            "left_effective_fps": round(self.frame_counts["left"] / max(elapsed_s, 1e-9), 3),
+            "right_effective_fps": round(self.frame_counts["right"] / max(elapsed_s, 1e-9), 3),
+            "left_max_blind_interval_ms": round(max(blind_by_side["left"], default=0.0), 3),
+            "right_max_blind_interval_ms": round(max(blind_by_side["right"], default=0.0), 3),
+            "maximum_blind_interval_ms": round(maximum_blind, 3),
+            "mean_blind_interval_ms": round(mean([value for values in blind_by_side.values() for value in values]), 3)
+            if any(blind_by_side.values())
+            else 0.0,
+            "switch_latency_ms": percentile_summary(switch_latencies),
+            "first_frame_latency_ms": percentile_summary(first_frame_latencies),
+            "max_process_rss_mb": round(max(rss_values, default=0.0), 3),
+            "average_process_rss_mb": round(mean(rss_values), 3) if rss_values else 0.0,
+            "max_memory_used_mb": round(max(memory_values, default=0.0), 3),
+            "average_memory_used_mb": round(mean(memory_values), 3) if memory_values else 0.0,
+            "max_cpu_percent": round(max(cpu_values, default=0.0), 3),
+            "average_cpu_percent": round(mean(cpu_values), 3) if cpu_values else 0.0,
+            "max_temperature_c": round(max(temperatures), 3) if temperatures else None,
+            "inference_fps": round(mean(inference_fps_values), 3) if inference_fps_values else 0.0,
+            "jpeg_encode_ms": round(mean(jpeg_encode_values), 3) if jpeg_encode_values else 0.0,
+            "alert_count": self.alert_count,
+            "clear_count": self.clear_count,
+            "single_frame_jump_suppressed_count": self.single_frame_jump_suppressed_count,
+            "camera_offline_clear_verified": False,
+            "enospc_observed": has_enospc,
+            "acceptance_min_duration_s": acceptance_min_duration_s,
+            "acceptance_max_blind_interval_ms": acceptance_max_blind_interval_ms,
+            "acceptance_met": acceptance_met,
+            "recommended_next_parameters": "Run the 2-minute matrix, then select the lowest p95 switch latency without incomplete slices.",
+        }
+        self._write_json(self.session_dir / "summary.json", summary)
+        summary_markdown = render_summary_markdown(summary)
+        (self.session_dir / "summary.md").write_text(summary_markdown, encoding="utf-8")
+        if self.latest_summary_path:
+            self.latest_summary_path.parent.mkdir(parents=True, exist_ok=True)
+            self.latest_summary_path.write_text(summary_markdown, encoding="utf-8")
+        self.metadata.update(
+            {
+                "end_utc": datetime.now(timezone.utc).isoformat(),
+                "end_local": datetime.now().astimezone().isoformat(),
+                "duration_s": round(elapsed_s, 3),
+            }
+        )
+        self._write_json(self.session_dir / "session.json", self.metadata)
+        return summary
+
+    @staticmethod
+    def _write_json(path: Path, payload: object) -> None:
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        for writer in (self.switch_csv, self.camera_csv, self.performance_csv, self.alerts_csv):
+            writer.close()
+        self.errors_file.close()
+        self._closed = True
+
+    def __enter__(self) -> "AlternatingSessionRecorder":
+        return self
+
+    def __exit__(self, _exc_type, _exc, _traceback) -> None:
+        self.close()
+
+
+def percentile_summary(values: list[float]) -> dict[str, float | None]:
+    return {
+        "p50": round(percentile(values, 0.50), 3) if values else None,
+        "p95": round(percentile(values, 0.95), 3) if values else None,
+        "p99": round(percentile(values, 0.99), 3) if values else None,
+        "mean": round(mean(values), 3) if values else None,
+    }
+
+
+def render_summary_markdown(summary: dict[str, object]) -> str:
+    switch_latency = summary["switch_latency_ms"]
+    first_latency = summary["first_frame_latency_ms"]
+    return f"""# 交替双摄实验摘要
+
+- Session：`{summary['session_id']}`
+- 运行时长：{summary['duration_s']} s
+- 切换：{summary['successful_switches']}/{summary['switch_count']}，成功率 {summary['switch_success_rate_percent']}%
+- 左/右有效帧：{summary['left_valid_frames']} / {summary['right_valid_frames']}
+- 左/右有效 FPS：{summary['left_effective_fps']} / {summary['right_effective_fps']}
+- 最大单侧盲区：{summary['maximum_blind_interval_ms']} ms
+- 切换延迟 p50/p95/p99：{switch_latency['p50']} / {switch_latency['p95']} / {switch_latency['p99']} ms
+- 首帧延迟 p50/p95/p99：{first_latency['p50']} / {first_latency['p95']} / {first_latency['p99']} ms
+- STREAMON/STREAMOFF/首帧超时：{summary['streamon_failures']} / {summary['streamoff_failures']} / {summary['first_frame_timeouts']}
+- ENOSPC：{summary['enospc_observed']}
+- CPU 峰值/平均：{summary['max_cpu_percent']}% / {summary['average_cpu_percent']}%
+- RSS 峰值/平均：{summary['max_process_rss_mb']} / {summary['average_process_rss_mb']} MiB
+- 内存使用峰值/平均：{summary['max_memory_used_mb']} / {summary['average_memory_used_mb']} MiB
+- 温度峰值：{summary['max_temperature_c']}
+- 验收最短时长：{summary['acceptance_min_duration_s']} s
+- 验收最大盲区阈值：{summary['acceptance_max_blind_interval_ms']} ms
+- 当前验收条件满足：{summary['acceptance_met']}
+
+该摘要仅代表交替采集，不代表同步双摄、YOLO 推理、风险判断或 PWM 已验证。
+"""
+
+
+def read_memory_info() -> dict[str, int]:
+    values: dict[str, int] = {}
+    try:
+        for line in Path("/proc/meminfo").read_text(encoding="ascii").splitlines():
+            name, remainder = line.split(":", 1)
+            values[name] = int(remainder.strip().split()[0])
+    except (OSError, ValueError, IndexError):
+        pass
+    return values
+
+
+def process_rss_mb() -> float:
+    try:
+        for line in Path("/proc/self/status").read_text(encoding="ascii").splitlines():
+            if line.startswith("VmRSS:"):
+                return int(line.split()[1]) / 1024.0
+    except (OSError, ValueError, IndexError):
+        pass
+    if resource is None:
+        return 0.0
+    usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return float(usage) / (1024.0 if platform.system() != "Darwin" else 1024.0 * 1024.0)
+
+
+def read_temperature_c() -> float | None:
+    values: list[float] = []
+    for path in Path("/sys/class/thermal").glob("thermal_zone*/temp"):
+        try:
+            value = float(path.read_text(encoding="ascii").strip())
+            values.append(value / 1000.0 if value > 1000.0 else value)
+        except (OSError, ValueError):
+            continue
+    return round(max(values), 3) if values else None
+
+
+def read_first(paths: Iterable[str]) -> str:
+    for path_value in paths:
+        try:
+            return Path(path_value).read_bytes().rstrip(b"\0\n").decode("utf-8", "replace")
+        except OSError:
+            continue
+    return "unknown"
+
+
+def read_os_release() -> dict[str, str]:
+    values: dict[str, str] = {}
+    try:
+        for line in Path("/etc/os-release").read_text(encoding="utf-8").splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                values[key] = value.strip().strip('"')
+    except OSError:
+        values["PRETTY_NAME"] = platform.platform()
+    return values
+
+
+def package_version(distribution: str, *, import_name: str | None = None) -> str:
+    try:
+        return importlib.metadata.version(distribution)
+    except importlib.metadata.PackageNotFoundError:
+        if import_name:
+            try:
+                module = __import__(import_name)
+                return str(getattr(module, "__version__", "installed"))
+            except ImportError:
+                pass
+        return "not installed"
+
+
+def command_output(argv: list[str]) -> str:
+    if shutil.which(argv[0]) is None:
+        return f"unavailable: {argv[0]} not installed"
+    try:
+        completed = subprocess.run(argv, check=False, capture_output=True, text=True, timeout=5.0)
+        return (completed.stdout or completed.stderr).strip()
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"unavailable: {exc}"
+
+
+def git_snapshot() -> dict[str, str]:
+    if shutil.which("git") is None:
+        return {"branch": "unavailable", "commit": "unavailable", "status": "git not installed"}
+    try:
+        branch = subprocess.run(
+            ["git", "branch", "--show-current"], check=False, capture_output=True, text=True, timeout=3.0
+        ).stdout.strip()
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"], check=False, capture_output=True, text=True, timeout=3.0
+        ).stdout.strip()
+        status = subprocess.run(
+            ["git", "status", "--short"], check=False, capture_output=True, text=True, timeout=3.0
+        ).stdout.strip()
+        return {"branch": branch or "detached", "commit": commit or "unavailable", "status": status or "clean"}
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"branch": "unavailable", "commit": "unavailable", "status": str(exc)}

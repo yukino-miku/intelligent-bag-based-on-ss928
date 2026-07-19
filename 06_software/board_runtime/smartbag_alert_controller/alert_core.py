@@ -71,6 +71,9 @@ class AlertEvent:
     ts: float | None = None
     class_name: str | None = None
     distance_m: float | None = None
+    observation_age_ms: float | None = None
+    clear_reason: str | None = None
+    event_kind: str = "state_change"
 
 
 @dataclass(frozen=True)
@@ -174,18 +177,30 @@ def parse_vision_alert_jsonl(line: str) -> AlertEvent | None:
     data = json.loads(line)
     if not isinstance(data, dict) or data.get("type") != "vision_alert":
         return None
+    event_kind = str(data.get("event_kind", "state_change"))
+    if event_kind not in ("state_change", "heartbeat"):
+        raise ValueError(f"invalid vision alert event_kind: {event_kind!r}")
     return AlertEvent(
         side=normalize_side(str(data["side"])),
         level=normalize_level(data["level"]),
+        event_kind=event_kind,
         score=float(data["score"]) if data.get("score") is not None else None,
         track_id=int(data["track_id"]) if data.get("track_id") is not None else None,
         ts=float(data["ts"]) if data.get("ts") is not None else None,
         class_name=str(data["class"]) if data.get("class") is not None else None,
         distance_m=float(data["distance_m"]) if data.get("distance_m") is not None else None,
+        observation_age_ms=(
+            float(data["observation_age_ms"])
+            if data.get("observation_age_ms") is not None
+            else None
+        ),
+        clear_reason=str(data["clear_reason"]) if data.get("clear_reason") is not None else None,
     )
 
 
 def event_is_stale(event: AlertEvent, now_s: float, max_age_s: float) -> bool:
+    if max_age_s > 0.0 and event.observation_age_ms is not None and event.observation_age_ms > max_age_s * 1000.0:
+        return True
     if event.ts is None or max_age_s <= 0.0:
         return False
     age_s = float(now_s) - float(event.ts)
@@ -213,13 +228,15 @@ class AlertState:
         side = normalize_side(event.side)
         level = normalize_level(event.level)
         previous_level = self.levels_by_side[side]
+        if event.event_kind == "heartbeat" and level != previous_level:
+            return self._output()
         self.levels_by_side[side] = level
         if level > 0:
             self.last_event_mono_by_side[side] = now
         else:
             self.last_event_mono_by_side.pop(side, None)
 
-        clip = audio_clip_for(side, level)
+        clip = None if event.event_kind == "heartbeat" else audio_clip_for(side, level)
         if clip is not None and not self._should_emit_audio(clip, previous_level, level, now):
             clip = None
         return self._output(audio_clip=clip)

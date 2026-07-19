@@ -1,8 +1,15 @@
 import io
 import json
+import sys
 import unittest
 from dataclasses import dataclass
 from enum import IntEnum
+from pathlib import Path
+
+
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
 
 from alert_output import AlertJsonlEmitter
 
@@ -94,6 +101,35 @@ class AlertJsonlEmitterTest(unittest.TestCase):
         self.assertEqual("left", emitted[0]["side"])
         self.assertEqual("truck", emitted[0]["class"])
         self.assertEqual(4.2, emitted[0]["distance_m"])
+
+    def test_unobserved_side_is_retained_and_same_level_becomes_heartbeat(self) -> None:
+        times = iter((1.0, 1.5, 2.0))
+        stream = io.StringIO()
+        emitter = AlertJsonlEmitter(stream, fixed_side="left", rate_limit_s=0.25, clock=lambda: next(times))
+        target = Target(5, Point(-1.0))
+        risk = {5: Risk(Level.CAUTION, 0.7)}
+
+        first = emitter.update([target], risk, observed_sides=("left",))
+        unobserved = emitter.update([], {}, observed_sides=("right",))
+        heartbeat = emitter.update([target], risk, observed_sides=("left",))
+
+        self.assertEqual("state_change", first[0]["event_kind"])
+        self.assertEqual([], unobserved)
+        self.assertEqual("heartbeat", heartbeat[0]["event_kind"])
+        self.assertEqual(2, heartbeat[0]["level"])
+
+    def test_stale_observation_eventually_emits_clear(self) -> None:
+        times = iter((1.0, 1.4, 3.1))
+        stream = io.StringIO()
+        emitter = AlertJsonlEmitter(stream, fixed_side="left", rate_limit_s=0.25, clock=lambda: next(times))
+        target = Target(5, Point(-1.0))
+
+        emitter.update([target], {5: Risk(Level.DANGER, 0.9)}, observed_sides=("left",))
+        self.assertEqual("heartbeat", emitter.heartbeat(1.0)[0]["event_kind"])
+        cleared = emitter.heartbeat(1.0)
+
+        self.assertEqual(0, cleared[0]["level"])
+        self.assertEqual("stale_observation", cleared[0]["clear_reason"])
 
 
 if __name__ == "__main__":

@@ -609,3 +609,50 @@ python3 vision_obstacle_tracker.py --source camera \
 相机采集使用容量 1 的 latest-frame buffer，旧帧被覆盖而不是排队。HTTP 只读取本进程已有 raw/overlay 帧，不二次打开相机；手机慢或断开不会阻塞检测。没有视频客户端时不会主动执行 JPEG 编码。profile 保留 `capture`、`infer+track`、postprocess、risk、draw、display/write、total，并额外报告 JPEG、客户端数、stream FPS 和 dropped frames；当前 Ultralytics `model.track()` 无法可靠拆分 inference 与 tracker，因此不伪造两项独立耗时。
 
 detector HTTP 提供 `/api/v1/camera/<side>/status`、`snapshot.jpg` 和 `mjpeg`。外部双路聚合 API 和浏览器页由 `dual_camera_gateway.py` 提供，部署方法见 `09_deliverables/board_deploy/README.md`。
+
+## SS928 实验性交替双摄（单模型）
+
+`alternating_dual_camera_tracker.py` 是默认关闭的时间复用入口。它保持两个 UVC fd/mmap 缓冲，但严格按“左 STREAMON -> 预热/取帧 -> STREAMOFF -> 推理 -> 右 STREAMON”循环；任何时刻最多一路 streaming。它不是同步双摄，未激活侧没有新观测，也不会被当成 SAFE。
+
+检测只加载一个 Ultralytics 模型并调用 `model.predict()`；左右各自持有独立 BoT-SORT、`StableTrackIdManager`、`TrackState`、`RiskModel`、`RiskWarningStabilizer`、`SelfObjectFilter`、标定和 risk CSV。禁止使用一个 `model.track(..., persist=True)` 交替喂左右画面。输出震动等级仍来自多帧稳定后的 `haptic_level`，raw/visual risk 不直接控制 PWM。
+
+先运行无模型 A/B 测试：
+
+```sh
+python3 alternating_camera_test.py \
+  --left-device /dev/v4l/by-path/LEFT-video-index0 \
+  --right-device /dev/v4l/by-path/RIGHT-video-index0 \
+  --width 640 --height 480 --fps 10 \
+  --slice-ms 500 --warmup-frames 2 --frames-per-slice 4 \
+  --duration-s 120 --backend v4l2_stream_toggle \
+  --output-dir /var/log/smartbag/alternating-camera-runs
+
+python3 alternating_camera_test.py \
+  --left-device /dev/v4l/by-path/LEFT-video-index0 \
+  --right-device /dev/v4l/by-path/RIGHT-video-index0 \
+  --width 640 --height 480 --fps 10 --slice-ms 500 \
+  --warmup-frames 2 --frames-per-slice 4 --duration-s 120 \
+  --runtime-mode stream_only --serve-bind 0.0.0.0 --serve-port 8081 \
+  --output-dir /var/log/smartbag/alternating-camera-runs
+```
+
+B 阶段页面为 `http://<板端地址>:8081/`。状态会标明当前 active side、另一侧缓存帧年龄和离线状态；gateway 只读缓存，不重新打开摄像头。
+
+依赖齐全后才运行 C：
+
+```sh
+python3 alternating_dual_camera_tracker.py \
+  --left-device /dev/v4l/by-path/LEFT-video-index0 \
+  --right-device /dev/v4l/by-path/RIGHT-video-index0 \
+  --left-calibration-file /etc/smartbag/calibration-left.json \
+  --right-calibration-file /etc/smartbag/calibration-right.json \
+  --model /root/smartbag/models/yolo11n.pt --tracker vehicle_botsort.yaml \
+  --width 640 --height 480 --fps 10 --normal-slice-ms 500 \
+  --warmup-frames 2 --frames-per-slice 4 --imgsz 416 --conf 0.08 \
+  --duration-s 60 --output-dir /var/log/smartbag/alternating-camera-runs \
+  --risk-log-dir /var/log/smartbag
+```
+
+stdout 只用于 compact `vision_alert` JSONL；模型和普通日志写 stderr。状态变化使用 `event_kind=state_change`，有效风险的维持包使用 `heartbeat`；heartbeat 只刷新 PWM timeout，不进入 BLE/手机报警历史。切换到另一侧不会清除上一侧，超过 `--stale-observation-timeout-ms` 才安全清振。时间维度确认参数为 `--caution-confirm-duration-s`、`--danger-confirm-duration-s`、`--emergency-confirm-duration-s` 和 `--low-quality-extra-duration-s`，它们与原有确认帧数同时生效。
+
+原始 session 在 `08_media/alternating_camera_runs/`（PC）或 `/var/log/smartbag/alternating-camera-runs/`（板端），包括 `session.json`、四份 CSV、错误日志和 summary。大型原始数据不提交 Git；可提交的最新摘要在 `07_tests/results/alternating_camera/latest-summary.md`。当前板端 A/B 已通过短测，C 因缺少视觉依赖尚未上板，正式默认仍为固定双 detector。

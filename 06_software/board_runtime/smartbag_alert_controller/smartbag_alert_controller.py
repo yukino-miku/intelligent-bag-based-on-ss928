@@ -272,6 +272,7 @@ class DetectorProcess:
         cwd: Path | None = None,
         restart_limit: int = 5,
         restart_backoff_s: float = 1.0,
+        append_alert_args: bool = True,
     ) -> None:
         self.side = side
         self.command = command
@@ -285,9 +286,14 @@ class DetectorProcess:
         self.next_restart_s = 0.0
         self.last_exit_code: int | None = None
         self._stopping = False
+        self.append_alert_args = append_alert_args
 
     def start(self, *, restarted: bool = False) -> None:
-        argv = build_detector_command(self.command, self.side)
+        argv = (
+            build_detector_command(self.command, self.side)
+            if self.append_alert_args
+            else shlex.split(self.command)
+        )
         process = subprocess.Popen(
             argv,
             cwd=str(self.cwd) if self.cwd else None,
@@ -365,7 +371,15 @@ class DetectorProcess:
                 self.last_exit_code = None
             clear_sides = (self.side,) if self.side in ("left", "right") else ("left", "right")
             for clear_side in clear_sides:
-                self.event_queue.put(AlertEvent(side=clear_side, level=0, ts=time.monotonic()))
+                self.event_queue.put(
+                    AlertEvent(
+                        side=clear_side,
+                        level=0,
+                        event_kind="state_change",
+                        ts=time.monotonic(),
+                        clear_reason="detector_exit",
+                    )
+                )
             self.next_restart_s = time.monotonic() + self.restart_backoff_s * min(
                 8.0,
                 2.0**self.restart_count,
@@ -485,6 +499,94 @@ def detector_commands_from_config(
             argv.extend(["--calibration-file", calibration_file])
         commands[side] = shlex.join(argv)
     return commands["left"], commands["right"]
+
+
+def alternating_detector_command_from_config(config: dict[str, object]) -> str:
+    runtime = config.get("vision_runtime") if isinstance(config.get("vision_runtime"), dict) else {}
+    if str(runtime.get("mode", "fixed_dual_process")) != "alternating_single_model":
+        return ""
+    alternating = config.get("alternating_camera")
+    if not isinstance(alternating, dict) or not bool(alternating.get("enabled", False)):
+        raise ValueError("alternating_single_model requires alternating_camera.enabled=true")
+    if str(alternating.get("backend", "v4l2_stream_toggle")) != "v4l2_stream_toggle":
+        raise ValueError("alternating_single_model currently supports only v4l2_stream_toggle")
+    validate_dual_camera_config(config)
+    paths = config.get("paths") if isinstance(config.get("paths"), dict) else {}
+    cameras = config["cameras"]
+    assert isinstance(cameras, dict)
+    left = cameras["left"]
+    right = cameras["right"]
+    assert isinstance(left, dict) and isinstance(right, dict)
+    python_executable = str(paths.get("python", "/usr/bin/python3"))
+    vision_root = Path(str(paths.get("vision", "/root/smartbag/vision")))
+    argv = [
+        python_executable,
+        str(vision_root / "alternating_dual_camera_tracker.py"),
+        "--left-device",
+        str(left["camera_device"]),
+        "--right-device",
+        str(right["camera_device"]),
+        "--backend",
+        "v4l2_stream_toggle",
+        "--model",
+        str(paths.get("model", "/root/smartbag/models/yolo11n.pt")),
+        "--tracker",
+        str(alternating.get("tracker", vision_root / "vehicle_botsort.yaml")),
+        "--width",
+        str(alternating.get("width", 640)),
+        "--height",
+        str(alternating.get("height", 480)),
+        "--fps",
+        str(alternating.get("fps", 10)),
+        "--normal-slice-ms",
+        str(alternating.get("normal_slice_ms", 500)),
+        "--risk-slice-ms",
+        str(alternating.get("risk_slice_ms", 700)),
+        "--minimum-other-side-slice-ms",
+        str(alternating.get("minimum_other_side_slice_ms", 250)),
+        "--warmup-frames",
+        str(alternating.get("warmup_frames", 2)),
+        "--frames-per-slice",
+        str(alternating.get("frames_per_slice", 4)),
+        "--max-blind-interval-ms",
+        str(alternating.get("max_blind_interval_ms", 1200)),
+        "--stale-observation-timeout-ms",
+        str(alternating.get("stale_observation_timeout_ms", 1800)),
+        "--switch-failure-limit",
+        str(alternating.get("switch_failure_limit", 3)),
+        "--switch-backoff-ms",
+        str(alternating.get("switch_backoff_ms", 200)),
+        "--duration-s",
+        str(alternating.get("duration_s", 0)),
+        "--switch-count",
+        str(alternating.get("switch_count", 1000000000)),
+        "--output-dir",
+        str(alternating.get("output_dir", "/var/log/smartbag/alternating-camera-runs")),
+        "--risk-log-dir",
+        str(alternating.get("risk_log_dir", "/var/log/smartbag")),
+        "--imgsz",
+        str(alternating.get("imgsz", 416)),
+        "--conf",
+        str(alternating.get("conf", 0.08)),
+        "--max-det",
+        str(alternating.get("max_det", 30)),
+    ]
+    if bool(alternating.get("prefer_openvino", False)):
+        argv.append("--prefer-openvino")
+    left_calibration = str(left.get("calibration_file", "")).strip()
+    right_calibration = str(right.get("calibration_file", "")).strip()
+    if left_calibration:
+        argv.extend(["--left-calibration-file", left_calibration])
+    if right_calibration:
+        argv.extend(["--right-calibration-file", right_calibration])
+    if not bool(alternating.get("risk_priority_enabled", True)):
+        argv.append("--disable-risk-priority")
+    return shlex.join(argv)
+
+
+def should_publish_alert_history(event: AlertEvent) -> bool:
+    """Heartbeat refreshes PWM only; state changes are persisted to BLE/mobile history."""
+    return event.event_kind == "state_change"
 
 
 def alert_event_ble_payload(event: AlertEvent) -> str:
@@ -711,6 +813,7 @@ def run_controller(args: argparse.Namespace) -> int:
         )
         left_detector_command = args.left_detector or configured_left
         right_detector_command = args.right_detector or configured_right
+        alternating_detector_command = alternating_detector_command_from_config(config)
         if args.single_camera and not args.detector:
             raise ValueError("--single-camera requires --detector COMMAND")
         if args.detector:
@@ -721,6 +824,18 @@ def run_controller(args: argparse.Namespace) -> int:
                 cwd=detector_cwd,
                 restart_limit=restart_limit,
                 restart_backoff_s=restart_backoff_s,
+            )
+            detector.start()
+            detectors.append(detector)
+        elif alternating_detector_command:
+            detector = DetectorProcess(
+                None,
+                alternating_detector_command,
+                event_queue,
+                cwd=detector_cwd,
+                restart_limit=restart_limit,
+                restart_backoff_s=restart_backoff_s,
+                append_alert_args=False,
             )
             detector.start()
             detectors.append(detector)
@@ -774,7 +889,7 @@ def run_controller(args: argparse.Namespace) -> int:
                     continue
                 output = state.apply_event(event)
                 apply_output(output, pwm, audio)
-                if ble is not None:
+                if ble is not None and should_publish_alert_history(event):
                     ble.send_line(alert_event_ble_payload(event))
 
             while True:

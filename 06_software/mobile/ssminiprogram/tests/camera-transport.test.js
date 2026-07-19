@@ -2,7 +2,8 @@ const assert = require("assert");
 const {
   SnapshotHttpTransport,
   boardBaseUrl,
-  normalizeConfig
+  normalizeConfig,
+  normalizeCameraStatus
 } = require("../miniprogram/utils/camera-transport");
 
 const config = normalizeConfig({ boardHost: "192.0.2.10", videoPort: 8080, viewMode: "overlay" });
@@ -18,5 +19,17 @@ const custom = normalizeConfig({ leftPath: "custom/left/", rightPath: "/custom/r
 assert.strictEqual(custom.leftPath, "/custom/left");
 assert.strictEqual(custom.rightPath, "/custom/right");
 assert.strictEqual(boardBaseUrl(normalizeConfig({})), "");
+assert.deepStrictEqual(
+  normalizeCameraStatus({ online: true, active: false, frame_state: "cached", effective_fps: 4.1 }),
+  {
+    online: true,
+    active: false,
+    frameState: "cached",
+    statusText: "缓存帧",
+    captureFps: 4.1
+  }
+);
+assert.strictEqual(normalizeCameraStatus({ online: true, active: true }).statusText, "正在采集");
+assert.strictEqual(normalizeCameraStatus({ online: false }).frameState, "offline");
 
 console.log("camera transport tests passed");
