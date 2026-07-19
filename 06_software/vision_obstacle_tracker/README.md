@@ -609,3 +609,99 @@ python3 vision_obstacle_tracker.py --source camera \
 相机采集使用容量 1 的 latest-frame buffer，旧帧被覆盖而不是排队。HTTP 只读取本进程已有 raw/overlay 帧，不二次打开相机；手机慢或断开不会阻塞检测。没有视频客户端时不会主动执行 JPEG 编码。profile 保留 `capture`、`infer+track`、postprocess、risk、draw、display/write、total，并额外报告 JPEG、客户端数、stream FPS 和 dropped frames；当前 Ultralytics `model.track()` 无法可靠拆分 inference 与 tracker，因此不伪造两项独立耗时。
 
 detector HTTP 提供 `/api/v1/camera/<side>/status`、`snapshot.jpg` 和 `mjpeg`。外部双路聚合 API 和浏览器页由 `dual_camera_gateway.py` 提供，部署方法见 `09_deliverables/board_deploy/README.md`。
+
+## SS928 实验性交替双摄（单模型）
+
+`alternating_dual_camera_tracker.py` 是默认关闭的时间复用入口。它保持两个 UVC fd/mmap 缓冲，但严格按“左 STREAMON -> 预热/取帧 -> STREAMOFF -> 推理 -> 右 STREAMON”循环；任何时刻最多一路 streaming。它不是同步双摄，未激活侧没有新观测，也不会被当成 SAFE。
+
+检测只加载一个 Ultralytics 模型并调用 `model.predict()`；左右各自持有独立 BoT-SORT、`StableTrackIdManager`、`TrackState`、`RiskModel`、`RiskWarningStabilizer`、`SelfObjectFilter`、标定和 risk CSV。禁止使用一个 `model.track(..., persist=True)` 交替喂左右画面。输出震动等级仍来自跨时间片稳定后的 `haptic_level`，raw/visual risk 不直接控制 PWM。
+
+### 调度、盲区和跟踪时间尺度
+
+- `--inference-frames-per-slice` 默认 `1`：每片仍采集全部有效帧做采集统计，但只推理最后一张最新帧；旧帧立即跳过，没有无界队列。该值不得超过 `--frames-per-slice`。
+- `capture_switch_blind_interval_ms` 只描述 STREAMOFF -> 下一侧 STREAMON -> 第一帧；`end_to_end_observation_gap_ms` 按同一侧两张真正进入视觉算法的帧时间计算，包含另一侧采集、解码、推理、跟踪、风险、overlay、JPEG 和调度。验收使用后者。
+- `performance.csv` 和 `camera-events.csv` 记录各阶段 monotonic 时间、左右 E2E p50/p95/p99/max、跨侧 p95、已选/跳过帧、队列深度和最旧待处理帧龄。正常队列深度是 `0`，处理中的最新帧最多 `1`。
+- 内存中的 switch/E2E/性能历史使用有界 deque；CSV 仍逐条落盘，切换总数、错误数、最大盲区和性能均值/峰值使用独立累计量，不受窗口淘汰影响。
+- `--tracker-effective-fps-mode effective_side` 用每侧真实观测频率调整 tracker 的时间缓冲；距离速度、CPA 和 Future Conflict Gate 仍只使用真实 monotonic 时间。
+- CAUTION/DANGER/EMERGENCY 默认至少跨不同 `slice_id` 确认。同一 burst 内多张帧不能普通路径直接满足 DANGER；紧急单 slice fast path 只允许极近、高质量冲突，并写入 `fast_path_reason`。
+
+先运行无模型 A/B 测试：
+
+```sh
+python3 alternating_camera_test.py \
+  --left-device /dev/v4l/by-path/LEFT-video-index0 \
+  --right-device /dev/v4l/by-path/RIGHT-video-index0 \
+  --width 640 --height 480 --fps 30 \
+  --slice-ms 500 --warmup-frames 2 --frames-per-slice 4 \
+  --duration-s 120 --backend v4l2_stream_toggle \
+  --output-dir /var/log/smartbag/alternating-camera-runs
+
+python3 alternating_camera_test.py \
+  --left-device /dev/v4l/by-path/LEFT-video-index0 \
+  --right-device /dev/v4l/by-path/RIGHT-video-index0 \
+  --width 640 --height 480 --fps 30 --slice-ms 500 \
+  --warmup-frames 2 --frames-per-slice 4 --duration-s 120 \
+  --runtime-mode stream_only --serve-bind 0.0.0.0 --serve-port 8081 \
+  --output-dir /var/log/smartbag/alternating-camera-runs
+```
+
+B 阶段页面为 `http://<板端地址>:8081/`。状态会标明当前 active side、另一侧缓存帧年龄和离线状态；gateway 只读缓存，不重新打开摄像头。A/B 没有 YOLO，因此 overlay 与 raw 没有检测框差异，不能用它证明 C 阶段 overlay 已通过。
+
+依赖齐全后才运行 C：
+
+```sh
+python3 alternating_dual_camera_tracker.py \
+  --left-device /dev/v4l/by-path/LEFT-video-index0 \
+  --right-device /dev/v4l/by-path/RIGHT-video-index0 \
+  --left-calibration-file /etc/smartbag/calibration-left.json \
+  --right-calibration-file /etc/smartbag/calibration-right.json \
+  --model /root/smartbag/models/yolo11n.pt --tracker vehicle_botsort.yaml \
+  --width 640 --height 480 --fps 30 --normal-slice-ms 500 \
+  --warmup-frames 2 --frames-per-slice 4 --inference-frames-per-slice 1 \
+  --tracker-effective-fps-mode effective_side --imgsz 416 --conf 0.08 \
+  --min-confirm-slices-caution 2 --min-confirm-slices-danger 2 \
+  --min-confirm-slices-emergency 2 --minimum-confirmation-interval-s 0.2 \
+  --serve-bind 0.0.0.0 --serve-port 8080 --jpeg-quality 80 \
+  --duration-s 60 --output-dir /var/log/smartbag/alternating-camera-runs \
+  --risk-log-dir /var/log/smartbag
+```
+
+stdout 只用于 compact `vision_alert` JSONL；模型和普通日志写 stderr。状态变化使用 `event_kind=state_change`，有效风险的维持包使用 `heartbeat`；heartbeat 只刷新 PWM timeout，不进入 BLE/手机报警历史。切换到另一侧不会清除上一侧，超过 `--stale-observation-timeout-ms` 才安全清振。时间维度确认参数为 `--caution-confirm-duration-s`、`--danger-confirm-duration-s`、`--emergency-confirm-duration-s` 和 `--low-quality-extra-duration-s`，它们与原有确认帧数同时生效。
+
+### 浏览器 raw/overlay
+
+交替 detector 内部直接启动 gateway，不创建第二个摄像头进程。每侧缓存原始 MJPEG 和绘制后的 JPEG；raw 直接复用摄像头数据，overlay 才做绘制和编码。默认关闭 HTTP access log。接口：
+
+```text
+GET /
+GET /api/v1/status
+GET /api/v1/cameras
+GET /api/v1/camera/{left|right}/status
+GET /api/v1/camera/{left|right}/snapshot.jpg?view={raw|overlay}
+GET /api/v1/camera/{left|right}/mjpeg?view={raw|overlay}
+```
+
+访问 `http://<BOARD_IP>:8080/` 可同时看左右，切换 raw/overlay，并查看 active/cached/offline、帧龄、风险、推理 FPS、E2E 间隔、模型、后端、CPU、RSS 和温度。未激活侧显示最近缓存帧。`--disable-video-gateway` 完全关闭它；`--access-token` 只适合可信局域网基线，公网仍需反向代理、HTTPS、认证和防火墙。视频不走 BLE。
+
+### 安装外参与断线恢复
+
+左右标定 JSON 都必须包含 `camera_matrix`、`dist_coeffs`、图像尺寸、相机高度/pitch、`mount_yaw_deg`、`mount_roll_deg`、`mount_x_m`、`mount_z_m`、`distance_scale`、`calibrated` 和 `calibration_version`。背包坐标定义为 x 向佩戴者右侧为正、z 向背包正后方为正；左相机 `mount_x_m < 0`，右相机 `mount_x_m > 0`，正 yaw 朝 x 正方向。像素地面点先转入背包坐标，再进入 TrackState/CPA/corridor。`--calibration-mode production` 拒绝 `calibrated=false`，diagnostic 仅警告。
+
+运行时一侧 STREAMON/DQBUF/首帧失败会进入 `READ_FAILURE -> REOPEN_WAIT -> REOPENING -> RECOVERED/ONLINE`，关闭该侧 fd 和 mmap，另一侧继续。有限指数退避由 `--camera-reconnect-*` 控制；断开超过 `--tracker-reset-after-disconnect-s` 时只重置对应侧 tracker/TrackState/stabilizer。switch CSV 记录断开、重开、恢复、恢复帧和 tracker reset；软件无法知道物理拔线的精确瞬间时，`offline_detect_latency_ms` 保持空值。
+
+### 板端依赖和当前边界
+
+```sh
+sudo sh /root/smartbag/board-deploy/install-board-cpu-deps.sh
+sh /root/smartbag/board-deploy/check-runtime-deps.sh
+# 仅在已有经 SHA256/ABI 核对的 cp310 linux_aarch64 wheelhouse 时：
+sudo sh /root/smartbag/board-deploy/install-board-deps-offline.sh /path/to/wheelhouse
+```
+
+不要直接在资源受限板上盲装最新版 Ultralytics。系统 APT 可提供 OpenCV/NumPy；torch、torchvision、Ultralytics 和 lap 必须以匹配 Python 3.10/aarch64 的离线 wheel 验证。`Ss928OmBackend` 仍因通用内存帧 ACL API、配套头文件和已核对的预处理/输出定义不足而 BLOCKED；OpenVINO 不是 SS928 NPU。
+
+### 微信小程序和 session
+
+小程序双摄页从本地 storage 读取板端地址，不写死 IP。每侧最多一个 snapshot 请求，图片完成后再调度下一次；暂停或页面隐藏时停止请求，恢复后重连，失败时指数退避。可切换 raw/overlay 和单侧实时查看；聚焦一侧时另一侧降低刷新。`wx.previewImage` 不作为实时视频实现。微信真机、AppID、HTTPS 和合法域名必须另做真机验证。
+
+原始 session 在 `08_media/alternating_camera_runs/`（PC）或 `/var/log/smartbag/alternating-camera-runs/`（板端），包括 `session.json`、四份 CSV、错误日志和 summary。逐帧 risk CSV 正式默认关闭；定时清理只删除非活动旧 session。大型原始数据不提交 Git；可提交的匿名摘要在 `07_tests/results/alternating_camera/latest-summary.md`。2026-07-19 的 30 分钟纯采集已通过，但完整 E2E、板端模型、带框 overlay、PWM/BLE 和修复后长测仍未通过；正式默认保持 `fixed_dual_process` 且 `alternating_camera.enabled=false`。

@@ -13,7 +13,13 @@ from pathlib import Path
 from alert_output import AlertJsonlEmitter
 from camera_runtime import LatestOpenCvCameraCapture
 from camera_source import FfmpegCameraConfig, FfmpegMjpegCameraCapture
-from calibration import CameraCalibration, calibration_from_mapping, estimate_ground_point_from_bbox, load_calibration_file
+from calibration import (
+    CameraCalibration,
+    CameraExtrinsics,
+    calibration_from_mapping,
+    estimate_ground_point_from_bbox,
+    load_calibration_file,
+)
 from detector_backend import DetectorBackend, Ss928OmBackend, UltralyticsBackend
 from risk_model import MotionPattern, RiskAssessment, RiskLevel, RiskModel, corridor_zone_name, motion_pattern_name, warning_action_for_level
 from vision_core import DetectionObservation, StableTrackIdManager, TrackState, TrackedObject, compute_observation_quality, format_overlay_label, parse_target_classes, should_keep_class
@@ -813,6 +819,10 @@ class RiskCsvLogger:
         "bbox_truncated_edges",
         "x_m",
         "z_m",
+        "camera_x_m",
+        "camera_z_m",
+        "backpack_x_m",
+        "backpack_z_m",
         "vx_mps",
         "vz_mps",
         "speed_mps",
@@ -862,6 +872,18 @@ class RiskCsvLogger:
         "stabilizer_pending_count",
         "stabilizer_required_frames",
         "stabilizer_reason",
+        "observation_interval_s",
+        "risk_candidate_duration_s",
+        "path_conflict_duration_s",
+        "time_since_last_observation_s",
+        "effective_side_fps",
+        "slice_id",
+        "pending_slice_count",
+        "required_slices",
+        "last_pending_slice_id",
+        "confirmed_across_slices",
+        "minimum_confirmation_interval_s",
+        "fast_path_reason",
     ]
 
     def __init__(self, path: str | None) -> None:
@@ -890,6 +912,7 @@ class RiskCsvLogger:
             display = display_risk_by_track_id.get(target.track_id)
             debug = stabilizer_debug_by_track_id.get(target.track_id)
             point = target.ground_point
+            camera_point = getattr(target, "camera_ground_point", None)
             self._writer.writerow(
                 {
                     "frame_index": frame_index,
@@ -912,6 +935,14 @@ class RiskCsvLogger:
                     "bbox_truncated_edges": getattr(target, "bbox_truncated_edges", ""),
                     "x_m": _format_optional_float(point.x_m if point is not None else None),
                     "z_m": _format_optional_float(point.z_m if point is not None else None),
+                    "camera_x_m": _format_optional_float(
+                        camera_point.x_m if camera_point is not None else None
+                    ),
+                    "camera_z_m": _format_optional_float(
+                        camera_point.z_m if camera_point is not None else None
+                    ),
+                    "backpack_x_m": _format_optional_float(point.x_m if point is not None else None),
+                    "backpack_z_m": _format_optional_float(point.z_m if point is not None else None),
                     "vx_mps": f"{target.vx_mps:.3f}",
                     "vz_mps": f"{target.vz_mps:.3f}",
                     "speed_mps": f"{target.speed_mps:.3f}",
@@ -961,6 +992,28 @@ class RiskCsvLogger:
                     "stabilizer_pending_count": str(debug.pending_count) if debug else "",
                     "stabilizer_required_frames": str(debug.required_frames) if debug else "",
                     "stabilizer_reason": debug.reason if debug else "",
+                    "observation_interval_s": _format_optional_float(debug.observation_interval_s if debug else None),
+                    "risk_candidate_duration_s": _format_optional_float(debug.risk_candidate_duration_s if debug else None),
+                    "path_conflict_duration_s": _format_optional_float(debug.path_conflict_duration_s if debug else None),
+                    "time_since_last_observation_s": _format_optional_float(
+                        debug.time_since_last_observation_s if debug else None
+                    ),
+                    "effective_side_fps": _format_optional_float(debug.effective_side_fps if debug else None),
+                    "slice_id": str(debug.slice_id) if debug and debug.slice_id is not None else "",
+                    "pending_slice_count": str(debug.pending_slice_count) if debug else "",
+                    "required_slices": str(debug.required_slices) if debug else "",
+                    "last_pending_slice_id": (
+                        str(debug.last_pending_slice_id)
+                        if debug and debug.last_pending_slice_id is not None
+                        else ""
+                    ),
+                    "confirmed_across_slices": (
+                        "1" if debug and debug.confirmed_across_slices else "0" if debug else ""
+                    ),
+                    "minimum_confirmation_interval_s": _format_optional_float(
+                        debug.minimum_confirmation_interval_s if debug else None
+                    ),
+                    "fast_path_reason": debug.fast_path_reason if debug else "",
                 }
             )
 
@@ -1002,6 +1055,7 @@ def result_to_observations(
     target_classes: set[str] | None,
     distance_mode: str,
     size_weight: float,
+    extrinsics: CameraExtrinsics | None = None,
 ) -> list[DetectionObservation]:
     boxes = getattr(result, "boxes", None)
     if boxes is None or len(boxes) == 0:
@@ -1027,7 +1081,12 @@ def result_to_observations(
             mode=distance_mode,
             size_weight=size_weight,
         )
-        ground_point = distance_estimate.point if distance_estimate is not None else None
+        camera_ground_point = distance_estimate.point if distance_estimate is not None else None
+        ground_point = (
+            extrinsics.camera_to_backpack(camera_ground_point)
+            if extrinsics is not None and camera_ground_point is not None
+            else camera_ground_point
+        )
         distance_source = distance_estimate.source if distance_estimate is not None else "unknown"
         distance_confidence = distance_estimate.distance_confidence if distance_estimate is not None else 0.0
         quality_flags = distance_estimate.quality_flags if distance_estimate is not None else ("no_distance",)
@@ -1054,6 +1113,7 @@ def result_to_observations(
                 size_confidence=distance_estimate.size_confidence if distance_estimate is not None else 0.0,
                 quality_flags=quality_flags,
                 observation_quality=observation_quality,
+                camera_ground_point=camera_ground_point,
             )
         )
 
@@ -1130,6 +1190,16 @@ class RiskWarningStabilizerConfig:
     low_conflict_consistency_threshold: float = 0.50
     low_approach_consistency_threshold: float = 0.50
     low_conflict_extra_frames: int = 2
+    min_confirm_duration_attention_s: float = 0.0
+    min_confirm_duration_caution_s: float = 0.0
+    min_confirm_duration_danger_s: float = 0.0
+    min_confirm_duration_emergency_s: float = 0.0
+    low_quality_extra_duration_s: float = 0.0
+    min_confirm_slices_caution: int = 1
+    min_confirm_slices_danger: int = 1
+    min_confirm_slices_emergency: int = 1
+    minimum_confirmation_interval_s: float = 0.0
+    allow_emergency_single_slice_fast_path: bool = True
 
 
 @dataclass(frozen=True)
@@ -1138,6 +1208,18 @@ class StabilizerDebugInfo:
     pending_count: int = 0
     required_frames: int = 0
     reason: str = "none"
+    observation_interval_s: float = 0.0
+    risk_candidate_duration_s: float = 0.0
+    path_conflict_duration_s: float = 0.0
+    time_since_last_observation_s: float = 0.0
+    effective_side_fps: float = 0.0
+    slice_id: int | None = None
+    pending_slice_count: int = 0
+    required_slices: int = 1
+    last_pending_slice_id: int | None = None
+    confirmed_across_slices: bool = False
+    minimum_confirmation_interval_s: float = 0.0
+    fast_path_reason: str = ""
 
 
 @dataclass
@@ -1147,6 +1229,11 @@ class _RiskDisplayState:
     pending_level: RiskLevel = RiskLevel.SAFE
     pending_count: int = 0
     downgrade_count: int = 0
+    pending_started_s: float | None = None
+    path_conflict_started_s: float | None = None
+    last_observation_s: float | None = None
+    pending_slice_count: int = 0
+    last_pending_slice_id: int | None = None
 
 
 class RiskWarningStabilizer:
@@ -1161,13 +1248,18 @@ class RiskWarningStabilizer:
         self.config = config or RiskWarningStabilizerConfig()
         self._state_by_track_id: dict[int, _RiskDisplayState] = {}
         self._debug_by_track_id: dict[int, StabilizerDebugInfo] = {}
+        self._single_frame_jump_suppressed_pending = 0
 
     def stabilize(
         self,
         risk_by_track_id: dict[int, RiskAssessment],
         tracked_objects_by_id: dict[int, object] | None = None,
+        observation_s_by_track_id: dict[int, float] | None = None,
+        effective_side_fps: float = 0.0,
+        slice_id: int | None = None,
     ) -> dict[int, RiskAssessment]:
         tracked_objects_by_id = tracked_objects_by_id or {}
+        observation_s_by_track_id = observation_s_by_track_id or {}
         stabilized: dict[int, RiskAssessment] = {}
         active_track_ids = set(risk_by_track_id)
 
@@ -1175,18 +1267,62 @@ class RiskWarningStabilizer:
             state = self._state_by_track_id.setdefault(track_id, _RiskDisplayState())
             target = tracked_objects_by_id.get(track_id)
             observation_quality = float(getattr(target, "observation_quality", 1.0))
+            observation_s = float(
+                observation_s_by_track_id.get(
+                    track_id,
+                    getattr(target, "timestamp_s", time.monotonic()),
+                )
+            )
+            observation_interval_s = (
+                max(0.0, observation_s - state.last_observation_s)
+                if state.last_observation_s is not None
+                else 0.0
+            )
+            if assessment.path_conflict:
+                if state.path_conflict_started_s is None:
+                    state.path_conflict_started_s = observation_s
+            else:
+                state.path_conflict_started_s = None
+            path_conflict_duration_s = (
+                max(0.0, observation_s - state.path_conflict_started_s)
+                if state.path_conflict_started_s is not None
+                else 0.0
+            )
+            state.last_observation_s = observation_s
 
-            if self._is_fast_path(assessment, target):
+            if (
+                state.pending_count == 1
+                and state.pending_level >= RiskLevel.CAUTION
+                and state.pending_level > state.displayed_level
+                and assessment.level <= state.displayed_level
+            ):
+                self._single_frame_jump_suppressed_pending += 1
+
+            fast_path_reason = self._fast_path_reason(assessment, target)
+            if fast_path_reason and self.config.allow_emergency_single_slice_fast_path:
                 state.displayed_level = assessment.level
                 state.displayed_score = assessment.score
                 state.pending_level = assessment.level
                 state.pending_count = 0
+                state.pending_slice_count = 0
+                state.last_pending_slice_id = slice_id
                 state.downgrade_count = 0
                 self._debug_by_track_id[track_id] = StabilizerDebugInfo(
                     pending_level=assessment.level,
                     pending_count=0,
                     required_frames=1,
                     reason="fast_path",
+                    observation_interval_s=observation_interval_s,
+                    path_conflict_duration_s=path_conflict_duration_s,
+                    time_since_last_observation_s=observation_interval_s,
+                    effective_side_fps=effective_side_fps,
+                    slice_id=slice_id,
+                    pending_slice_count=0,
+                    required_slices=1,
+                    last_pending_slice_id=slice_id,
+                    confirmed_across_slices=True,
+                    minimum_confirmation_interval_s=self.config.minimum_confirmation_interval_s,
+                    fast_path_reason=fast_path_reason,
                 )
                 stabilized[track_id] = self._assessment_with_display_level(
                     assessment,
@@ -1196,14 +1332,33 @@ class RiskWarningStabilizer:
                 continue
 
             if assessment.level > state.displayed_level:
-                display, debug = self._handle_upgrade(state, assessment, observation_quality, target)
+                display, debug = self._handle_upgrade(
+                    state,
+                    assessment,
+                    observation_quality,
+                    target,
+                    observation_s,
+                    observation_interval_s,
+                    path_conflict_duration_s,
+                    effective_side_fps,
+                    slice_id,
+                )
             elif assessment.level < state.displayed_level:
-                display, debug = self._handle_downgrade(state, assessment)
+                display, debug = self._handle_downgrade(
+                    state,
+                    assessment,
+                    observation_interval_s,
+                    path_conflict_duration_s,
+                    effective_side_fps,
+                )
             else:
                 state.displayed_level = assessment.level
                 state.displayed_score = assessment.score
                 state.pending_level = assessment.level
                 state.pending_count = 0
+                state.pending_slice_count = 0
+                state.last_pending_slice_id = slice_id
+                state.pending_started_s = None
                 state.downgrade_count = 0
                 display = self._assessment_with_display_level(assessment, assessment.level, assessment.score)
                 debug = StabilizerDebugInfo(
@@ -1211,6 +1366,14 @@ class RiskWarningStabilizer:
                     pending_count=0,
                     required_frames=0,
                     reason="same_level",
+                    observation_interval_s=observation_interval_s,
+                    path_conflict_duration_s=path_conflict_duration_s,
+                    time_since_last_observation_s=observation_interval_s,
+                    effective_side_fps=effective_side_fps,
+                    slice_id=slice_id,
+                    last_pending_slice_id=slice_id,
+                    confirmed_across_slices=True,
+                    minimum_confirmation_interval_s=self.config.minimum_confirmation_interval_s,
                 )
 
             self._debug_by_track_id[track_id] = debug
@@ -1218,6 +1381,13 @@ class RiskWarningStabilizer:
 
         for track_id in list(self._state_by_track_id):
             if track_id not in active_track_ids:
+                state = self._state_by_track_id[track_id]
+                if (
+                    state.pending_count == 1
+                    and state.pending_level >= RiskLevel.CAUTION
+                    and state.pending_level > state.displayed_level
+                ):
+                    self._single_frame_jump_suppressed_pending += 1
                 del self._state_by_track_id[track_id]
                 self._debug_by_track_id.pop(track_id, None)
 
@@ -1226,22 +1396,52 @@ class RiskWarningStabilizer:
     def debug_info_by_track_id(self) -> dict[int, StabilizerDebugInfo]:
         return dict(self._debug_by_track_id)
 
+    def consume_single_frame_jump_suppressed_count(self) -> int:
+        count = self._single_frame_jump_suppressed_pending
+        self._single_frame_jump_suppressed_pending = 0
+        return count
+
     def _handle_upgrade(
         self,
         state: _RiskDisplayState,
         assessment: RiskAssessment,
         observation_quality: float,
         target,
+        observation_s: float,
+        observation_interval_s: float,
+        path_conflict_duration_s: float,
+        effective_side_fps: float,
+        slice_id: int | None,
     ) -> tuple[RiskAssessment, StabilizerDebugInfo]:
         if state.pending_level != assessment.level:
             state.pending_level = assessment.level
             state.pending_count = 1
+            state.pending_started_s = observation_s
+            state.pending_slice_count = 1
+            state.last_pending_slice_id = slice_id
         else:
             state.pending_count += 1
+            if slice_id is None:
+                state.pending_slice_count = state.pending_count
+            elif state.last_pending_slice_id != slice_id:
+                state.pending_slice_count += 1
+                state.last_pending_slice_id = slice_id
         state.downgrade_count = 0
 
         required_frames = self._required_confirm_frames(assessment, observation_quality, target)
-        if state.pending_count >= required_frames:
+        required_slices = self._required_confirm_slices(assessment)
+        pending_started_s = observation_s if state.pending_started_s is None else state.pending_started_s
+        candidate_duration_s = max(0.0, observation_s - pending_started_s)
+        required_duration_s = max(
+            self._required_confirm_duration_s(assessment, observation_quality),
+            self.config.minimum_confirmation_interval_s if required_slices > 1 else 0.0,
+        )
+        confirmed_across_slices = state.pending_slice_count >= required_slices
+        if (
+            state.pending_count >= required_frames
+            and confirmed_across_slices
+            and candidate_duration_s >= required_duration_s
+        ):
             state.displayed_level = assessment.level
             state.displayed_score = assessment.score
             return self._assessment_with_display_level(assessment, assessment.level, assessment.score), StabilizerDebugInfo(
@@ -1249,6 +1449,17 @@ class RiskWarningStabilizer:
                 pending_count=state.pending_count,
                 required_frames=required_frames,
                 reason="upgraded",
+                observation_interval_s=observation_interval_s,
+                risk_candidate_duration_s=candidate_duration_s,
+                path_conflict_duration_s=path_conflict_duration_s,
+                time_since_last_observation_s=observation_interval_s,
+                effective_side_fps=effective_side_fps,
+                slice_id=slice_id,
+                pending_slice_count=state.pending_slice_count,
+                required_slices=required_slices,
+                last_pending_slice_id=state.last_pending_slice_id,
+                confirmed_across_slices=confirmed_across_slices,
+                minimum_confirmation_interval_s=self.config.minimum_confirmation_interval_s,
             )
 
         return self._display_assessment_from_state(assessment, state), StabilizerDebugInfo(
@@ -1256,11 +1467,32 @@ class RiskWarningStabilizer:
             pending_count=state.pending_count,
             required_frames=required_frames,
             reason="waiting_confirmation",
+            observation_interval_s=observation_interval_s,
+            risk_candidate_duration_s=candidate_duration_s,
+            path_conflict_duration_s=path_conflict_duration_s,
+            time_since_last_observation_s=observation_interval_s,
+            effective_side_fps=effective_side_fps,
+            slice_id=slice_id,
+            pending_slice_count=state.pending_slice_count,
+            required_slices=required_slices,
+            last_pending_slice_id=state.last_pending_slice_id,
+            confirmed_across_slices=confirmed_across_slices,
+            minimum_confirmation_interval_s=self.config.minimum_confirmation_interval_s,
         )
 
-    def _handle_downgrade(self, state: _RiskDisplayState, assessment: RiskAssessment) -> tuple[RiskAssessment, StabilizerDebugInfo]:
+    def _handle_downgrade(
+        self,
+        state: _RiskDisplayState,
+        assessment: RiskAssessment,
+        observation_interval_s: float,
+        path_conflict_duration_s: float,
+        effective_side_fps: float,
+    ) -> tuple[RiskAssessment, StabilizerDebugInfo]:
         state.pending_level = assessment.level
         state.pending_count = 0
+        state.pending_slice_count = 0
+        state.last_pending_slice_id = None
+        state.pending_started_s = None
         state.downgrade_count += 1
         if state.downgrade_count >= self.config.downgrade_hold_frames:
             state.downgrade_count = 0
@@ -1274,6 +1506,10 @@ class RiskWarningStabilizer:
             pending_count=state.downgrade_count,
             required_frames=self.config.downgrade_hold_frames,
             reason=reason,
+            observation_interval_s=observation_interval_s,
+            path_conflict_duration_s=path_conflict_duration_s,
+            time_since_last_observation_s=observation_interval_s,
+            effective_side_fps=effective_side_fps,
         )
 
     def _required_confirm_frames(self, assessment: RiskAssessment, observation_quality: float, target=None) -> int:
@@ -1301,7 +1537,32 @@ class RiskWarningStabilizer:
                 frames += self.config.low_conflict_extra_frames
         return max(1, frames)
 
+    def _required_confirm_duration_s(self, assessment: RiskAssessment, observation_quality: float) -> float:
+        durations = {
+            RiskLevel.SAFE: 0.0,
+            RiskLevel.ATTENTION: self.config.min_confirm_duration_attention_s,
+            RiskLevel.CAUTION: self.config.min_confirm_duration_caution_s,
+            RiskLevel.DANGER: self.config.min_confirm_duration_danger_s,
+            RiskLevel.EMERGENCY: self.config.min_confirm_duration_emergency_s,
+        }
+        duration_s = max(0.0, float(durations[assessment.level]))
+        if assessment.level > RiskLevel.ATTENTION and observation_quality < self.config.low_quality_threshold:
+            duration_s += max(0.0, self.config.low_quality_extra_duration_s)
+        return duration_s
+
+    def _required_confirm_slices(self, assessment: RiskAssessment) -> int:
+        if assessment.level == RiskLevel.CAUTION:
+            return max(1, self.config.min_confirm_slices_caution)
+        if assessment.level == RiskLevel.DANGER:
+            return max(1, self.config.min_confirm_slices_danger)
+        if assessment.level >= RiskLevel.EMERGENCY:
+            return max(1, self.config.min_confirm_slices_emergency)
+        return 1
+
     def _is_fast_path(self, assessment: RiskAssessment, target) -> bool:
+        return bool(self._fast_path_reason(assessment, target))
+
+    def _fast_path_reason(self, assessment: RiskAssessment, target) -> str:
         distance_m = getattr(target, "distance_m", None)
         observation_quality = float(getattr(target, "observation_quality", 0.0))
         inside_personal_space = distance_m is not None and distance_m <= self.config.emergency_fast_path_distance_m
@@ -1311,26 +1572,27 @@ class RiskWarningStabilizer:
             and float(getattr(target, "approach_consistency", 0.0)) >= self.config.low_approach_consistency_threshold
             and float(getattr(target, "path_conflict_consistency", 0.0)) >= self.config.low_conflict_consistency_threshold
         )
-        return (
-            assessment.level >= RiskLevel.EMERGENCY
-            and (
-                inside_personal_space
-                or (
-                    stable_conflict
-                    and high_quality_emergency
-                    and assessment.ttc_s is not None
-                    and assessment.ttc_s <= self.config.emergency_fast_path_ttc_s
-                )
-                or (
-                    stable_conflict
-                    and high_quality_emergency
-                    and assessment.cpa_time_s is not None
-                    and assessment.cpa_distance_m is not None
-                    and assessment.cpa_time_s <= self.config.emergency_fast_path_ttc_s
-                    and assessment.cpa_distance_m <= self.config.emergency_fast_path_distance_m
-                )
-            )
-        )
+        if assessment.level < RiskLevel.EMERGENCY:
+            return ""
+        if inside_personal_space:
+            return "inside_personal_space"
+        if (
+            stable_conflict
+            and high_quality_emergency
+            and assessment.ttc_s is not None
+            and assessment.ttc_s <= self.config.emergency_fast_path_ttc_s
+        ):
+            return "high_quality_extreme_ttc"
+        if (
+            stable_conflict
+            and high_quality_emergency
+            and assessment.cpa_time_s is not None
+            and assessment.cpa_distance_m is not None
+            and assessment.cpa_time_s <= self.config.emergency_fast_path_ttc_s
+            and assessment.cpa_distance_m <= self.config.emergency_fast_path_distance_m
+        ):
+            return "high_quality_extreme_cpa"
+        return ""
 
     @staticmethod
     def _assessment_with_display_level(

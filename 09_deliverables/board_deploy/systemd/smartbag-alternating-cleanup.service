@@ -1,0 +1,8 @@
+[Unit]
+Description=Prune bounded SS928 SmartBag alternating-camera sessions
+
+[Service]
+Type=oneshot
+Environment=MAX_SESSION_COUNT=10
+Environment=MAX_SESSION_SIZE_MB=1000
+ExecStart=/root/smartbag/board-deploy/cleanup-alternating-runs.sh

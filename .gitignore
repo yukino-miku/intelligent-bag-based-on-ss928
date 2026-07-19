@@ -1,6 +1,7 @@
 # User-requested exclusions
 08_media/
 10_archive/
+/08_media/alternating_camera_runs/
 
 # Video/test capture data
 *.mp4

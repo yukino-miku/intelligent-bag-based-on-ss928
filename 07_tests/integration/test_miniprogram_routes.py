@@ -40,6 +40,18 @@ class MiniProgramRouteTest(unittest.TestCase):
         self.assertIn("smartbagAlertHistory", monitor)
         self.assertIn("wx.removeStorageSync", monitor)
 
+    def test_camera_page_uses_completion_driven_refresh_and_lifecycle_guards(self) -> None:
+        camera_page = (MINI / "pages" / "cameras" / "index.js").read_text(encoding="utf-8")
+
+        self.assertNotIn("setInterval", camera_page)
+        self.assertIn("snapshotInFlight", camera_page)
+        self.assertIn("snapshotGeneration", camera_page)
+        self.assertIn("onSnapshotLoad", camera_page)
+        self.assertIn("onSnapshotError", camera_page)
+        self.assertIn("onHide()", camera_page)
+        self.assertIn("task.abort", camera_page)
+        self.assertIn("focusPenalty", camera_page)
+
 
 if __name__ == "__main__":
     unittest.main()

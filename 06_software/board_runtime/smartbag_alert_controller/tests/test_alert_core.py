@@ -14,7 +14,9 @@ from alert_core import (  # noqa: E402
     AlertEvent,
     AlertState,
     duties_for_levels,
+    event_is_stale,
     parse_alert_command,
+    parse_vision_alert_jsonl,
 )
 from smartbag_alert_controller import best_effort_stop_all  # noqa: E402
 
@@ -78,6 +80,36 @@ class AlertCoreTest(unittest.TestCase):
         best_effort_stop_all(pwm)
 
         pwm.stop_all.assert_called_once_with()
+
+    def test_heartbeat_refreshes_pwm_without_replaying_audio(self) -> None:
+        state = AlertState(event_timeout_s=1.0, min_audio_interval_s=0.0)
+        changed = state.apply_event(AlertEvent(side="left", level=3, event_kind="state_change"), now=10.0)
+        heartbeat = state.apply_event(AlertEvent(side="left", level=3, event_kind="heartbeat"), now=10.8)
+
+        self.assertEqual("L3", changed.audio_clip)
+        self.assertIsNone(heartbeat.audio_clip)
+        self.assertFalse(state.expire(now=11.5).expired_sides)
+
+    def test_heartbeat_cannot_create_or_change_a_warning_level(self) -> None:
+        state = AlertState(event_timeout_s=1.0)
+
+        ignored = state.apply_event(AlertEvent(side="right", level=4, event_kind="heartbeat"), now=10.0)
+
+        self.assertEqual(0, ignored.levels["right"])
+        self.assertEqual(0, ignored.duties_ns["right_1"])
+        self.assertNotIn("right", state.last_event_mono_by_side)
+
+    def test_parser_preserves_event_kind_and_observation_age(self) -> None:
+        event = parse_vision_alert_jsonl(
+            '{"type":"vision_alert","side":"right","level":2,'
+            '"event_kind":"heartbeat","ts":10.0,"observation_age_ms":250.0}'
+        )
+
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual("heartbeat", event.event_kind)
+        self.assertEqual(250.0, event.observation_age_ms)
+        self.assertTrue(event_is_stale(event, now_s=10.1, max_age_s=0.2))
 
 
 if __name__ == "__main__":

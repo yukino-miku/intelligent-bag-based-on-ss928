@@ -1,0 +1,8 @@
+# Offline wheel target for SS928 Ubuntu 22.04 aarch64 / CPython 3.10.
+# Do not install this file from public PyPI without first verifying wheel ABI and hashes.
+numpy==1.26.4
+opencv-python-headless==4.10.0.84
+torch==2.2.2
+torchvision==0.17.2
+ultralytics==8.3.0
+lap==0.5.12

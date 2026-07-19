@@ -1,0 +1,3 @@
+# The board NPU runtime is supplied by /opt/lib/npu, not PyPI.
+# NumPy is retained for preprocessing/output parsing once a generic ACL backend exists.
+numpy==1.21.5

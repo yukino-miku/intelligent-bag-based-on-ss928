@@ -139,3 +139,97 @@ sudo sh uninstall.sh
 ```
 
 卸载不删除 `/etc/smartbag` 和 `/var/lib/smartbag`。BMI270 I2C blob、模型、真实标定和设备身份信息由用户合法提供。音频默认关闭。
+
+## 11. 实验性交替双摄模式
+
+当两台相机位于同一 USB 2.0 Hub、第二路 `VIDIOC_STREAMON` 返回 `ENOSPC` 时，可测试单模型交替模式。它任意时刻只让一个摄像头 STREAMON，未激活侧显示缓存帧，不等同于同步实时双摄，也不适合作为最终高安全等级方案。
+
+先停止正式服务并运行无模型矩阵：
+
+```sh
+sudo systemctl stop smartbag.target smartbag-alternating-vision.service
+sudo env \
+  LEFT_DEVICE=/dev/v4l/by-path/LEFT-video-index0 \
+  RIGHT_DEVICE=/dev/v4l/by-path/RIGHT-video-index0 \
+  DURATION_S=120 \
+  sh /root/smartbag/board-deploy/alternating-experiment-matrix.sh
+sh /root/smartbag/board-deploy/alternating-report.sh
+```
+
+无模型缓存预览可直接追加参数：
+
+```sh
+sudo env LEFT_DEVICE=/dev/v4l/by-path/LEFT-video-index0 \
+  RIGHT_DEVICE=/dev/v4l/by-path/RIGHT-video-index0 \
+  DURATION_S=120 \
+  sh /root/smartbag/board-deploy/alternating-test.sh \
+  --runtime-mode stream_only --serve-bind 0.0.0.0 --serve-port 8081
+```
+
+打开 `http://<板端地址>:8081/`；非 active 侧是最后缓存帧，页面会显示帧龄。原始 session 在 `/var/log/smartbag/alternating-camera-runs/<SESSION_ID>/`，包括 `session.json`、`switch-events.csv`、`camera-events.csv`、`performance.csv`、`alerts.csv`、`errors.log` 和 summary。
+
+只有板端视觉依赖和模型已经通过 `check-runtime-deps.sh` 时，才允许配置 C/D：
+
+```json
+{
+  "vision_runtime": {"mode": "alternating_single_model"},
+  "alternating_camera": {
+    "enabled": true,
+    "backend": "v4l2_stream_toggle",
+    "inference_frames_per_slice": 1,
+    "normal_slice_ms": 500,
+    "risk_slice_ms": 700,
+    "minimum_other_side_slice_ms": 250,
+    "max_blind_interval_ms": 1200,
+    "stale_observation_timeout_ms": 1800,
+    "tracker_effective_fps_mode": "effective_side",
+    "min_confirm_slices_caution": 2,
+    "min_confirm_slices_danger": 2,
+    "min_confirm_slices_emergency": 2,
+    "camera_reconnect_enabled": true,
+    "video_gateway_enabled": true,
+    "serve_bind": "0.0.0.0",
+    "serve_port": 8080,
+    "calibration_mode": "production",
+    "risk_priority_enabled": true
+  }
+}
+```
+
+启动、状态、日志和报告：
+
+```sh
+sudo sh /root/smartbag/board-deploy/alternating-start.sh /etc/smartbag/config.json
+sh /root/smartbag/board-deploy/alternating-status.sh
+sh /root/smartbag/board-deploy/alternating-logs.sh -f
+sh /root/smartbag/board-deploy/alternating-report.sh
+```
+
+`smartbag-alternating-vision.service` 与正式 `smartbag-alert.service`、`smartbag-video.service` 互斥。单进程模型只加载一次，但左右 tracker、轨迹、风险、稳定器、标定和 CSV 均独立。风险优先调度只读取稳定后的 haptic 等级，并保留另一侧最小时间片；无新观测不等于 SAFE。heartbeat 只维持 PWM，不进入 BLE 历史；超时、连续切换失败、detector 退出和 SIGTERM 都会清振。
+
+`--inference-frames-per-slice` 默认只选择每片最后一张最新帧，采集到的其余有效帧只计入采集统计，不进入积压队列。`capture_only_max_blind_ms` 是纯 STREAMOFF/STREAMON/首帧指标；`end_to_end_max_gap_ms` 才包含解码、模型、tracker、风险、overlay、JPEG 和下一轮调度，正式验收只看后者。CAUTION 以上普通升级需要跨不同 slice，避免同一 burst 快速满足多帧确认。
+
+交替 detector 自己提供 `http://<BOARD_IP>:8080/`，无需 `smartbag-video.service`。页面同时显示左右 raw/overlay、active/cached/offline、帧龄、推理 FPS、风险和 E2E 间隔。测试接口：
+
+```sh
+curl -f 'http://127.0.0.1:8080/api/v1/camera/left/snapshot.jpg?view=raw' -o /tmp/left-raw.jpg
+curl -f 'http://127.0.0.1:8080/api/v1/camera/right/snapshot.jpg?view=raw' -o /tmp/right-raw.jpg
+curl -f 'http://127.0.0.1:8080/api/v1/camera/left/snapshot.jpg?view=overlay' -o /tmp/left-overlay.jpg
+curl -f 'http://127.0.0.1:8080/api/v1/camera/right/snapshot.jpg?view=overlay' -o /tmp/right-overlay.jpg
+```
+
+raw 复用摄像头 MJPEG，overlay 是视觉完成后重新编码的带框图。只有 C 阶段模型实际运行时，overlay 才能用于验收检测框。客户端断开不会停止 detector，gateway 也不会重开相机。
+
+启动前运行 `alternating-preflight.sh`。它检查实验开关、左右设备不相同且未占用、模型/两份标定、production 外参、依赖、HTTP 端口和 PWM 基础节点。依赖安装见 `install-board-cpu-deps.sh` 和 `install-board-deps-offline.sh`；后者只接受本地 wheelhouse，并打印 wheel SHA256。详细 ABI 和 NPU 阻塞项见 `02_research/ss928-runtime-dependencies.md` 与 `02_research/ss928-om-backend-blockers.md`。
+
+一侧失败后，调度器只关闭并重开该侧；另一侧继续。switch CSV 记录 connection state、disconnect/reconnect 时间、恢复耗时、首个恢复帧耗时和 tracker reset。生成 clear 事件不等于 PWM 已经清零；`camera_offline_clear_verified` 只有 controller/PWM 闭环测试有确认时才能是 true，否则保持 null。
+
+`cleanup-alternating-runs.sh` 配合 timer 限制 session 数量和总大小，并在服务运行时跳过最新活动目录。正式配置默认 `risk_csv_enabled=false`；安装脚本写入 `/etc/systemd/journald.conf.d/smartbag.conf`，限制持久 journal 100 MiB、运行时 32 MiB、最长保留 7 天，卸载时会移除该 drop-in。
+
+回退到正式模式：先运行 `alternating-stop.sh`，把配置改回 `vision_runtime.mode=fixed_dual_process` 和 `alternating_camera.enabled=false`，再执行 `sudo systemctl start smartbag.target`。紧急停振执行：
+
+```sh
+sudo systemctl stop smartbag-alternating-vision.service smartbag-alert.service smartbag.target
+```
+
+随后用 `fuser /dev/video0 /dev/video2` 确认两路均无占用。30 分钟和 C/D 的真实结果以 `07_tests/results/alternating_camera/latest-summary.md` 为准；只要模型、完整 E2E、PWM、BLE、拔插恢复或完整视觉长测仍有一项未通过，就不得把实验模式设为默认。

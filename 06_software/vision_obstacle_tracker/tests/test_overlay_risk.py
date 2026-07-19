@@ -1,5 +1,12 @@
 from types import SimpleNamespace
+import sys
 import unittest
+from pathlib import Path
+
+
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
 
 from risk_model import CorridorZone, MotionPattern, RiskAssessment, RiskLevel
 from vision_obstacle_tracker import (
@@ -229,6 +236,7 @@ class OverlayRiskTest(unittest.TestCase):
         self.assertEqual(RiskLevel.SAFE, first.level)
         self.assertEqual(RiskLevel.SAFE, jump.level)
         self.assertEqual(RiskLevel.SAFE, recovered.level)
+        self.assertEqual(1, stabilizer.consume_single_frame_jump_suppressed_count())
 
     def test_one_safe_frame_does_not_drop_danger_to_safe_immediately(self) -> None:
         stabilizer = RiskWarningStabilizer(
@@ -242,6 +250,52 @@ class OverlayRiskTest(unittest.TestCase):
 
         self.assertEqual(RiskLevel.DANGER, first_safe_display.level)
         self.assertGreaterEqual(first_safe_display.score, 0.70)
+
+    def test_alternating_mode_can_require_frame_count_and_real_duration(self) -> None:
+        stabilizer = RiskWarningStabilizer(
+            RiskWarningStabilizerConfig(
+                min_confirm_frames_danger=2,
+                min_confirm_duration_danger_s=0.10,
+            )
+        )
+        danger = make_assessment(RiskLevel.DANGER, 0.72)
+        target = make_target(quality=0.95)
+
+        first = stabilizer.stabilize({7: danger}, {7: target}, {7: 1.00}, effective_side_fps=4.0)[7]
+        too_soon = stabilizer.stabilize({7: danger}, {7: target}, {7: 1.05}, effective_side_fps=4.0)[7]
+        confirmed = stabilizer.stabilize({7: danger}, {7: target}, {7: 1.11}, effective_side_fps=4.0)[7]
+
+        self.assertEqual(RiskLevel.SAFE, first.level)
+        self.assertEqual(RiskLevel.SAFE, too_soon.level)
+        self.assertEqual(RiskLevel.DANGER, confirmed.level)
+        debug = stabilizer.debug_info_by_track_id()[7]
+        self.assertAlmostEqual(0.11, debug.risk_candidate_duration_s, places=6)
+        self.assertAlmostEqual(0.06, debug.time_since_last_observation_s, places=6)
+        self.assertEqual(4.0, debug.effective_side_fps)
+
+    def test_danger_confirmation_must_cross_independent_slices(self) -> None:
+        stabilizer = RiskWarningStabilizer(
+            RiskWarningStabilizerConfig(
+                min_confirm_frames_danger=3,
+                min_confirm_slices_danger=2,
+            )
+        )
+        danger = make_assessment(RiskLevel.DANGER, 0.72)
+        target = make_target(quality=0.95)
+
+        for timestamp in (1.00, 1.03, 1.06, 1.09):
+            same_slice = stabilizer.stabilize(
+                {7: danger}, {7: target}, {7: timestamp}, slice_id=10
+            )[7]
+        confirmed = stabilizer.stabilize(
+            {7: danger}, {7: target}, {7: 2.00}, slice_id=12
+        )[7]
+
+        self.assertEqual(RiskLevel.SAFE, same_slice.level)
+        self.assertEqual(RiskLevel.DANGER, confirmed.level)
+        debug = stabilizer.debug_info_by_track_id()[7]
+        self.assertEqual(2, debug.pending_slice_count)
+        self.assertTrue(debug.confirmed_across_slices)
 
 
 if __name__ == "__main__":

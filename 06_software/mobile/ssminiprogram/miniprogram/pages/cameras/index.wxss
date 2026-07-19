@@ -16,7 +16,8 @@
 .camera__heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12rpx; }
 .camera__label { font-size: 30rpx; font-weight: 650; }
 .camera__status { font-size: 24rpx; }
-.camera__status--online { color: #16764a; }
+.camera__status--live,.camera__status--online { color: #16764a; }
+.camera__status--cached { color: #846100; }
 .camera__status--offline { color: #a33b32; }
 .camera__image { width: 100%; aspect-ratio: 16/9; background: #101316; }
 .camera__risk { margin-top: 12rpx; font-weight: 700; }

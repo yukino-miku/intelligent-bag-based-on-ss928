@@ -1,0 +1,22 @@
+[Unit]
+Description=SS928 SmartBag experimental single-model alternating dual-camera controller
+After=local-fs.target dbus.service bluetooth.service
+Wants=bluetooth.service
+Conflicts=smartbag-alert.service smartbag-video.service
+
+[Service]
+Type=simple
+WorkingDirectory=/root/smartbag/vision
+ExecStartPre=/root/smartbag/board-deploy/alternating-preflight.sh /etc/smartbag/config.json
+ExecStart=/usr/bin/python3 /root/smartbag/controller/smartbag_alert_controller.py --config /etc/smartbag/config.json --detector-cwd /root/smartbag/vision --gnss-command "/usr/bin/python3 /root/smartbag/gnss/dx_gp21_tracker.py --config /root/smartbag/gnss/config.ss928_uart4.json --command-stdin --no-ble" --imu-command "/usr/bin/python3 /root/smartbag/imu/bmi270_backpack.py --config /root/smartbag/imu/config.example.json --command-stdin --no-ble"
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=8
+KillMode=control-group
+StandardOutput=journal
+StandardError=journal
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=200
+
+[Install]
+WantedBy=multi-user.target

@@ -14,8 +14,10 @@ if str(CONTROLLER) not in sys.path:
 from alert_core import AlertEvent, AlertState, event_is_stale, parse_vision_alert_jsonl
 from smartbag_alert_controller import (
     DetectorProcess,
+    alternating_detector_command_from_config,
     alert_event_ble_payload,
     detector_commands_from_config,
+    should_publish_alert_history,
     validate_dual_camera_config,
 )
 
@@ -143,6 +145,58 @@ class AlertControllerPipelineTest(unittest.TestCase):
         self.assertIn("--camera-device /dev/video2", right)
         self.assertIn("--side right", right)
         self.assertNotIn("--side left", right)
+
+    def test_alternating_mode_builds_one_complete_detector_command(self) -> None:
+        config = {
+            "paths": {"python": "python3", "vision": "/vision", "model": "/models/yolo.pt"},
+            "vision_runtime": {"mode": "alternating_single_model"},
+            "alternating_camera": {"enabled": True, "normal_slice_ms": 500},
+            "cameras": {
+                "left": {
+                    "camera_device": "/dev/v4l/by-path/left",
+                    "calibration_file": "/etc/smartbag/left.json",
+                    "stream_port": 18081,
+                },
+                "right": {
+                    "camera_device": "/dev/v4l/by-path/right",
+                    "calibration_file": "/etc/smartbag/right.json",
+                    "stream_port": 18082,
+                },
+            },
+        }
+
+        command = alternating_detector_command_from_config(config)
+
+        self.assertIn("alternating_dual_camera_tracker.py", command)
+        self.assertIn("--left-device /dev/v4l/by-path/left", command)
+        self.assertIn("--right-device /dev/v4l/by-path/right", command)
+        self.assertIn("--backend v4l2_stream_toggle", command)
+        self.assertIn("--left-calibration-file /etc/smartbag/left.json", command)
+        self.assertIn("--right-calibration-file /etc/smartbag/right.json", command)
+        self.assertIn("--inference-frames-per-slice 1", command)
+        self.assertIn("--tracker-effective-fps-mode effective_side", command)
+        self.assertIn("--min-confirm-slices-danger 2", command)
+        self.assertIn("--serve-port 8080", command)
+        self.assertIn("--camera-reconnect-attempts 5", command)
+        self.assertNotIn("--risk-log-dir", command)
+        self.assertNotIn("--side", command)
+
+    def test_alternating_config_can_disable_risk_priority(self) -> None:
+        config = {
+            "paths": {"python": "python3", "vision": "/vision", "model": "/models/yolo.pt"},
+            "vision_runtime": {"mode": "alternating_single_model"},
+            "alternating_camera": {"enabled": True, "risk_priority_enabled": False},
+            "cameras": {
+                "left": {"camera_device": "/dev/v4l/by-path/left"},
+                "right": {"camera_device": "/dev/v4l/by-path/right"},
+            },
+        }
+
+        self.assertIn("--disable-risk-priority", alternating_detector_command_from_config(config))
+
+    def test_heartbeat_is_not_mobile_history_but_state_change_is(self) -> None:
+        self.assertFalse(should_publish_alert_history(AlertEvent("left", 2, event_kind="heartbeat")))
+        self.assertTrue(should_publish_alert_history(AlertEvent("left", 2, event_kind="state_change")))
 
     def test_ble_alert_payload_keeps_optional_target_context(self) -> None:
         payload = alert_event_ble_payload(
