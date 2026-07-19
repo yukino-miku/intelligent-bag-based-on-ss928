@@ -166,7 +166,11 @@ def run(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
             result = capture.capture_slice(side)
             recorder.record_switch(result.event)
             for frame in result.frames:
-                recorder.record_frame(frame, active_side=capture.active_side)
+                recorder.record_frame(
+                    frame,
+                    active_side=capture.active_side,
+                    reconnect_count=capture.side_state[frame.side].reconnect_count,
+                )
             if (
                 args.save_snapshots
                 and result.frames

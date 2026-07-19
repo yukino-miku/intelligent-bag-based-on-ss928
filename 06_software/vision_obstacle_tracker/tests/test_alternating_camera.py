@@ -367,13 +367,14 @@ class SessionRecorderTest(unittest.TestCase):
             frame = CapturedFrame("left", b"\xff\xd8x\xff\xd9", 1, 10.1, 10.2, 640, 480, "MJPG")
             recorder.record_frame(frame, active_side="left")
             right_frame = CapturedFrame("right", b"\xff\xd8y\xff\xd9", 2, 10.15, 10.25, 640, 480, "MJPG")
-            recorder.record_frame(right_frame, active_side="right")
+            recorder.record_frame(right_frame, active_side="right", reconnect_count=2)
             next_left = CapturedFrame("left", b"\xff\xd8z\xff\xd9", 3, 11.3, 11.35, 640, 480, "MJPG")
             recorder.record_frame(
                 next_left,
                 active_side="left",
                 end_to_end_observation_gap_ms=1200.0,
                 side_to_side_latency_ms=1150.0,
+                reconnect_count=1,
             )
             recorder.record_alert(
                 {
@@ -420,6 +421,7 @@ class SessionRecorderTest(unittest.TestCase):
             self.assertEqual(1, summary["stale_clear_count"])
             self.assertEqual(1, summary["cross_slice_confirmed_count"])
             self.assertEqual(0, summary["emergency_fast_path_count"])
+            self.assertEqual(3, summary["camera_reconnects"])
             self.assertIsNone(summary["camera_offline_clear_verified"])
             for filename, expected in (
                 ("switch-events.csv", SWITCH_EVENT_FIELDS),

@@ -255,6 +255,7 @@ class AlternatingSessionRecorder:
         self._performance_totals: dict[str, float] = {}
         self._performance_counts: dict[str, int] = {}
         self._performance_maxima: dict[str, float] = {}
+        self.camera_reconnect_counts = {"left": 0, "right": 0}
         self.camera_reconnects = 0
         self.camera_offline_clear_verified: bool | None = None
         self.alert_count = 0
@@ -365,7 +366,11 @@ class AlternatingSessionRecorder:
         if side_to_side_latency_ms is not None:
             other = "right" if frame.side == "left" else "left"
             self.side_to_side_latencies_ms[f"{other}_to_{frame.side}"].append(float(side_to_side_latency_ms))
-        self.camera_reconnects = max(self.camera_reconnects, int(reconnect_count))
+        self.camera_reconnect_counts[frame.side] = max(
+            self.camera_reconnect_counts[frame.side],
+            int(reconnect_count),
+        )
+        self.camera_reconnects = sum(self.camera_reconnect_counts.values())
         timeline_values = timeline.as_dict() if timeline is not None else {}
         self.camera_csv.write(
             {
