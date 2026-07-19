@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import errno
 import time
+from collections import deque
 from dataclasses import asdict, dataclass, field
 from statistics import mean
 from typing import Callable, Protocol
@@ -256,7 +257,7 @@ class AlternatingV4l2Capture:
         self.active_side: str | None = None
         self.last_side: str | None = None
         self.switch_count = 0
-        self.switch_events: list[SwitchEvent] = []
+        self.switch_events: deque[SwitchEvent] = deque(maxlen=20_000)
         self.streamon_failures = 0
         self.streamoff_failures = 0
         self.camera_reopen_failures = 0

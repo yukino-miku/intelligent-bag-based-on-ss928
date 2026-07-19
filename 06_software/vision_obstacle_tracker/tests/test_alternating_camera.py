@@ -3,6 +3,7 @@ import json
 import sys
 import tempfile
 import unittest
+from collections import deque
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import urlopen
@@ -313,6 +314,14 @@ class AlternatingCaptureTest(unittest.TestCase):
         self.assertEqual(1200.0, summary["end_to_end_left_max_gap_ms"])
         self.assertEqual(500.0, summary["left_to_right_p95_latency_ms"])
 
+    def test_observation_gap_history_is_bounded(self) -> None:
+        gaps = ObservationGapTracker(history_limit=2)
+        for index in range(5):
+            gaps.observe("left", float(index))
+
+        self.assertEqual(2, len(gaps.gaps_by_side["left"]))
+        self.assertEqual(2, gaps.gaps_by_side["left"].maxlen)
+
     def test_effective_tracker_buffer_retains_time_without_unbounded_tracks(self) -> None:
         self.assertEqual(2, tracker_buffer_frames(1.0, 30))
         self.assertEqual(30, tracker_buffer_frames(30.0, 30))
@@ -320,6 +329,26 @@ class AlternatingCaptureTest(unittest.TestCase):
 
 
 class SessionRecorderTest(unittest.TestCase):
+    def test_bounded_switch_history_keeps_exact_totals(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            clock = FakeClock(10.0)
+            recorder = AlternatingSessionRecorder(temporary, "bounded-session", clock=clock)
+            recorder.switch_events = deque(maxlen=1)
+            capture, _capture_clock, _shared = build_capture()
+            first = capture.capture_slice("left").event
+            second = capture.capture_slice("right").event
+            capture.close()
+
+            recorder.record_switch(first)
+            recorder.record_switch(second)
+            summary = recorder.finish(acceptance_min_duration_s=0.0)
+            recorder.close()
+
+            self.assertEqual(1, len(recorder.switch_events))
+            self.assertEqual(2, summary["switch_count"])
+            self.assertEqual(2, summary["successful_switches"])
+            self.assertEqual(100.0, summary["switch_success_rate_percent"])
+
     def test_session_files_have_required_headers_and_summary_percentiles(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

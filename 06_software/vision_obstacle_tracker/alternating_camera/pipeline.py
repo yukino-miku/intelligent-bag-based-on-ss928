@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import asdict, dataclass
 
 from .scheduler import CapturedFrame, percentile
@@ -52,14 +53,19 @@ def select_latest_inference_frames(
 class ObservationGapTracker:
     """Measure gaps between frames that actually enter vision processing."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, history_limit: int = 20_000) -> None:
+        if history_limit < 1:
+            raise ValueError("history_limit must be at least 1")
         self._last_capture_by_side: dict[str, float] = {}
         self._last_observed_side: str | None = None
         self._last_observed_capture_s: float | None = None
-        self.gaps_by_side: dict[str, list[float]] = {"left": [], "right": []}
-        self.side_to_side_ms: dict[str, list[float]] = {
-            "left_to_right": [],
-            "right_to_left": [],
+        self.gaps_by_side: dict[str, deque[float]] = {
+            "left": deque(maxlen=history_limit),
+            "right": deque(maxlen=history_limit),
+        }
+        self.side_to_side_ms: dict[str, deque[float]] = {
+            "left_to_right": deque(maxlen=history_limit),
+            "right_to_left": deque(maxlen=history_limit),
         }
 
     def observe(self, side: str, captured_at_s: float) -> dict[str, float | None]:
@@ -91,19 +97,21 @@ class ObservationGapTracker:
         }
 
     def summary(self) -> dict[str, object]:
-        combined = self.gaps_by_side["left"] + self.gaps_by_side["right"]
+        left_gaps = list(self.gaps_by_side["left"])
+        right_gaps = list(self.gaps_by_side["right"])
+        combined = left_gaps + right_gaps
         return {
-            "end_to_end_left_max_gap_ms": self._maximum(self.gaps_by_side["left"]),
-            "end_to_end_right_max_gap_ms": self._maximum(self.gaps_by_side["right"]),
+            "end_to_end_left_max_gap_ms": self._maximum(left_gaps),
+            "end_to_end_right_max_gap_ms": self._maximum(right_gaps),
             "end_to_end_max_gap_ms": self._maximum(combined),
             "end_to_end_p50_gap_ms": self._percentile(combined, 0.50),
             "end_to_end_p95_gap_ms": self._percentile(combined, 0.95),
             "end_to_end_p99_gap_ms": self._percentile(combined, 0.99),
             "left_to_right_p95_latency_ms": self._percentile(
-                self.side_to_side_ms["left_to_right"], 0.95
+                list(self.side_to_side_ms["left_to_right"]), 0.95
             ),
             "right_to_left_p95_latency_ms": self._percentile(
-                self.side_to_side_ms["right_to_left"], 0.95
+                list(self.side_to_side_ms["right_to_left"]), 0.95
             ),
         }
 

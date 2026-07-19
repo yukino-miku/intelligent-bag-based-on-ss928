@@ -8,6 +8,7 @@ import platform
 import shutil
 import subprocess
 import time
+from collections import deque
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -229,13 +230,31 @@ class AlternatingSessionRecorder:
         self.performance_csv = _BufferedCsv(self.session_dir / "performance.csv", PERFORMANCE_FIELDS)
         self.alerts_csv = _BufferedCsv(self.session_dir / "alerts.csv", ALERT_FIELDS)
         self.errors_file = (self.session_dir / "errors.log").open("w", encoding="utf-8")
-        self.switch_events: list[SwitchEvent] = []
-        self.performance_rows: list[dict[str, object]] = []
+        self.switch_events: deque[SwitchEvent] = deque(maxlen=TELEMETRY_WINDOW_SIZE)
+        self.performance_rows: deque[dict[str, object]] = deque(maxlen=PERFORMANCE_WINDOW_SIZE)
+        self.total_switch_count = 0
+        self.successful_switch_count = 0
+        self.switch_error_counts: dict[str, int] = {}
+        self.usb_error_count = 0
+        self.camera_error_count = 0
+        self.blind_interval_sum_ms = {"left": 0.0, "right": 0.0}
+        self.blind_interval_count = {"left": 0, "right": 0}
+        self.blind_interval_max_ms = {"left": 0.0, "right": 0.0}
         self.frame_counts = {"left": 0, "right": 0}
         self.selected_frame_counts = {"left": 0, "right": 0}
         self.skipped_inference_frames = 0
-        self.end_to_end_gaps_ms = {"left": [], "right": []}
-        self.side_to_side_latencies_ms = {"left_to_right": [], "right_to_left": []}
+        self.end_to_end_gaps_ms = {
+            "left": deque(maxlen=TELEMETRY_WINDOW_SIZE),
+            "right": deque(maxlen=TELEMETRY_WINDOW_SIZE),
+        }
+        self.end_to_end_max_ms = {"left": 0.0, "right": 0.0}
+        self.side_to_side_latencies_ms = {
+            "left_to_right": deque(maxlen=TELEMETRY_WINDOW_SIZE),
+            "right_to_left": deque(maxlen=TELEMETRY_WINDOW_SIZE),
+        }
+        self._performance_totals: dict[str, float] = {}
+        self._performance_counts: dict[str, int] = {}
+        self._performance_maxima: dict[str, float] = {}
         self.camera_reconnects = 0
         self.camera_offline_clear_verified: bool | None = None
         self.alert_count = 0
@@ -291,6 +310,23 @@ class AlternatingSessionRecorder:
         row = {"session_id": self.session_id, **event.as_dict()}
         self.switch_csv.write(row)
         self.switch_events.append(event)
+        self.total_switch_count += 1
+        if event.success:
+            self.successful_switch_count += 1
+        else:
+            self.camera_error_count += 1
+        if event.error_type:
+            self.switch_error_counts[event.error_type] = self.switch_error_counts.get(event.error_type, 0) + 1
+            if event.error_type == "enospc" or event.error_type.startswith("oserror_"):
+                self.usb_error_count += 1
+        for side in ("left", "right"):
+            value = getattr(event, f"{side}_blind_interval_ms")
+            if value is None:
+                continue
+            numeric_value = float(value)
+            self.blind_interval_sum_ms[side] += numeric_value
+            self.blind_interval_count[side] += 1
+            self.blind_interval_max_ms[side] = max(self.blind_interval_max_ms[side], numeric_value)
         if not event.success:
             self.error(f"switch {event.switch_index} {event.to_side}: {event.error_type}: {event.error_message}")
 
@@ -323,7 +359,9 @@ class AlternatingSessionRecorder:
         else:
             self.skipped_inference_frames += 1
         if end_to_end_observation_gap_ms is not None:
-            self.end_to_end_gaps_ms[frame.side].append(float(end_to_end_observation_gap_ms))
+            gap_ms = float(end_to_end_observation_gap_ms)
+            self.end_to_end_gaps_ms[frame.side].append(gap_ms)
+            self.end_to_end_max_ms[frame.side] = max(self.end_to_end_max_ms[frame.side], gap_ms)
         if side_to_side_latency_ms is not None:
             other = "right" if frame.side == "left" else "left"
             self.side_to_side_latencies_ms[f"{other}_to_{frame.side}"].append(float(side_to_side_latency_ms))
@@ -438,6 +476,24 @@ class AlternatingSessionRecorder:
         }
         self.performance_csv.write(row)
         self.performance_rows.append(row)
+        for name in (
+            "cpu_percent",
+            "process_rss_mb",
+            "memory_used_mb",
+            "temperature_c",
+            "inference_fps",
+            "jpeg_encode_ms",
+        ):
+            value = row.get(name)
+            if not isinstance(value, (int, float)):
+                continue
+            numeric_value = float(value)
+            self._performance_totals[name] = self._performance_totals.get(name, 0.0) + numeric_value
+            self._performance_counts[name] = self._performance_counts.get(name, 0) + 1
+            self._performance_maxima[name] = max(
+                numeric_value,
+                self._performance_maxima.get(name, numeric_value),
+            )
         return row
 
     def record_alert(self, row: dict[str, object]) -> None:
@@ -468,14 +524,10 @@ class AlternatingSessionRecorder:
             self.fast_path_count += 1
 
     def _usb_error_count(self) -> int:
-        return sum(
-            1
-            for event in self.switch_events
-            if event.error_type == "enospc" or event.error_type.startswith("oserror_")
-        )
+        return self.usb_error_count
 
     def _camera_error_count(self) -> int:
-        return sum(1 for event in self.switch_events if not event.success)
+        return self.camera_error_count
 
     def save_snapshot(self, frame: CapturedFrame, switch_index: int) -> Path:
         path = self.snapshots_dir / f"{switch_index:06d}-{frame.side}.jpg"
@@ -494,7 +546,6 @@ class AlternatingSessionRecorder:
         acceptance_max_blind_interval_ms: float | None = None,
     ) -> dict[str, object]:
         elapsed_s = max(float(self.clock()) - self.started_monotonic_s, 0.0)
-        successful = [event for event in self.switch_events if event.success]
         switch_latencies = [event.streamoff_latency_ms + event.streamon_latency_ms for event in self.switch_events]
         first_frame_latencies = [
             float(event.first_frame_latency_ms)
@@ -509,24 +560,25 @@ class AlternatingSessionRecorder:
             ]
             for side in ("left", "right")
         }
-        success_rate = len(successful) / len(self.switch_events) * 100.0 if self.switch_events else 0.0
-        error_types = [event.error_type for event in self.switch_events if event.error_type]
-        streamon_failures = sum(1 for event in self.switch_events if event.error_type in ("enospc", "streamon_failure"))
-        first_frame_timeouts = sum(1 for event in self.switch_events if event.error_type == "first_frame_timeout")
-        temperatures = [float(row["temperature_c"]) for row in self.performance_rows if isinstance(row.get("temperature_c"), (int, float))]
-        cpu_values = [float(row["cpu_percent"]) for row in self.performance_rows]
-        rss_values = [float(row["process_rss_mb"]) for row in self.performance_rows]
-        memory_values = [float(row["memory_used_mb"]) for row in self.performance_rows]
-        inference_fps_values = [float(row["inference_fps"]) for row in self.performance_rows]
-        jpeg_encode_values = [float(row["jpeg_encode_ms"]) for row in self.performance_rows]
-        maximum_blind = max((value for values in blind_by_side.values() for value in values), default=0.0)
-        end_to_end_combined = self.end_to_end_gaps_ms["left"] + self.end_to_end_gaps_ms["right"]
-        end_to_end_maximum = max(end_to_end_combined, default=0.0)
+        success_rate = (
+            self.successful_switch_count / self.total_switch_count * 100.0
+            if self.total_switch_count
+            else 0.0
+        )
+        streamon_failures = self.switch_error_counts.get("enospc", 0) + self.switch_error_counts.get(
+            "streamon_failure", 0
+        )
+        first_frame_timeouts = self.switch_error_counts.get("first_frame_timeout", 0)
+        maximum_blind = max(self.blind_interval_max_ms.values(), default=0.0)
+        end_to_end_combined = list(self.end_to_end_gaps_ms["left"]) + list(
+            self.end_to_end_gaps_ms["right"]
+        )
+        end_to_end_maximum = max(self.end_to_end_max_ms.values(), default=0.0)
         acceptance_gap = end_to_end_maximum if end_to_end_combined else maximum_blind
         acceptance_gap_metric = (
             "end_to_end_observation_gap_ms" if end_to_end_combined else "capture_switch_blind_interval_ms"
         )
-        has_enospc = "enospc" in error_types
+        has_enospc = self.switch_error_counts.get("enospc", 0) > 0
         acceptance_met = (
             elapsed_s >= acceptance_min_duration_s
             and success_rate >= 99.0
@@ -542,11 +594,11 @@ class AlternatingSessionRecorder:
         summary = {
             "session_id": self.session_id,
             "duration_s": round(elapsed_s, 3),
-            "switch_count": len(self.switch_events),
-            "successful_switches": len(successful),
+            "switch_count": self.total_switch_count,
+            "successful_switches": self.successful_switch_count,
             "switch_success_rate_percent": round(success_rate, 3),
             "streamon_failures": streamon_failures,
-            "streamoff_failures": sum(1 for event in self.switch_events if event.error_type == "streamoff_failure"),
+            "streamoff_failures": self.switch_error_counts.get("streamoff_failure", 0),
             "first_frame_timeouts": first_frame_timeouts,
             "camera_reconnects": self.camera_reconnects,
             "dropped_frames": self.dropped_frame_count,
@@ -559,12 +611,12 @@ class AlternatingSessionRecorder:
             "skipped_inference_frames": self.skipped_inference_frames,
             "left_effective_fps": round(self.frame_counts["left"] / max(elapsed_s, 1e-9), 3),
             "right_effective_fps": round(self.frame_counts["right"] / max(elapsed_s, 1e-9), 3),
-            "left_max_blind_interval_ms": round(max(blind_by_side["left"], default=0.0), 3),
-            "right_max_blind_interval_ms": round(max(blind_by_side["right"], default=0.0), 3),
+            "left_max_blind_interval_ms": round(self.blind_interval_max_ms["left"], 3),
+            "right_max_blind_interval_ms": round(self.blind_interval_max_ms["right"], 3),
             "maximum_blind_interval_ms": round(maximum_blind, 3),
             "capture_only_max_blind_ms": round(maximum_blind, 3),
-            "end_to_end_left_max_gap_ms": round(max(self.end_to_end_gaps_ms["left"], default=0.0), 3),
-            "end_to_end_right_max_gap_ms": round(max(self.end_to_end_gaps_ms["right"], default=0.0), 3),
+            "end_to_end_left_max_gap_ms": round(self.end_to_end_max_ms["left"], 3),
+            "end_to_end_right_max_gap_ms": round(self.end_to_end_max_ms["right"], 3),
             "end_to_end_max_gap_ms": round(end_to_end_maximum, 3),
             "end_to_end_p50_gap_ms": (
                 round(percentile(end_to_end_combined, 0.50), 3) if end_to_end_combined else None
@@ -585,20 +637,22 @@ class AlternatingSessionRecorder:
                 if self.side_to_side_latencies_ms["right_to_left"]
                 else None
             ),
-            "mean_blind_interval_ms": round(mean([value for values in blind_by_side.values() for value in values]), 3)
-            if any(blind_by_side.values())
-            else 0.0,
+            "mean_blind_interval_ms": round(
+                sum(self.blind_interval_sum_ms.values())
+                / max(sum(self.blind_interval_count.values()), 1),
+                3,
+            ),
             "switch_latency_ms": percentile_summary(switch_latencies),
             "first_frame_latency_ms": percentile_summary(first_frame_latencies),
-            "max_process_rss_mb": round(max(rss_values, default=0.0), 3),
-            "average_process_rss_mb": round(mean(rss_values), 3) if rss_values else 0.0,
-            "max_memory_used_mb": round(max(memory_values, default=0.0), 3),
-            "average_memory_used_mb": round(mean(memory_values), 3) if memory_values else 0.0,
-            "max_cpu_percent": round(max(cpu_values, default=0.0), 3),
-            "average_cpu_percent": round(mean(cpu_values), 3) if cpu_values else 0.0,
-            "max_temperature_c": round(max(temperatures), 3) if temperatures else None,
-            "inference_fps": round(mean(inference_fps_values), 3) if inference_fps_values else 0.0,
-            "jpeg_encode_ms": round(mean(jpeg_encode_values), 3) if jpeg_encode_values else 0.0,
+            "max_process_rss_mb": self._performance_max("process_rss_mb"),
+            "average_process_rss_mb": self._performance_average("process_rss_mb"),
+            "max_memory_used_mb": self._performance_max("memory_used_mb"),
+            "average_memory_used_mb": self._performance_average("memory_used_mb"),
+            "max_cpu_percent": self._performance_max("cpu_percent"),
+            "average_cpu_percent": self._performance_average("cpu_percent"),
+            "max_temperature_c": self._performance_max("temperature_c", default=None),
+            "inference_fps": self._performance_average("inference_fps"),
+            "jpeg_encode_ms": self._performance_average("jpeg_encode_ms"),
             "alert_count": self.alert_count,
             "clear_count": self.clear_count,
             "alerts_by_level": dict(self.risk_level_counts),
@@ -637,6 +691,14 @@ class AlternatingSessionRecorder:
         )
         self._write_json(self.session_dir / "session.json", self.metadata)
         return summary
+
+    def _performance_average(self, name: str) -> float:
+        count = self._performance_counts.get(name, 0)
+        return round(self._performance_totals.get(name, 0.0) / count, 3) if count else 0.0
+
+    def _performance_max(self, name: str, *, default: float | None = 0.0) -> float | None:
+        value = self._performance_maxima.get(name)
+        return round(value, 3) if value is not None else default
 
     @staticmethod
     def _write_json(path: Path, payload: object) -> None:
@@ -804,3 +866,5 @@ def git_snapshot() -> dict[str, str]:
         return {"branch": branch or "detached", "commit": commit or "unavailable", "status": status or "clean"}
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {"branch": "unavailable", "commit": "unavailable", "status": str(exc)}
+TELEMETRY_WINDOW_SIZE = 20_000
+PERFORMANCE_WINDOW_SIZE = 10_000
