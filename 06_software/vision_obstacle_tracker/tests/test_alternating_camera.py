@@ -353,7 +353,14 @@ class SessionRecorderTest(unittest.TestCase):
                     "confirmed_across_slices": True,
                 }
             )
-            recorder.record_alert({"haptic_level": 3, "event_kind": "heartbeat"})
+            recorder.record_alert(
+                {
+                    "haptic_level": 3,
+                    "event_kind": "heartbeat",
+                    "confirmed_across_slices": True,
+                    "fast_path_reason": "must_not_be_counted_twice",
+                }
+            )
             recorder.record_alert(
                 {
                     "haptic_level": 0,
@@ -383,6 +390,7 @@ class SessionRecorderTest(unittest.TestCase):
             self.assertEqual(1, summary["heartbeat_count"])
             self.assertEqual(1, summary["stale_clear_count"])
             self.assertEqual(1, summary["cross_slice_confirmed_count"])
+            self.assertEqual(0, summary["emergency_fast_path_count"])
             self.assertIsNone(summary["camera_offline_clear_verified"])
             for filename, expected in (
                 ("switch-events.csv", SWITCH_EVENT_FIELDS),

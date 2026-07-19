@@ -462,9 +462,9 @@ class AlternatingSessionRecorder:
             self.risk_level_counts[level] = self.risk_level_counts.get(level, 0) + 1
         elif event_kind == "heartbeat":
             self.heartbeat_count += 1
-        if _as_bool(row.get("confirmed_across_slices")):
+        if event_kind == "state_change" and _as_bool(row.get("confirmed_across_slices")):
             self.cross_slice_confirmed_count += 1
-        if row.get("fast_path_reason"):
+        if event_kind == "state_change" and row.get("fast_path_reason"):
             self.fast_path_count += 1
 
     def _usb_error_count(self) -> int:
