@@ -22,6 +22,8 @@ cp -a "$REPO_ROOT/06_software/board_runtime/bmi270_backpack/." "$DEST/imu/"
 cp -a "$REPO_ROOT/06_software/board_runtime/imu_fall_detector" "$DEST/"
 cp -a "$SCRIPT_DIR/assets/audio/." "$DEST/audio/"
 install -m 0755 "$SCRIPT_DIR"/alternating-*.sh "$DEST/board-deploy/"
+install -m 0755 "$SCRIPT_DIR"/cleanup-alternating-runs.sh "$DEST/board-deploy/"
+install -m 0755 "$SCRIPT_DIR"/check-runtime-deps.sh "$SCRIPT_DIR"/install-board-*.sh "$DEST/board-deploy/"
 install -m 0755 "$REPO_ROOT/05_firmware/ss928/pinmux/apply-smartbag-pinmux.sh" "$DEST/apply-smartbag-pinmux.sh"
 
 find "$DEST" -type d -name __pycache__ -prune -exec rm -rf {} +
@@ -32,9 +34,10 @@ find "$DEST/vision" -type f \( -name 'yolo*.pt' -o -name 'yolo*.onnx' -o -name '
 [ -f /etc/smartbag/config.json ] || cp "$SCRIPT_DIR/config.example.json" /etc/smartbag/config.json
 [ -f /etc/smartbag/calibration-left.json ] || cp "$SCRIPT_DIR/calibration-left.example.json" /etc/smartbag/calibration-left.json
 [ -f /etc/smartbag/calibration-right.json ] || cp "$SCRIPT_DIR/calibration-right.example.json" /etc/smartbag/calibration-right.json
-cp "$SCRIPT_DIR/systemd/"*.service "$SCRIPT_DIR/systemd/smartbag.target" /etc/systemd/system/
+cp "$SCRIPT_DIR/systemd/"*.service "$SCRIPT_DIR/systemd/"*.timer "$SCRIPT_DIR/systemd/smartbag.target" /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable smartbag.target
+systemctl enable smartbag-alternating-cleanup.timer
 
 echo "Installed under $DEST. Place the model at $DEST/models/yolo11n.pt before starting."
 echo "Review /etc/smartbag/config.json and both calibration files before starting."

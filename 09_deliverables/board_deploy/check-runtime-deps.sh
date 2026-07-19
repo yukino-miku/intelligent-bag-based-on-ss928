@@ -31,7 +31,7 @@ import sys
 print(f"ARCH {platform.machine()}")
 print(f"PYTHON {sys.version.split()[0]}")
 missing = []
-for name in ("cv2", "torch", "ultralytics", "lap", "dbus", "gi"):
+for name in ("cv2", "numpy", "torch", "torchvision", "ultralytics", "lap", "dbus", "gi"):
     try:
         module = importlib.import_module(name)
         version = getattr(module, "__version__", "present")
@@ -42,5 +42,12 @@ for name in ("cv2", "torch", "ultralytics", "lap", "dbus", "gi"):
 if missing:
     raise SystemExit(1)
 PY
+
+if [ -f /opt/lib/npu/libascendcl.so ]; then
+    echo "OK   SS928 ACL runtime /opt/lib/npu/libascendcl.so"
+    echo "INFO NPU samples require LD_LIBRARY_PATH=/opt/lib/npu:/opt/lib"
+else
+    echo "WARN SS928 ACL runtime not found; CPU mode can still be checked" >&2
+fi
 
 [ "$fail" -eq 0 ] || exit 1
