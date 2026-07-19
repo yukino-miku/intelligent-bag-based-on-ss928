@@ -16,8 +16,10 @@
 | 轨迹/持久数据 | `/var/lib/smartbag/...` | 卸载时保留 |
 | risk CSV/log | `/var/log/smartbag/...` | 左右独立，Git 忽略 |
 | systemd | `/etc/systemd/system/smartbag-*.service` | `smartbag.target` 默认要求 alert + video gateway |
+| 交替 session 清理 | `/root/smartbag/board-deploy/cleanup-alternating-runs.sh` | timer 保留最多 10 个/100 MiB，跳过活动 session |
+| journald 限额 | `/etc/systemd/journald.conf.d/smartbag.conf` | 持久 100 MiB、运行时 32 MiB、最长 7 天 |
 
-`smartbag-vision.service` 是单侧诊断 unit，不属于 `smartbag.target`。IMX347 MIPI preview/VO 只保留在 firmware samples，不加入默认启动链。
+`smartbag-vision.service` 是单侧诊断 unit，不属于 `smartbag.target`。`smartbag-alternating-vision.service` 是默认关闭的交替实验入口，与正式 alert/video 服务互斥。IMX347 MIPI preview/VO 只保留在 firmware samples，不加入默认启动链。
 
 旧路径 `/root/dx_gp21_tracker`、`/root/vision_obstacle_tracker`、`/root/smartbag_alert`、`/opt/bmi270_backpack` 不再由脚本创建。升级时先停止旧服务，迁移持久数据并删除旧 unit，避免重复注册 BLE、重复打开相机或同时控制 PWM。
 

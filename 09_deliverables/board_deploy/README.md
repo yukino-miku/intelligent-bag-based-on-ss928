@@ -176,11 +176,21 @@ sudo env LEFT_DEVICE=/dev/v4l/by-path/LEFT-video-index0 \
   "alternating_camera": {
     "enabled": true,
     "backend": "v4l2_stream_toggle",
+    "inference_frames_per_slice": 1,
     "normal_slice_ms": 500,
     "risk_slice_ms": 700,
     "minimum_other_side_slice_ms": 250,
     "max_blind_interval_ms": 1200,
     "stale_observation_timeout_ms": 1800,
+    "tracker_effective_fps_mode": "effective_side",
+    "min_confirm_slices_caution": 2,
+    "min_confirm_slices_danger": 2,
+    "min_confirm_slices_emergency": 2,
+    "camera_reconnect_enabled": true,
+    "video_gateway_enabled": true,
+    "serve_bind": "0.0.0.0",
+    "serve_port": 8080,
+    "calibration_mode": "production",
     "risk_priority_enabled": true
   }
 }
@@ -197,10 +207,29 @@ sh /root/smartbag/board-deploy/alternating-report.sh
 
 `smartbag-alternating-vision.service` 与正式 `smartbag-alert.service`、`smartbag-video.service` 互斥。单进程模型只加载一次，但左右 tracker、轨迹、风险、稳定器、标定和 CSV 均独立。风险优先调度只读取稳定后的 haptic 等级，并保留另一侧最小时间片；无新观测不等于 SAFE。heartbeat 只维持 PWM，不进入 BLE 历史；超时、连续切换失败、detector 退出和 SIGTERM 都会清振。
 
+`--inference-frames-per-slice` 默认只选择每片最后一张最新帧，采集到的其余有效帧只计入采集统计，不进入积压队列。`capture_only_max_blind_ms` 是纯 STREAMOFF/STREAMON/首帧指标；`end_to_end_max_gap_ms` 才包含解码、模型、tracker、风险、overlay、JPEG 和下一轮调度，正式验收只看后者。CAUTION 以上普通升级需要跨不同 slice，避免同一 burst 快速满足多帧确认。
+
+交替 detector 自己提供 `http://<BOARD_IP>:8080/`，无需 `smartbag-video.service`。页面同时显示左右 raw/overlay、active/cached/offline、帧龄、推理 FPS、风险和 E2E 间隔。测试接口：
+
+```sh
+curl -f 'http://127.0.0.1:8080/api/v1/camera/left/snapshot.jpg?view=raw' -o /tmp/left-raw.jpg
+curl -f 'http://127.0.0.1:8080/api/v1/camera/right/snapshot.jpg?view=raw' -o /tmp/right-raw.jpg
+curl -f 'http://127.0.0.1:8080/api/v1/camera/left/snapshot.jpg?view=overlay' -o /tmp/left-overlay.jpg
+curl -f 'http://127.0.0.1:8080/api/v1/camera/right/snapshot.jpg?view=overlay' -o /tmp/right-overlay.jpg
+```
+
+raw 复用摄像头 MJPEG，overlay 是视觉完成后重新编码的带框图。只有 C 阶段模型实际运行时，overlay 才能用于验收检测框。客户端断开不会停止 detector，gateway 也不会重开相机。
+
+启动前运行 `alternating-preflight.sh`。它检查实验开关、左右设备不相同且未占用、模型/两份标定、production 外参、依赖、HTTP 端口和 PWM 基础节点。依赖安装见 `install-board-cpu-deps.sh` 和 `install-board-deps-offline.sh`；后者只接受本地 wheelhouse，并打印 wheel SHA256。详细 ABI 和 NPU 阻塞项见 `02_research/ss928-runtime-dependencies.md` 与 `02_research/ss928-om-backend-blockers.md`。
+
+一侧失败后，调度器只关闭并重开该侧；另一侧继续。switch CSV 记录 connection state、disconnect/reconnect 时间、恢复耗时、首个恢复帧耗时和 tracker reset。生成 clear 事件不等于 PWM 已经清零；`camera_offline_clear_verified` 只有 controller/PWM 闭环测试有确认时才能是 true，否则保持 null。
+
+`cleanup-alternating-runs.sh` 配合 timer 限制 session 数量和总大小，并在服务运行时跳过最新活动目录。正式配置默认 `risk_csv_enabled=false`；安装脚本写入 `/etc/systemd/journald.conf.d/smartbag.conf`，限制持久 journal 100 MiB、运行时 32 MiB、最长保留 7 天，卸载时会移除该 drop-in。
+
 回退到正式模式：先运行 `alternating-stop.sh`，把配置改回 `vision_runtime.mode=fixed_dual_process` 和 `alternating_camera.enabled=false`，再执行 `sudo systemctl start smartbag.target`。紧急停振执行：
 
 ```sh
 sudo systemctl stop smartbag-alternating-vision.service smartbag-alert.service smartbag.target
 ```
 
-随后用 `fuser /dev/video0 /dev/video2` 确认两路均无占用。当前实板仅完成 A1-A4 每组 2 分钟和 B 30 秒测试；尚未达到 A 的 30 分钟验收，C/D 也未上板，因此不得把实验模式设为默认。
+随后用 `fuser /dev/video0 /dev/video2` 确认两路均无占用。30 分钟和 C/D 的真实结果以 `07_tests/results/alternating_camera/latest-summary.md` 为准；只要模型、完整 E2E、PWM、BLE、拔插恢复或完整视觉长测仍有一项未通过，就不得把实验模式设为默认。

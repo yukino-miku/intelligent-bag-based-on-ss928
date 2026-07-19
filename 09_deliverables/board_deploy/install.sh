@@ -13,6 +13,7 @@ DEST=/root/smartbag
 
 install -d "$DEST/vision" "$DEST/controller" "$DEST/gnss" "$DEST/imu" "$DEST/audio" "$DEST/models" "$DEST/board-deploy"
 install -d /etc/smartbag /run/smartbag /var/lib/smartbag/tracks /var/lib/smartbag/calibration /var/log/smartbag
+install -d /etc/systemd/journald.conf.d
 
 cp -a "$REPO_ROOT/06_software/vision_obstacle_tracker/." "$DEST/vision/"
 cp -a "$REPO_ROOT/06_software/board_runtime/smartbag_alert_controller/." "$DEST/controller/"
@@ -35,7 +36,9 @@ find "$DEST/vision" -type f \( -name 'yolo*.pt' -o -name 'yolo*.onnx' -o -name '
 [ -f /etc/smartbag/calibration-left.json ] || cp "$SCRIPT_DIR/calibration-left.example.json" /etc/smartbag/calibration-left.json
 [ -f /etc/smartbag/calibration-right.json ] || cp "$SCRIPT_DIR/calibration-right.example.json" /etc/smartbag/calibration-right.json
 cp "$SCRIPT_DIR/systemd/"*.service "$SCRIPT_DIR/systemd/"*.timer "$SCRIPT_DIR/systemd/smartbag.target" /etc/systemd/system/
+install -m 0644 "$SCRIPT_DIR/journald-smartbag.conf" /etc/systemd/journald.conf.d/smartbag.conf
 systemctl daemon-reload
+systemctl try-restart systemd-journald.service || true
 systemctl enable smartbag.target
 systemctl enable smartbag-alternating-cleanup.timer
 

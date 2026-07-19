@@ -17,7 +17,7 @@
     "backend": "v4l2_stream_toggle",
     "width": 640,
     "height": 480,
-    "fps": 10,
+    "fps": 30,
     "imgsz": 416,
     "conf": 0.08,
     "max_det": 30,
