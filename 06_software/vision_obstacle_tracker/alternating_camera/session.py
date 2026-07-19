@@ -565,6 +565,17 @@ class AlternatingSessionRecorder:
             ]
             for side in ("left", "right")
         }
+        capture_blind_by_switch = [
+            max(values)
+            for event in self.switch_events
+            if (
+                values := [
+                    float(value)
+                    for side in ("left", "right")
+                    if (value := getattr(event, f"{side}_blind_interval_ms")) is not None
+                ]
+            )
+        ]
         success_rate = (
             self.successful_switch_count / self.total_switch_count * 100.0
             if self.total_switch_count
@@ -620,8 +631,41 @@ class AlternatingSessionRecorder:
             "right_max_blind_interval_ms": round(self.blind_interval_max_ms["right"], 3),
             "maximum_blind_interval_ms": round(maximum_blind, 3),
             "capture_only_max_blind_ms": round(maximum_blind, 3),
+            "capture_only_p50_blind_ms": (
+                round(percentile(capture_blind_by_switch, 0.50), 3)
+                if capture_blind_by_switch
+                else None
+            ),
+            "capture_only_p95_blind_ms": (
+                round(percentile(capture_blind_by_switch, 0.95), 3)
+                if capture_blind_by_switch
+                else None
+            ),
+            "capture_only_p99_blind_ms": (
+                round(percentile(capture_blind_by_switch, 0.99), 3)
+                if capture_blind_by_switch
+                else None
+            ),
             "end_to_end_left_max_gap_ms": round(self.end_to_end_max_ms["left"], 3),
             "end_to_end_right_max_gap_ms": round(self.end_to_end_max_ms["right"], 3),
+            "end_to_end_left_p50_gap_ms": self._window_percentile(
+                self.end_to_end_gaps_ms["left"], 0.50
+            ),
+            "end_to_end_left_p95_gap_ms": self._window_percentile(
+                self.end_to_end_gaps_ms["left"], 0.95
+            ),
+            "end_to_end_left_p99_gap_ms": self._window_percentile(
+                self.end_to_end_gaps_ms["left"], 0.99
+            ),
+            "end_to_end_right_p50_gap_ms": self._window_percentile(
+                self.end_to_end_gaps_ms["right"], 0.50
+            ),
+            "end_to_end_right_p95_gap_ms": self._window_percentile(
+                self.end_to_end_gaps_ms["right"], 0.95
+            ),
+            "end_to_end_right_p99_gap_ms": self._window_percentile(
+                self.end_to_end_gaps_ms["right"], 0.99
+            ),
             "end_to_end_max_gap_ms": round(end_to_end_maximum, 3),
             "end_to_end_p50_gap_ms": (
                 round(percentile(end_to_end_combined, 0.50), 3) if end_to_end_combined else None
@@ -704,6 +748,12 @@ class AlternatingSessionRecorder:
     def _performance_max(self, name: str, *, default: float | None = 0.0) -> float | None:
         value = self._performance_maxima.get(name)
         return round(value, 3) if value is not None else default
+
+    @staticmethod
+    def _window_percentile(values: Iterable[float], quantile: float) -> float | None:
+        window = list(values)
+        value = percentile(window, quantile)
+        return round(value, 3) if value is not None else None
 
     @staticmethod
     def _write_json(path: Path, payload: object) -> None:

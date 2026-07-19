@@ -10,6 +10,7 @@
 - 真实 SS928 30 分钟纯采集完成：1800.247 秒、3620/3620 切换、左右各 7240 帧，无 ENOSPC/STREAMON/OFF/首帧错误；capture-only 最大盲区 580.264 ms。左右 sysfs 逻辑断连均约 3 秒恢复，另一侧继续工作。
 - 长测发现诊断历史容器会增长，现已改为有界 deque，并以累计量保留精确总数、均值和峰值；同时修正无模型测试入口遗漏每侧 reconnect counter、session reconnect 总数未按侧汇总的问题。
 - 无模型采集入口现在明确记录 `selected_for_inference=false`，避免把纯采集帧误写为已选推理帧；旧 A6 session 的该字段已在摘要中标注不可作为推理证据。
+- session summary 新增 capture-only p50/p95/p99 和左右 E2E p50/p95/p99；A6 原始 switch 记录计算出的 capture-only 分位数为 489.126/519.877/569.307 ms。
 - 板端 APT 因 `eth0 linkdown` 和 DNS 失败无法安装视觉依赖；raw 网关已板端本机验证，带检测框 overlay、完整 E2E、PWM、BLE 和微信真机继续明确标记 BLOCKED。
 - 新增默认关闭的 `alternating_single_model` 实验模式：一个主进程只加载一次 YOLO，左右 UVC 使用原生 V4L2 mmap 和显式 `VIDIOC_STREAMON/OFF` 交替采集；C 入口每个时间片取帧后立即 STREAMOFF，再执行推理。
 - 左右分别持有 BoT-SORT、StableTrackId、TrackState、RiskModel、RiskWarningStabilizer、SelfObjectFilter、标定和 risk CSV；共享模型使用 `predict()` 后接独立 tracker，不交替复用 `model.track(persist=True)`。
