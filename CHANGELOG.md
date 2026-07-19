@@ -2,14 +2,23 @@
 
 ## 2026-07-19
 
+- 完成交替双摄剩余软件链：新增真正进入视觉算法的端到端观测间隔、左右跨侧延迟、完整阶段时间戳和以 E2E max 为优先的验收口径；保留 capture-only 指标用于定位 USB 切换。
+- 新增 `--inference-frames-per-slice`（默认 1）和无队列最新帧选择；新增跨独立 slice 的风险确认、单帧跳变/fast path 真实计数和 `effective_side` tracker 时间尺度。
+- 交替 detector 内置左右 raw/overlay gateway、状态 API 与浏览器双画面；小程序改为 completion-driven refresh、每侧单 in-flight、页面隐藏停止、指数退避和单侧聚焦降频。
+- 新增 side-specific 相机重连状态机及恢复事件日志、左右安装外参/背包坐标、标定检查器、依赖审计/安装脚本、轻量 preflight、session 清理 timer 和 GitHub Actions。
+- 板端依赖审计确认 Python 3.10.12 当前缺少 cv2/numpy/torch/torchvision/Ultralytics/lap；确认 ACL 库和 sensor 专用 `.om` sample 存在，但通用 USB 内存帧 API/配套 SDK 信息不足，`Ss928OmBackend` 继续标记 BLOCKED。
+- 真实 SS928 30 分钟纯采集完成：1800.247 秒、3620/3620 切换、左右各 7240 帧，无 ENOSPC/STREAMON/OFF/首帧错误；capture-only 最大盲区 580.264 ms。左右 sysfs 逻辑断连均约 3 秒恢复，另一侧继续工作。
+- 长测发现诊断历史容器会增长，现已改为有界 deque，并以累计量保留精确总数、均值和峰值；同时修正无模型测试入口遗漏每侧 reconnect counter、session reconnect 总数未按侧汇总的问题。
+- 无模型采集入口现在明确记录 `selected_for_inference=false`，避免把纯采集帧误写为已选推理帧；旧 A6 session 的该字段已在摘要中标注不可作为推理证据。
+- 板端 APT 因 `eth0 linkdown` 和 DNS 失败无法安装视觉依赖；raw 网关已板端本机验证，带检测框 overlay、完整 E2E、PWM、BLE 和微信真机继续明确标记 BLOCKED。
 - 新增默认关闭的 `alternating_single_model` 实验模式：一个主进程只加载一次 YOLO，左右 UVC 使用原生 V4L2 mmap 和显式 `VIDIOC_STREAMON/OFF` 交替采集；C 入口每个时间片取帧后立即 STREAMOFF，再执行推理。
 - 左右分别持有 BoT-SORT、StableTrackId、TrackState、RiskModel、RiskWarningStabilizer、SelfObjectFilter、标定和 risk CSV；共享模型使用 `predict()` 后接独立 tracker，不交替复用 `model.track(persist=True)`。
 - 告警协议区分 `state_change` 和 `heartbeat`：无观测不等于 SAFE，切换侧不误清旧状态，陈旧观测/进程退出最终清振；heartbeat 只刷新 PWM timeout，不写入 BLE/手机历史。风险优先调度只读取多帧稳定后的 haptic 等级。
 - 新增 A/B 诊断、缓存双画面 gateway、完整 session/CSV/summary 记录、实验矩阵、控制/报告脚本和互斥 systemd service；原始 session 继续放在被忽略的 `08_media/alternating_camera_runs/`。
 - SS928 实板 A1-A4 共 989 次切换，成功率 100%，无 ENOSPC；p95 切换 273.726-278.018 ms，最大盲区 539.016 ms，左右有效约 4.08-4.13 FPS。B 阶段左右 snapshot/status/debug page 可用，退出后无相机占用。
 - 额外 `1680x1050@10` 请求被驱动协商为 `1920x1080@30`；30 秒 61/61 次切换成功、无 ENOSPC，p95 278.613 ms、最大盲区 509.999 ms。文档明确不把请求值当成实际模式。
-- 驱动把请求的 5/10 FPS 均协商为 MJPEG 30 FPS；板端仍缺 OpenCV、PyTorch、Ultralytics 和 lap，C/D 未上板，且未完成 30 分钟验收，因此正式默认保持 `fixed_dual_process` 和 `alternating_camera.enabled=false`。
-- 本地分模块共 224 项 Python 测试与 4 个小程序 JavaScript 测试文件通过，真实 Ultralytics 单模型/双 BoT-SORT 冒烟通过；板端交替采集 12 项、controller 9 项、compileall、全部部署 shell 语法和 JSON 解析通过。板端风险 overlay 测试因明确缺少 cv2 未执行。
+- 驱动把请求的 5/10 FPS 均协商为 MJPEG 30 FPS；纯采集 30 分钟已通过，但板端仍缺 OpenCV、PyTorch、Ultralytics 和 lap，完整 C/D 未上板，因此正式默认保持 `fixed_dual_process` 和 `alternating_camera.enabled=false`。
+- 本地分模块共 229 项 Python 测试与 4 个小程序 JavaScript 测试文件通过，真实 Ultralytics 单模型/双 BoT-SORT 冒烟通过；板端转移运行时代码 compileall、全部部署 shell 语法和 16 个跟踪 JSON 解析通过。板端风险 overlay 测试因明确缺少 cv2 未执行。
 
 ## 2026-07-16
 

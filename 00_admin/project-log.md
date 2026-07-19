@@ -3,13 +3,20 @@
 ## 2026-07-19
 
 - 从基线 `06c6cfd1dc11a0f92c54ce8aad5252d554ececa5` 创建独立实验分支 `agent/alternating-dual-camera`，未修改正式集成分支。
+- 完成交替视觉 E2E 管线：每片默认只推理最新 1 帧、无积压队列，记录 capture-only 与完整 E2E 观测间隔、跨侧延迟和解码/推理/tracker/风险/overlay/JPEG 全阶段时间戳。
+- 风险稳定器增加跨不同 `slice_id` 的 CAUTION/DANGER/EMERGENCY 确认；tracker 支持 `effective_side` 时间尺度；单帧跳变抑制、跨 slice 确认和 fast path 改为真实计数。
+- 交替 detector 内置左右 raw/overlay gateway、状态 API 和双画面浏览器页；小程序改为 completion-driven refresh、单 in-flight、生命周期停止、指数退避和单侧聚焦模式。
+- 增加单侧相机 close/reopen/remap 状态机与详细恢复事件；增加左右安装外参、背包坐标变换、production 标定检查器、部署 preflight、session 清理 timer 和 GitHub Actions。
 - 基于归档中的标准 V4L2 UVC sample 实现 Python ctypes mmap 采集器，保留两个已初始化 fd，但通过严格状态机保证任何时刻最多一路 STREAMON；未使用或伪造 SS928 私有摄像头/NPU API。
 - 在真实 SS928 上完成 640x480/320x240、请求 5/10 FPS 的四组 2 分钟 A 测试和 30 秒 B 缓存预览。总计 989 次 A 切换全部成功、无 ENOSPC；实际均协商为 MJPEG 30 FPS，最大盲区 539.016 ms。
 - 额外请求 1680x1050@10 的 30 秒交替测试实际协商为 1920x1080@30，61/61 次切换成功、无 ENOSPC；该离散分辨率请求没有成功，且 RSS 峰值升至 54.836 MiB。
 - 完成 C/D 代码和无硬件测试：共享模型只初始化一次，左右 tracker/risk/context 独立；多帧稳定器增加 monotonic 时间确认指标，controller 区分状态变化与 PWM 心跳，detector 退出/陈旧观测会清振。
 - 本机真实 Ultralytics 冒烟测试使用一个 YOLO 实例和两个独立 BoT-SORT 实例，左侧连续帧保持本侧 ID，右侧使用独立 tracker 状态。板端因缺少 cv2/torch/ultralytics/lap 尚未运行 C，PWM/BLE 也未做实物 D 验证。
 - 原始板端 session 已下载到本地 `08_media/alternating_camera_runs/` 并保持 Git 忽略；仓库只记录匿名化摘要、分析、脚本、源代码和测试。
-- 最终本地回归为 224 项 Python 测试和 4 个小程序测试文件；板端运行交替采集 12 项、controller 9 项、compileall、部署 shell `sh -n` 和 JSON 解析。板端缺少 cv2，依赖该模块的风险 overlay 测试按未执行记录，没有伪报通过。
+- 完成 1800.247 秒纯采集长测：3620/3620 切换、左右各 7240 帧、无 ENOSPC/首帧超时，capture-only 最大盲区 580.264 ms。原始 tar 仅保存于 `08_media`，SHA256 为 `7F076DD52647FD97C73581B7D6F8BE7408985061FCF1E86A542479E010F0A523`。
+- 完成左右 USB 设备的 sysfs 逻辑 unbind/rebind，约 3 秒恢复且另一侧继续；发现并修正 reconnect 汇总未按侧累计的问题。该测试不等于人工物理拔插。
+- 根据长测 RSS 增长，把 switch/performance/E2E/阶段计时内存历史改为有界 deque，精确总数、均值、峰值单独累计；修复后的第二次 30 分钟实板复验仍待执行。
+- 当前本地回归为 229 项 Python 测试和 4 个小程序测试文件；compileall、16 个跟踪 JSON、部署 shell `sh -n`、CI YAML、仓库策略和 `git diff --check` 通过。板端缺少完整视觉依赖，风险 overlay/PWM/BLE 真机测试仍按 BLOCKED 记录，没有伪报通过。
 
 ## 2026-07-16
 

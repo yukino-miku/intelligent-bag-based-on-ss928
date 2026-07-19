@@ -5,7 +5,7 @@
 ## 当前能力
 
 - PC：USB 摄像头或视频输入，Ultralytics YOLO + BoT-SORT，ROI/OpenVINO CPU/profile，overlay、风险 CSV 和带框视频保存。
-- SS928：正式模式仍为双 USB 摄像头固定左右 detector；另提供默认关闭的“单模型、双 UVC 原生 V4L2 交替采集”实验模式，用于当前同一 USB 2.0 Hub 的 `ENOSPC` 回退验证。
+- SS928：正式模式仍为双 USB 摄像头固定左右 detector；另提供默认关闭的“单模型、双 UVC 原生 V4L2 交替采集”实验模式。实验入口已具备最新帧有界调度、跨时间片风险确认、E2E 观测间隔、单侧重连、左右 raw/overlay gateway 和安装外参，但不等同于同步双摄。
 - 传感器：DX-GP21 GNSS/NMEA/轨迹；BMI270 IIO/I2C、姿态和短时运动趋势；独立跌倒/撞击事件。
 - 移动端：统一 `SS928-SmartBag` BLE NUS 传告警/GNSS/IMU/系统状态；原生微信小程序显示左右画面、自动告警历史、轨迹和姿态。视频不走 BLE。
 
@@ -48,12 +48,12 @@ sh logs.sh -f
 
 默认启动左右两个固定 detector 和双路视频 gateway。先在 `/etc/smartbag/config.json` 配置两个不同的稳定设备路径、两份独立标定和左右 PWM，再运行 preflight；相同型号/序列号摄像头应固定物理口并使用 by-path，不能依赖冲突的 by-id。GNSS 与 BMI270 默认 `--no-ble`，由 controller 独占 BLE。震动只使用稳定后的 `haptic_risk_level`；单侧 detector 退出只清本侧，事件过期、异常或服务停止也会清振。
 
-同一 USB 2.0 Hub 无法双路并发 `STREAMON` 时，可按 [board_deploy 实验模式说明](09_deliverables/board_deploy/README.md#11-实验性交替双摄模式)运行 A/B 诊断。该模式任意时刻只采集一侧，另一侧是缓存帧，会产生约半秒或更长盲区；默认配置保持 `fixed_dual_process` 和 `alternating_camera.enabled=false`。
+同一 USB 2.0 Hub 无法双路并发 `STREAMON` 时，可按 [board_deploy 实验模式说明](09_deliverables/board_deploy/README.md#11-实验性交替双摄模式)运行 A/B 诊断。每片默认只推理最新 1 帧，未激活侧是缓存帧；纯摄像头切换盲区与包含解码/推理/跟踪/风险/overlay/JPEG 的端到端观测间隔必须分开看。默认配置保持 `fixed_dual_process` 和 `alternating_camera.enabled=false`。
 
 ## 未完成与安全边界
 
 - `Ss928OmBackend` 尚无与当前 Python tracker/风险链兼容的真实 MPP/SVP/NPU API，只定义接口；归档中的 `.om` C/C++ sample 和 OpenVINO CPU 都不能冒充已完成后端。
-- 2026-07-19 实板原生 V4L2 交替采集 A1-A4 共 989 次切换，成功率 100%，未出现 `ENOSPC`；B 阶段双缓存预览也可访问。但只完成每组 2 分钟，板上仍缺少 OpenCV、PyTorch、Ultralytics 和 lap，C/D 尚未上板，不能替代正式模式或称为同步实时双摄。
+- 2026-07-19 实板原生 V4L2 交替采集 A1-A4 共 989 次切换，成功率 100%，未出现 `ENOSPC`；B 阶段双缓存预览也可访问。最新 30 分钟、依赖、模型、PWM/BLE 和浏览器 overlay 验证状态见 [最新测试摘要](07_tests/results/alternating_camera/latest-summary.md)，任何 BLOCKED 项都不能按“已通过”解释。
 - 模型、厂商 SDK、MPP、BMI270 config blob、设备密码/IP 不进入仓库。
 - 单目测距和风险提示不是安全认证系统；真实使用前必须做相机标定、硬件在环、误报/漏报、时延、温度和断电恢复测试。
 - 40Pin、PWM、电机供电、I2S 和传感器电平必须按硬件文档核验，不能直接用 GPIO 给电机或功放供电。
