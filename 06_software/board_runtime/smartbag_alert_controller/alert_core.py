@@ -74,6 +74,13 @@ class AlertEvent:
     observation_age_ms: float | None = None
     clear_reason: str | None = None
     event_kind: str = "state_change"
+    source: str = ""
+    source_id: str | None = None
+    ttc_s: float | None = None
+    closing_speed_mps: float | None = None
+    lateral_distance_m: float | None = None
+    longitudinal_distance_m: float | None = None
+    metadata: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -82,6 +89,8 @@ class AlertOutput:
     audio_clip: str | None = None
     levels: dict[str, int] | None = None
     expired_sides: tuple[str, ...] = ()
+    expired_sources: tuple[str, ...] = ()
+    expired_source_sides: tuple[tuple[str, str], ...] = ()
 
 
 def normalize_side(side: str) -> str:
@@ -180,8 +189,9 @@ def parse_vision_alert_jsonl(line: str) -> AlertEvent | None:
     event_kind = str(data.get("event_kind", "state_change"))
     if event_kind not in ("state_change", "heartbeat"):
         raise ValueError(f"invalid vision alert event_kind: {event_kind!r}")
+    side = normalize_side(str(data["side"]))
     return AlertEvent(
-        side=normalize_side(str(data["side"])),
+        side=side,
         level=normalize_level(data["level"]),
         event_kind=event_kind,
         score=float(data["score"]) if data.get("score") is not None else None,
@@ -195,6 +205,25 @@ def parse_vision_alert_jsonl(line: str) -> AlertEvent | None:
             else None
         ),
         clear_reason=str(data["clear_reason"]) if data.get("clear_reason") is not None else None,
+        source=str(data.get("source") or f"vision:{side}"),
+        source_id=str(data["source_id"]) if data.get("source_id") is not None else None,
+        ttc_s=float(data["ttc_s"]) if data.get("ttc_s") is not None else None,
+        closing_speed_mps=(
+            float(data["closing_speed_mps"])
+            if data.get("closing_speed_mps") is not None
+            else None
+        ),
+        lateral_distance_m=(
+            float(data["lateral_distance_m"])
+            if data.get("lateral_distance_m") is not None
+            else None
+        ),
+        longitudinal_distance_m=(
+            float(data["longitudinal_distance_m"])
+            if data.get("longitudinal_distance_m") is not None
+            else None
+        ),
+        metadata=data.get("metadata") if isinstance(data.get("metadata"), dict) else None,
     )
 
 
@@ -214,6 +243,7 @@ class AlertState:
         min_audio_interval_s: float = 2.0,
         period_ns: int = DEFAULT_PWM_PERIOD_NS,
         level_duty_percent: Mapping[int | str, tuple[int, int] | list[int]] | None = None,
+        source_timeouts_s: Mapping[str, float] | None = None,
     ) -> None:
         self.event_timeout_s = max(0.05, float(event_timeout_s))
         self.min_audio_interval_s = max(0.0, float(min_audio_interval_s))
@@ -222,22 +252,41 @@ class AlertState:
         self.levels_by_side = {"left": 0, "right": 0}
         self.last_event_mono_by_side: dict[str, float] = {}
         self.last_audio_mono_by_clip: dict[str, float] = {}
+        self.source_levels: dict[tuple[str, str], int] = {}
+        self.last_event_mono_by_source: dict[tuple[str, str], float] = {}
+        self.source_timeouts_s = {
+            str(source): max(0.05, float(timeout))
+            for source, timeout in (source_timeouts_s or {}).items()
+        }
+
+    @staticmethod
+    def event_source(event: AlertEvent) -> str:
+        source = str(event.source or "").strip()
+        return source or f"vision:{normalize_side(event.side)}"
 
     def apply_event(self, event: AlertEvent, now: float | None = None) -> AlertOutput:
         now = time.monotonic() if now is None else now
         side = normalize_side(event.side)
         level = normalize_level(event.level)
+        source = self.event_source(event)
+        key = (source, side)
+        previous_source_level = self.source_levels.get(key, 0)
         previous_level = self.levels_by_side[side]
-        if event.event_kind == "heartbeat" and level != previous_level:
+        if event.event_kind == "heartbeat" and level != previous_source_level:
             return self._output()
-        self.levels_by_side[side] = level
         if level > 0:
-            self.last_event_mono_by_side[side] = now
+            self.source_levels[key] = level
+            self.last_event_mono_by_source[key] = now
         else:
-            self.last_event_mono_by_side.pop(side, None)
+            self.source_levels.pop(key, None)
+            self.last_event_mono_by_source.pop(key, None)
+        self._refresh_effective_side(side)
+        effective_level = self.levels_by_side[side]
 
-        clip = None if event.event_kind == "heartbeat" else audio_clip_for(side, level)
-        if clip is not None and not self._should_emit_audio(clip, previous_level, level, now):
+        clip = None if event.event_kind == "heartbeat" else audio_clip_for(side, effective_level)
+        if clip is not None and not self._should_emit_audio(
+            clip, previous_level, effective_level, now
+        ):
             clip = None
         return self._output(audio_clip=clip)
 
@@ -250,30 +299,89 @@ class AlertState:
             raise ValueError(f"unsupported alert command kind: {command.kind!r}")
         side = normalize_side(command.side)
         level = normalize_level(command.level)
-        self.levels_by_side[side] = level
+        key = ("manual", side)
         if level > 0:
-            self.last_event_mono_by_side[side] = now
+            self.source_levels[key] = level
+            self.last_event_mono_by_source[key] = now
         else:
-            self.last_event_mono_by_side.pop(side, None)
-        clip = audio_clip_for(side, level)
+            self.source_levels.pop(key, None)
+            self.last_event_mono_by_source.pop(key, None)
+        previous_level = self.levels_by_side[side]
+        self._refresh_effective_side(side)
+        effective_level = self.levels_by_side[side]
+        clip = audio_clip_for(side, effective_level)
         if clip:
-            self.last_audio_mono_by_clip[clip] = now
+            if previous_level != effective_level:
+                self.last_audio_mono_by_clip[clip] = now
+            else:
+                clip = None
         return self._output(audio_clip=clip)
 
-    def clear(self) -> None:
-        self.levels_by_side = {"left": 0, "right": 0}
-        self.last_event_mono_by_side.clear()
-        self.last_audio_mono_by_clip.clear()
+    def clear(self, *, source: str | None = None, side: str | None = None) -> None:
+        normalized_side = normalize_side(side) if side is not None else None
+        keys = [
+            key
+            for key in self.source_levels
+            if (source is None or key[0] == source)
+            and (normalized_side is None or key[1] == normalized_side)
+        ]
+        for key in keys:
+            self.source_levels.pop(key, None)
+            self.last_event_mono_by_source.pop(key, None)
+        for affected_side in VALID_SIDES:
+            if normalized_side is None or affected_side == normalized_side:
+                self._refresh_effective_side(affected_side)
+        if source is None and normalized_side is None:
+            self.last_audio_mono_by_clip.clear()
 
     def expire(self, now: float | None = None) -> AlertOutput:
         now = time.monotonic() if now is None else now
-        expired: list[str] = []
-        for side, last_event_mono in list(self.last_event_mono_by_side.items()):
-            if now - last_event_mono > self.event_timeout_s:
-                self.levels_by_side[side] = 0
-                del self.last_event_mono_by_side[side]
-                expired.append(side)
-        return self._output(expired_sides=tuple(expired))
+        expired_sides: set[str] = set()
+        expired_sources: list[str] = []
+        expired_source_sides: list[tuple[str, str]] = []
+        for key, last_event_mono in list(self.last_event_mono_by_source.items()):
+            source, side = key
+            timeout = self._timeout_for_source(source)
+            if now - last_event_mono > timeout:
+                self.source_levels.pop(key, None)
+                self.last_event_mono_by_source.pop(key, None)
+                expired_sides.add(side)
+                expired_sources.append(source)
+                expired_source_sides.append((source, side))
+        for side in expired_sides:
+            self._refresh_effective_side(side)
+        return self._output(
+            expired_sides=tuple(sorted(expired_sides)),
+            expired_sources=tuple(sorted(expired_sources)),
+            expired_source_sides=tuple(sorted(expired_source_sides)),
+        )
+
+    def source_snapshot(self) -> dict[str, dict[str, int]]:
+        snapshot: dict[str, dict[str, int]] = {}
+        for (source, side), level in sorted(self.source_levels.items()):
+            snapshot.setdefault(source, {})[side] = level
+        return snapshot
+
+    def _timeout_for_source(self, source: str) -> float:
+        if source in self.source_timeouts_s:
+            return self.source_timeouts_s[source]
+        prefix = source.split(":", 1)[0]
+        return self.source_timeouts_s.get(prefix, self.event_timeout_s)
+
+    def _refresh_effective_side(self, side: str) -> None:
+        self.levels_by_side[side] = max(
+            (level for (source, event_side), level in self.source_levels.items() if event_side == side),
+            default=0,
+        )
+        times = [
+            last
+            for (source, event_side), last in self.last_event_mono_by_source.items()
+            if event_side == side
+        ]
+        if times:
+            self.last_event_mono_by_side[side] = max(times)
+        else:
+            self.last_event_mono_by_side.pop(side, None)
 
     def _should_emit_audio(self, clip: str, previous_level: int, level: int, now: float) -> bool:
         if level != previous_level:
@@ -289,6 +397,8 @@ class AlertState:
         self,
         audio_clip: str | None = None,
         expired_sides: tuple[str, ...] = (),
+        expired_sources: tuple[str, ...] = (),
+        expired_source_sides: tuple[tuple[str, str], ...] = (),
     ) -> AlertOutput:
         return AlertOutput(
             duties_ns=duties_for_levels(
@@ -299,4 +409,6 @@ class AlertState:
             audio_clip=audio_clip,
             levels=dict(self.levels_by_side),
             expired_sides=expired_sides,
+            expired_sources=expired_sources,
+            expired_source_sides=expired_source_sides,
         )

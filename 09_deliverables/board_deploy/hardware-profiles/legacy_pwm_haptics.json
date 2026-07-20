@@ -17,6 +17,10 @@
   },
   "lights": {"enabled": false, "required": false, "failure_policy": "degrade"},
   "radar": {"enabled": false, "required": false, "failure_policy": "degrade"},
-  "audio": {"enabled": false, "backend": "max98357", "required": false, "failure_policy": "degrade"}
+  "audio": {"enabled": false, "backend": "max98357", "required": false, "failure_policy": "degrade"},
+  "output_policy": {
+    "haptic_level_map": {"0": 0, "1": 1, "2": 2, "3": 3, "4": 4},
+    "light_level_map": {"0": 0, "1": 1, "2": 2, "3": 3, "4": 4},
+    "audio_levels": [1, 2, 3, 4]
+  }
 }
-
