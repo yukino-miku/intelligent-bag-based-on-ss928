@@ -5,7 +5,7 @@ Conflicts=smartbag-alert.service
 [Service]
 Type=simple
 WorkingDirectory=/root/smartbag/imu
-ExecStart=/usr/bin/python3 /root/smartbag/imu/bmi270_backpack.py --config /root/smartbag/imu/config.example.json --no-ble
+ExecStart=/usr/bin/python3 /root/smartbag/imu/bmi270_backpack.py --config /root/smartbag/imu/config.example.json --hardware-profile /etc/smartbag/hardware.json --no-ble
 Restart=on-failure
 
 [Install]

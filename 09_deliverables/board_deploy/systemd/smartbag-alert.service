@@ -1,5 +1,5 @@
 [Unit]
-Description=SS928 SmartBag dual-camera alert, PWM and BLE controller
+Description=SS928 SmartBag source fusion, actuators, BLE and detector supervisor
 After=bluetooth.service network.target
 Wants=bluetooth.service network.target
 Conflicts=smartbag-vision.service
@@ -9,7 +9,7 @@ Type=simple
 RuntimeDirectory=smartbag
 WorkingDirectory=/root/smartbag/controller
 ExecStartPre=/root/smartbag/apply-smartbag-pinmux.sh
-ExecStart=/usr/bin/python3 /root/smartbag/controller/smartbag_alert_controller.py --config /etc/smartbag/config.json --detector-cwd /root/smartbag/vision --gnss-command "/usr/bin/python3 /root/smartbag/gnss/dx_gp21_tracker.py --config /root/smartbag/gnss/config.ss928_uart4.json --command-stdin --no-ble" --imu-command "/usr/bin/python3 /root/smartbag/imu/bmi270_backpack.py --config /root/smartbag/imu/config.example.json --command-stdin --no-ble"
+ExecStart=/usr/bin/python3 /root/smartbag/controller/smartbag_alert_controller.py --config /etc/smartbag/config.json --detector-cwd /root/smartbag/vision --gnss-command "/usr/bin/python3 /root/smartbag/gnss/dx_gp21_tracker.py --config /root/smartbag/gnss/config.ss928_uart4.json --command-stdin --no-ble" --imu-command "/usr/bin/python3 /root/smartbag/imu/bmi270_backpack.py --config /root/smartbag/imu/config.example.json --hardware-profile /etc/smartbag/hardware.json --command-stdin --no-ble"
 Restart=on-failure
 RestartSec=2
 KillMode=control-group

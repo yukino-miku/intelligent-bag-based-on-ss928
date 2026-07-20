@@ -17,7 +17,7 @@ BMI = ROOT / "06_software" / "board_runtime" / "bmi270_backpack"
 sys.path[:0] = [str(COMMON), str(BMI)]
 
 from i2c_mux import CrossProcessI2cLock, I2cMuxTransaction, Tca9548aMux  # noqa: E402
-from bmi270_backpack import UserspaceI2cBmi270  # noqa: E402
+from bmi270_backpack import UserspaceI2cBmi270, apply_hardware_profile, load_config  # noqa: E402
 
 
 class FakeAdapter:
@@ -61,6 +61,19 @@ def _process_lock_worker(lock_path: str, output_path: str, name: str) -> None:
 
 
 class I2cMuxTransactionTest(unittest.TestCase):
+    def test_bmi270_uses_channel_zero_from_rev2_hardware_profile(self) -> None:
+        profile = ROOT / "09_deliverables/board_deploy/hardware-profiles/rev2_tm6605_mr20.json"
+        config = apply_hardware_profile(load_config(None), str(profile))
+        self.assertEqual("0x70", config["device"]["i2c_mux_addr"])
+        self.assertEqual(0, config["device"]["i2c_mux_channel"])
+        self.assertEqual("0x68", config["device"]["i2c_addr"])
+
+    def test_bmi270_uses_direct_i2c_from_legacy_hardware_profile(self) -> None:
+        profile = ROOT / "09_deliverables/board_deploy/hardware-profiles/legacy_pwm_haptics.json"
+        config = apply_hardware_profile(load_config(None), str(profile))
+        self.assertIsNone(config["device"]["i2c_mux_addr"])
+        self.assertIsNone(config["device"]["i2c_mux_channel"])
+
     def test_selects_mux_then_target_for_every_transaction(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             adapter = FakeAdapter()
