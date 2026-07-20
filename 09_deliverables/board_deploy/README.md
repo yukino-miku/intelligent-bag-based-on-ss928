@@ -177,6 +177,18 @@ curl --max-time 3 'http://127.0.0.1:8081/api/v1/camera/left/mjpeg?view=raw' -o /
 
 纯采集时 `raw_available=true`、`overlay_available=false` 是正常状态。snapshot 正常但 MJPEG 长时间只有一个分段时，应检查是否运行了旧版仅按 V4L2 sequence 去重的网关；UVC 每次 STREAMOFF/STREAMON 后 sequence 可能重复，新版同时使用采集和发布时间识别新帧。
 
+实板浏览器预览更适合使用下一档 720p 参数；它仍是交替采集，不是同步双摄：
+
+```sh
+sudo env WIDTH=1280 HEIGHT=720 FPS=30 SLICE_MS=400 \
+  WARMUP_FRAMES=1 FRAMES_PER_SLICE=6 DURATION_S=3600 \
+  sh /root/smartbag/board-deploy/alternating-test.sh \
+  --runtime-mode stream_only --serve-bind 0.0.0.0 \
+  --serve-port 8081 --stream-fps-limit 10
+```
+
+本组实测左右均约 5.8–6.0 capture FPS，较 1080p/4 帧组的约 4.15 FPS 提高约 43%，且无 STREAMON/STREAMOFF 失败。网页左右并排显示：当前侧成批更新，另一侧保持缓存帧，不会把整个页面在左右画面之间闪切。纯摄像头模式会禁用不可用的检测画面按钮，MJPEG 断线后每秒尝试重连。
+
 只有板端视觉依赖和模型已经通过 `check-runtime-deps.sh` 时，才允许配置 C/D：
 
 ```json

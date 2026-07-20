@@ -550,7 +550,8 @@ class GatewayTest(unittest.TestCase):
             page = response.read().decode("utf-8")
 
         self.assertIn("let view='raw'", page)
-        self.assertIn("切换为检测画面", page)
+        self.assertIn('<button id="toggle" disabled>检测画面不可用</button>', page)
+        self.assertIn(".onerror=", page)
 
     def test_debug_page_keeps_overlay_default_when_both_sides_are_available(self) -> None:
         frame = self.capture.latest_frame("left")

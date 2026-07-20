@@ -2,6 +2,8 @@
 
 ## 2026-07-20
 
+- 增加 SS928 720p 交替预览实测配置：1280x720、30 FPS 请求、400 ms 时间片、1 帧预热、每片 6 帧，左右 capture FPS 约 5.8–6.0；明确网页是并排 live/cached 更新而非整页左右闪切。
+- 纯摄像头页面在 overlay 不可用时禁用“检测画面”切换，并为左右 MJPEG 增加 1 秒断线重连，避免误入空 overlay 或网关重启后保持黑屏。
 - 修复 SS928 纯摄像头交替预览黑屏：`stream_only` 首页在没有左右 overlay 时自动使用 raw；MJPEG 去重不再仅依赖会在每次 STREAMON 后重复的 V4L2 sequence，而是同时比较采集和发布时间。
 - 实板回归确认左右 raw 流均可被浏览器解码为 1920x1080，3 秒测试收到 3 个连续 MJPEG 分段，左右在线且 STREAMON/STREAMOFF 失败均为 0；新增 3 项网关测试，交替采集测试文件共 22 项通过。
 - 新建 `agent/rev2-autonomous-board-runtime`：默认运行改为 `smartbag.target -> smartbag-controller.service`，controller 内部监督单模型双 UVC 交替采集、GNSS、BMI270、MR20、BLE 和本地视频；固定双 detector 仅保留诊断兼容入口。

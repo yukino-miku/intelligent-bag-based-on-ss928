@@ -333,17 +333,22 @@ class AlternatingCameraGateway:
             raise ValueError("default debug view must be raw or overlay")
         token_query = f"&token={quote_plus(token)}" if token else ""
         status_query = f"?token={quote_plus(token)}" if token else ""
-        toggle_label = "切换为原始画面" if default_view == "overlay" else "切换为检测画面"
+        overlay_ready = default_view == "overlay"
+        toggle_label = "切换为原始画面" if overlay_ready else "检测画面不可用"
+        toggle_disabled = "" if overlay_ready else " disabled"
         return f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>SS928 交替双摄</title>
 <style>body{{font-family:system-ui,sans-serif;margin:0;background:#101214;color:#eee}}header{{padding:12px 18px;background:#191d20;display:flex;gap:14px;align-items:center}}button{{padding:7px 12px}}.grid{{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:12px}}section{{border:1px solid #444;background:#171a1d;padding:8px}}img{{width:100%;aspect-ratio:4/3;object-fit:contain;background:#000}}pre{{white-space:pre-wrap;font-size:12px;min-height:12em}}@media(max-width:800px){{.grid{{grid-template-columns:1fr}}}}</style></head>
-<body><header><strong>SS928 交替双摄</strong><button id="toggle">{toggle_label}</button><span id="global">读取状态中</span></header><div class="grid">
+<body><header><strong>SS928 交替双摄</strong><button id="toggle"{toggle_disabled}>{toggle_label}</button><span id="global">读取状态中</span></header><div class="grid">
 <section><h2>左侧</h2><img id="left-img"><pre id="left"></pre></section>
 <section><h2>右侧</h2><img id="right-img"><pre id="right"></pre></section></div>
-<script>let view='{default_view}';const token='{token_query}';
-function setStreams(){{for(const s of ['left','right'])document.getElementById(s+'-img').src=`/api/v1/camera/${{s}}/mjpeg?view=${{view}}${{token}}&t=${{Date.now()}}`;}}
-document.getElementById('toggle').onclick=()=>{{view=view==='overlay'?'raw':'overlay';document.getElementById('toggle').textContent=view==='overlay'?'切换为原始画面':'切换为检测画面';setStreams();}};
-async function poll(){{try{{const r=await fetch('/api/v1/status{status_query}');const v=await r.json();document.getElementById('global').textContent=`当前采集: ${{v.active_camera||'无'}} | 切换: ${{v.switch_count||0}} | E2E max: ${{v.end_to_end_max_gap_ms??'-'}} ms | CPU: ${{v.cpu_percent??'-'}}% | RSS: ${{v.process_rss_mb??'-'}} MiB`;for(const c of v.cameras)document.getElementById(c.side).textContent=JSON.stringify(c,null,2);}}catch(e){{document.getElementById('global').textContent=String(e);}}setTimeout(poll,1000);}}setStreams();poll();</script></body></html>"""
+<script>let view='{default_view}',overlayReady={str(overlay_ready).lower()};const token='{token_query}',reconnectTimers={{}},toggle=document.getElementById('toggle');
+function connectStream(s){{document.getElementById(s+'-img').src=`/api/v1/camera/${{s}}/mjpeg?view=${{view}}${{token}}&t=${{Date.now()}}`;}}
+function setStreams(){{for(const s of ['left','right'])connectStream(s);}}
+function updateToggle(){{toggle.disabled=!overlayReady&&view==='raw';toggle.textContent=view==='overlay'?'切换为原始画面':overlayReady?'切换为检测画面':'检测画面不可用';}}
+for(const s of ['left','right'])document.getElementById(s+'-img').onerror=()=>{{clearTimeout(reconnectTimers[s]);reconnectTimers[s]=setTimeout(()=>connectStream(s),1000);}};
+toggle.onclick=()=>{{if(view==='raw'&&!overlayReady)return;view=view==='overlay'?'raw':'overlay';updateToggle();setStreams();}};
+async function poll(){{try{{const r=await fetch('/api/v1/status{status_query}');const v=await r.json();overlayReady=v.cameras.length===2&&v.cameras.every(c=>c.overlay_available);if(view==='overlay'&&!overlayReady){{view='raw';setStreams();}}updateToggle();document.getElementById('global').textContent=`当前采集: ${{v.active_camera||'无'}} | 切换: ${{v.switch_count||0}} | E2E max: ${{v.end_to_end_max_gap_ms??'-'}} ms | CPU: ${{v.cpu_percent??'-'}}% | RSS: ${{v.process_rss_mb??'-'}} MiB`;for(const c of v.cameras)document.getElementById(c.side).textContent=JSON.stringify(c,null,2);}}catch(e){{document.getElementById('global').textContent=String(e);}}setTimeout(poll,1000);}}setStreams();poll();</script></body></html>"""
 
     def __enter__(self) -> "AlternatingCameraGateway":
         self.start()

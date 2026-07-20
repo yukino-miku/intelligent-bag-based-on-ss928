@@ -2,6 +2,7 @@
 
 ## 2026-07-20
 
+- 将板端浏览器预览从实际 1920x1080 降至原生 1280x720，并用 1 帧预热/每片 6 帧平衡切换开销，左右 capture FPS 从约 4.15 提高至约 5.8–6.0；5 秒左右端点各收到 11 个 MJPEG 分段，无流切换错误。页面随后增加 overlay 禁用和断线自动重连。
 - 通过板端 `eth1` 有线地址完成 PC 浏览器双摄预览，定位并修复两层黑屏原因：纯采集没有 overlay 但首页默认请求 overlay，以及 UVC 每次重启流后 sequence 重复导致 MJPEG 错误去重。实板浏览器最终确认左右图像 `naturalWidth/naturalHeight=1920/1080`，未启用 YOLO、PWM 或其他外设。
 - 从 `agent/sanda-hardware-refresh@0fbe815e8a7f51fc32e925bce086be99ceca84a9` 创建 `agent/rev2-autonomous-board-runtime`，不修改基线分支。
 - 将 Rev2 震动、灯光和音频改为有界持续状态；新增本地自主启动 target、固定 venv、模型门禁、硬件等待、安全关断、boot self-test 和分阶段板端验证编排。
