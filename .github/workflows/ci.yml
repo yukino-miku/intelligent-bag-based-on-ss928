@@ -35,6 +35,8 @@ jobs:
           PY
       - name: JavaScript tests
         run: find 06_software/mobile/ssminiprogram/tests -name '*.test.js' -print -exec node {} \;
+      - name: JavaScript syntax
+        run: find 06_software/mobile/ssminiprogram -name '*.js' -print -exec node --check {} \;
       - name: Shell syntax
         run: find 05_firmware 06_software 09_deliverables -type f -name '*.sh' -print0 | xargs -0 -r -n1 sh -n
       - name: Repository policy
@@ -67,3 +69,16 @@ jobs:
               print("\n".join(errors), file=sys.stderr)
               raise SystemExit(1)
           PY
+          python .github/scripts/validate_hardware_refresh.py
+          if git lfs ls-files --name-only | grep -q .; then
+            echo "Unexpected tracked Git LFS objects:" >&2
+            git lfs ls-files >&2
+            exit 1
+          fi
+      - name: Hardware profile and migration tests
+        run: |
+          python -m unittest -v \
+            07_tests.integration.test_config_migration \
+            07_tests.integration.test_i2c_mux \
+            07_tests.integration.test_rev2_actuators \
+            07_tests.integration.test_alert_source_fusion

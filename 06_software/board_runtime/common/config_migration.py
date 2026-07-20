@@ -45,6 +45,11 @@ def _legacy_hardware(config: Mapping[str, Any]) -> dict[str, object]:
             "required": False,
             "failure_policy": "degrade",
         },
+        "output_policy": {
+            "haptic_level_map": {str(level): level for level in range(5)},
+            "light_level_map": {str(level): level for level in range(5)},
+            "audio_levels": [1, 2, 3, 4],
+        },
     }
 
 
@@ -109,6 +114,11 @@ def _rev2_hardware() -> dict[str, object]:
             "required": False,
             "failure_policy": "degrade",
         },
+        "output_policy": {
+            "haptic_level_map": {"0": 0, "1": 0, "2": 0, "3": 3, "4": 4},
+            "light_level_map": {"0": 0, "1": 0, "2": 0, "3": 3, "4": 4},
+            "audio_levels": [3, 4],
+        },
     }
 
 
@@ -161,4 +171,3 @@ def migrate_config(
         retained_legacy_fields=tuple(retained),
         manual_confirmation=manual,
     )
-

@@ -1,0 +1,9 @@
+[Match]
+Name=eth1
+
+[Network]
+Address=192.168.1.102/32
+
+[Route]
+Destination=192.168.1.200/32
+Scope=link

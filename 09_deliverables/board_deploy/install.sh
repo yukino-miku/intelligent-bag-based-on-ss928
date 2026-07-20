@@ -10,9 +10,13 @@ DEST=/root/smartbag
     echo "invalid repository root: $REPO_ROOT" >&2
     exit 1
 }
+if grep -Il "$(printf '\r')" "$SCRIPT_DIR"/*.sh >/dev/null 2>&1; then
+    echo "CRLF detected in deployment shell scripts; checkout must honor .gitattributes" >&2
+    exit 1
+fi
 
-install -d "$DEST/vision" "$DEST/controller" "$DEST/gnss" "$DEST/imu" "$DEST/audio" "$DEST/models" "$DEST/board-deploy"
-install -d /etc/smartbag /run/smartbag /var/lib/smartbag/tracks /var/lib/smartbag/calibration /var/log/smartbag
+install -d "$DEST/vision" "$DEST/controller" "$DEST/gnss" "$DEST/imu" "$DEST/audio" "$DEST/models" "$DEST/board-deploy" "$DEST/mr20_radar" "$DEST/cloud-uploader"
+install -d /etc/smartbag /run/smartbag /run/lock /var/lib/smartbag/tracks /var/lib/smartbag/calibration /var/log/smartbag
 install -d /etc/systemd/journald.conf.d
 
 cp -a "$REPO_ROOT/06_software/vision_obstacle_tracker/." "$DEST/vision/"
@@ -21,10 +25,15 @@ cp -a "$REPO_ROOT/06_software/board_runtime/common" "$DEST/"
 cp -a "$REPO_ROOT/06_software/board_runtime/dx_gp21_tracker/." "$DEST/gnss/"
 cp -a "$REPO_ROOT/06_software/board_runtime/bmi270_backpack/." "$DEST/imu/"
 cp -a "$REPO_ROOT/06_software/board_runtime/imu_fall_detector" "$DEST/"
+cp -a "$REPO_ROOT/06_software/board_runtime/mr20_radar/." "$DEST/mr20_radar/"
+cp -a "$REPO_ROOT/06_software/board_runtime/cloud_uploader/." "$DEST/cloud-uploader/"
 cp -a "$SCRIPT_DIR/assets/audio/." "$DEST/audio/"
 install -m 0755 "$SCRIPT_DIR"/alternating-*.sh "$DEST/board-deploy/"
 install -m 0755 "$SCRIPT_DIR"/cleanup-alternating-runs.sh "$DEST/board-deploy/"
 install -m 0755 "$SCRIPT_DIR"/check-runtime-deps.sh "$SCRIPT_DIR"/install-board-*.sh "$DEST/board-deploy/"
+install -m 0755 "$SCRIPT_DIR"/hardware-preflight.sh "$SCRIPT_DIR"/i2c-mux-test.sh "$SCRIPT_DIR"/tm6605-test.sh "$SCRIPT_DIR"/light-test.sh "$SCRIPT_DIR"/pwm-list.sh "$SCRIPT_DIR"/mr20-network-preflight.sh "$SCRIPT_DIR"/mr20-network-install.sh "$SCRIPT_DIR"/mr20-status.sh "$SCRIPT_DIR"/mr20-capture.sh "$SCRIPT_DIR"/full-hardware-test.sh "$SCRIPT_DIR"/smartbag-hardware-profile.sh "$DEST/board-deploy/"
+install -m 0755 "$SCRIPT_DIR"/pwm-probe.py "$SCRIPT_DIR"/mr20-capture.py "$SCRIPT_DIR"/migrate-config.py "$DEST/board-deploy/"
+cp -a "$SCRIPT_DIR/hardware-profiles" "$SCRIPT_DIR/systemd-networkd" "$DEST/board-deploy/"
 install -m 0755 "$REPO_ROOT/05_firmware/ss928/pinmux/apply-smartbag-pinmux.sh" "$DEST/apply-smartbag-pinmux.sh"
 
 find "$DEST" -type d -name __pycache__ -prune -exec rm -rf {} +
@@ -33,6 +42,9 @@ find "$DEST/vision" -type d \( -name build -o -name dist -o -name dist_onefile -
 find "$DEST/vision" -type f \( -name 'yolo*.pt' -o -name 'yolo*.onnx' -o -name '*.om' \) -delete
 
 [ -f /etc/smartbag/config.json ] || cp "$SCRIPT_DIR/config.example.json" /etc/smartbag/config.json
+[ -f /etc/smartbag/hardware.json ] || cp "$SCRIPT_DIR/hardware-profiles/rev2_tm6605_mr20.json" /etc/smartbag/hardware.json
+[ -f /etc/smartbag/mr20-radar.json ] || cp "$REPO_ROOT/06_software/board_runtime/mr20_radar/config.example.json" /etc/smartbag/mr20-radar.json
+[ -f /etc/smartbag/cloud-uploader.json ] || cp "$REPO_ROOT/06_software/board_runtime/cloud_uploader/config.example.json" /etc/smartbag/cloud-uploader.json
 [ -f /etc/smartbag/calibration-left.json ] || cp "$SCRIPT_DIR/calibration-left.example.json" /etc/smartbag/calibration-left.json
 [ -f /etc/smartbag/calibration-right.json ] || cp "$SCRIPT_DIR/calibration-right.example.json" /etc/smartbag/calibration-right.json
 cp "$SCRIPT_DIR/systemd/"*.service "$SCRIPT_DIR/systemd/"*.timer "$SCRIPT_DIR/systemd/smartbag.target" /etc/systemd/system/
@@ -44,4 +56,5 @@ systemctl enable smartbag-alternating-cleanup.timer
 
 echo "Installed under $DEST. Place the model at $DEST/models/yolo11n.pt before starting."
 echo "Review /etc/smartbag/config.json and both calibration files before starting."
+echo "Review /etc/smartbag/hardware.json and /etc/smartbag/mr20-radar.json; Cloud uploader remains disabled by default."
 echo "Then run: $SCRIPT_DIR/check-runtime-deps.sh && $SCRIPT_DIR/preflight.sh && systemctl start smartbag.target"

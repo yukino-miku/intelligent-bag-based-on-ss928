@@ -33,6 +33,7 @@ RIGHT_DEVICE=$(config_value cameras.right.camera_device)
 LEFT_CALIBRATION=$(config_value cameras.left.calibration_file)
 RIGHT_CALIBRATION=$(config_value cameras.right.calibration_file)
 MODEL=$(config_value paths.model)
+HARDWARE=$(config_value hardware_profile_file)
 VIDEO_PORT=$(config_value stream_gateway.port)
 LEFT_STREAM_PORT=$(config_value cameras.left.stream_port)
 RIGHT_STREAM_PORT=$(config_value cameras.right.stream_port)
@@ -48,14 +49,11 @@ if [ "$LEFT_STREAM_PORT" = "$RIGHT_STREAM_PORT" ]; then
     fail=1
 fi
 
-for path in "$LEFT_DEVICE" "$RIGHT_DEVICE" "$LEFT_CALIBRATION" "$RIGHT_CALIBRATION" "$MODEL" /dev/i2c-0 /dev/ttyAMA4 /sys/class/pwm/pwmchip0; do
+for path in "$LEFT_DEVICE" "$RIGHT_DEVICE" "$LEFT_CALIBRATION" "$RIGHT_CALIBRATION" "$MODEL" "$HARDWARE" /dev/i2c-0 /dev/ttyAMA4 /sys/class/pwm; do
     check_path "$path"
 done
 
-if [ -r /sys/class/pwm/pwmchip0/npwm ]; then
-    npwm=$(cat /sys/class/pwm/pwmchip0/npwm)
-    [ "$npwm" -ge 16 ] || { echo "MISS pwmchip0 needs at least 16 channels, got $npwm" >&2; fail=1; }
-fi
+"$SCRIPT_DIR/hardware-preflight.sh" "$HARDWARE" || fail=1
 
 for port in "$VIDEO_PORT" "$LEFT_STREAM_PORT" "$RIGHT_STREAM_PORT"; do
     if python3 - "$port" <<'PY'
