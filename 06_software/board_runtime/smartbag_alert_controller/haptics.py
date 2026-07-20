@@ -76,6 +76,9 @@ class Tm6605HapticBackend:
         self._play_count = {side: 0 for side in VALID_SIDES}
         self._errors = {side: 0 for side in VALID_SIDES}
         self._last_error = {side: "" for side in VALID_SIDES}
+        self._last_write_mono_s: dict[str, float | None] = {
+            side: None for side in VALID_SIDES
+        }
 
     def preflight(self) -> None:
         for side, transaction in self.transactions.items():
@@ -138,6 +141,7 @@ class Tm6605HapticBackend:
             "play_count": dict(self._play_count),
             "error_count": dict(self._errors),
             "last_error": dict(self._last_error),
+            "last_write_mono_s": dict(self._last_write_mono_s),
             "i2c": {side: tx.status() for side, tx in self.transactions.items()},
         }
 
@@ -152,6 +156,7 @@ class Tm6605HapticBackend:
 
         try:
             transaction.execute(operation)
+            self._last_write_mono_s[side] = self.clock()
             self._play_count[side] += 1
         except Exception as exc:
             self._record_error(side, exc)
@@ -165,6 +170,7 @@ class Tm6605HapticBackend:
             transaction.execute(
                 lambda device: device.write(bytes((TM6605_PLAY_REGISTER, 0)))
             )
+            self._last_write_mono_s[side] = self.clock()
         except Exception as exc:
             self._record_error(side, exc)
             raise
@@ -186,6 +192,9 @@ class LegacyPwmHapticBackend:
         self.period_ns = int(period_ns)
         self.level_duty_percent = level_duty_percent
         self._levels = {side: 0 for side in VALID_SIDES}
+        self._last_write_mono_s: dict[str, float | None] = {
+            side: None for side in VALID_SIDES
+        }
 
     def preflight(self) -> None:
         self.pwm.preflight()  # type: ignore[attr-defined]
@@ -200,6 +209,8 @@ class LegacyPwmHapticBackend:
         self.pwm.apply(  # type: ignore[attr-defined]
             duties_for_levels(self._levels, self.period_ns, self.level_duty_percent)
         )
+        completed_at = time.monotonic()
+        self._last_write_mono_s = {side: completed_at for side in VALID_SIDES}
 
     def tick(self, now: float | None = None) -> None:
         del now
@@ -213,7 +224,11 @@ class LegacyPwmHapticBackend:
         self.pwm.stop_all()  # type: ignore[attr-defined]
 
     def status(self) -> dict[str, object]:
-        return {"backend": "legacy_pwm", "levels": dict(self._levels)}
+        return {
+            "backend": "legacy_pwm",
+            "levels": dict(self._levels),
+            "last_write_mono_s": dict(self._last_write_mono_s),
+        }
 
 
 class DryRunHapticBackend:
@@ -241,4 +256,3 @@ class DryRunHapticBackend:
 
     def status(self) -> dict[str, object]:
         return {"backend": "dry_run", "levels": dict(self._levels)}
-

@@ -704,6 +704,53 @@ def append_alert_event_jsonl(
         handle.write(json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n")
 
 
+def append_output_timing_jsonl(
+    path: str,
+    event: AlertEvent,
+    decision: OutputDecision,
+    timings: Mapping[str, float | None],
+    *,
+    ble_transmit_mono_s: float | None,
+) -> None:
+    if not path or event.event_kind != "state_change":
+        return
+    record = {
+        "type": "actuator_timing",
+        "source": AlertState.event_source(event),
+        "side": event.side,
+        "source_event_ts": event.ts,
+        "controller_receive_mono_s": timings.get("controller_receive_mono_s"),
+        "effective_level_mono_s": timings.get("effective_level_mono_s"),
+        "tm6605_write_mono_s": timings.get("haptic_write_mono_s"),
+        "light_pwm_write_mono_s": timings.get("light_write_mono_s"),
+        "ble_transmit_mono_s": ble_transmit_mono_s,
+        "effective_level": decision.effective_levels[event.side],
+        "haptic_level": decision.haptic_levels[event.side],
+        "light_level": decision.light_levels[event.side],
+    }
+    source_ts = event.ts
+    if source_ts is not None:
+        latency_fields = {
+            "haptic_write_mono_s": "alert_to_haptic_latency_ms",
+            "light_write_mono_s": "alert_to_light_latency_ms",
+        }
+        for timing_key, record_key in latency_fields.items():
+            completed_at = timings.get(timing_key)
+            if completed_at is None:
+                continue
+            latency_ms = (completed_at - source_ts) * 1000.0
+            if 0.0 <= latency_ms <= 60_000.0:
+                record[record_key] = round(latency_ms, 3)
+        if ble_transmit_mono_s is not None:
+            latency_ms = (ble_transmit_mono_s - source_ts) * 1000.0
+            if 0.0 <= latency_ms <= 60_000.0:
+                record["alert_to_ble_latency_ms"] = round(latency_ms, 3)
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n")
+
+
 def controller_status_payload(
     state: AlertState,
     detectors: list[DetectorProcess],
@@ -931,6 +978,15 @@ class ManagedActuator:
             "detail": detail,
         }
 
+    def last_write_mono_s(self, side: str) -> float | None:
+        try:
+            detail = self.backend.status()  # type: ignore[attr-defined]
+            values = detail.get("last_write_mono_s", {})
+            value = values.get(side) if isinstance(values, Mapping) else None
+            return float(value) if value is not None else None
+        except (AttributeError, TypeError, ValueError):
+            return None
+
     def _handle_failure(self, exc: Exception) -> None:
         self.last_error = f"{type(exc).__name__}: {exc}"
         if self.required or self.failure_policy == "fail_service":
@@ -1095,10 +1151,28 @@ def apply_effective_output(
     policy: OutputPolicy,
     *,
     now: float | None = None,
+    timings: dict[str, float | None] | None = None,
+    event_side: str | None = None,
 ) -> OutputDecision:
     decision = policy.decide(output.levels or {}, output.audio_clip)
+    if timings is not None:
+        timings["effective_level_mono_s"] = time.monotonic()
+    haptic_before = haptics.last_write_mono_s(event_side) if event_side else None
     haptics.apply_levels(decision.haptic_levels, now=now)
+    if timings is not None:
+        timings["haptic_apply_mono_s"] = time.monotonic()
+        haptic_after = haptics.last_write_mono_s(event_side) if event_side else None
+        timings["haptic_write_mono_s"] = (
+            haptic_after if haptic_after is not None and haptic_after != haptic_before else None
+        )
+    light_before = lights.last_write_mono_s(event_side) if event_side else None
     lights.apply_levels(decision.light_levels, now=now)
+    if timings is not None:
+        timings["light_apply_mono_s"] = time.monotonic()
+        light_after = lights.last_write_mono_s(event_side) if event_side else None
+        timings["light_write_mono_s"] = (
+            light_after if light_after is not None and light_after != light_before else None
+        )
     audio.request(decision.audio_clip)
     return decision
 
@@ -1129,6 +1203,7 @@ def run_controller(args: argparse.Namespace) -> int:
     restart_backoff_s = float(args.detector_restart_backoff if args.detector_restart_backoff is not None else restart_config.get("backoff_s", 1.0))
     status_file = str(args.status_file or config.get("controller_status_file", ""))
     event_log_jsonl = str(config.get("controller_event_jsonl", ""))
+    actuator_log_jsonl = str(config.get("controller_actuator_jsonl", ""))
     level_duties = pwm_config.get("level_duty_percent")
     event_queue: "queue.Queue[AlertEvent]" = queue.Queue()
     command_queue: "queue.Queue[str]" = queue.Queue()
@@ -1380,12 +1455,22 @@ def run_controller(args: argparse.Namespace) -> int:
                     )
                     continue
                 output = state.apply_event(event)
-                apply_effective_output(output, haptics, lights, audio, output_policy)
+                timings = {"controller_receive_mono_s": time.monotonic()}
+                decision = apply_effective_output(
+                    output,
+                    haptics,
+                    lights,
+                    audio,
+                    output_policy,
+                    timings=timings,
+                    event_side=event.side,
+                )
                 append_alert_event_jsonl(
                     event_log_jsonl,
                     event,
                     effective_level=(output.levels or {})[event.side],
                 )
+                ble_transmit_mono_s = None
                 if ble is not None and should_publish_alert_history(event):
                     ble.send_line(
                         alert_event_ble_payload(
@@ -1393,6 +1478,14 @@ def run_controller(args: argparse.Namespace) -> int:
                             effective_level=(output.levels or {})[event.side],
                         )
                     )
+                    ble_transmit_mono_s = time.monotonic()
+                append_output_timing_jsonl(
+                    actuator_log_jsonl,
+                    event,
+                    decision,
+                    timings,
+                    ble_transmit_mono_s=ble_transmit_mono_s,
+                )
 
             while True:
                 try:

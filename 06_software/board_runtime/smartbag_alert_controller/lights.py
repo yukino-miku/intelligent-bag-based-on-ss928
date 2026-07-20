@@ -197,6 +197,9 @@ class PwmLightBackend:
         self._pending: list[LightStep] = []
         self._errors = 0
         self._last_error = ""
+        self._last_write_mono_s: dict[str, float | None] = {
+            side: None for side in VALID_SIDES
+        }
 
     def preflight(self) -> None:
         for side, spec in self.channels.items():
@@ -254,6 +257,7 @@ class PwmLightBackend:
             },
             "error_count": self._errors,
             "last_error": self._last_error,
+            "last_write_mono_s": dict(self._last_write_mono_s),
         }
 
     def _set_output(self, side: str, enabled: bool, duty_percent: int = 0) -> None:
@@ -262,6 +266,7 @@ class PwmLightBackend:
             self.pwm.set_output(
                 self._resolved_chips[side], spec.channel, self.period_ns, duty_percent, enabled
             )
+            self._last_write_mono_s[side] = self.clock()
         except Exception as exc:
             self._errors += 1
             self._last_error = f"{type(exc).__name__}: {exc}"
@@ -289,4 +294,3 @@ class DisabledLightBackend:
 
     def status(self) -> dict[str, object]:
         return {"backend": "disabled", "levels": {"left": 0, "right": 0}}
-
