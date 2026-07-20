@@ -1,5 +1,13 @@
 # SS928 板端整合状态
 
+## 2026-07-20 Rev2 硬件刷新
+
+- `IMPLEMENTED + UNIT TESTED`：TCA9548A 统一事务、BMI270 CH0、左右 TM6605 CH1/CH2、灯光调度、MR20 解析/replay、来源隔离融合、Rev2 OutputPolicy、Cloud uploader 和 Cloud 安全核心。
+- `REPLAY TESTED`：匿名化 MR20 0x60A/0x60B 样例连续两 scan 后才形成 `radar:right_rear` 候选等级；未知帧和错误来源被统计且不报警。
+- `NOT DEPLOYED`：CloudBase 云函数和数据库集合；仓库不含 EnvId、AppID、设备密钥或 HMAC secret。
+- `BLOCKED`：真实 TCA9548A/BMI270/TM6605、左右灯光、MR20 0x60B 移动目标、雷达到执行器/BLE 闭环、30 分钟联合运行。2026-07-20 收尾时 Windows 未枚举板端 USB 串口/USB 网卡且 SSH 不可达，没有实物日志前不标记 PHYSICALLY VERIFIED。
+- 视觉风险算法没有被雷达代码改写。vision、radar、manual 独立稳定并按同侧最大值输出；一个来源退出、clear 或 stale 不会误清另一个来源。
+
 ## 已完成
 
 - 新增默认关闭的 `alternating_single_model` 回退模式：原生 V4L2 单 active side、单次模型加载、左右独立 tracker/risk/标定/CSV、稳定 haptic 风险优先调度和 session 报告。

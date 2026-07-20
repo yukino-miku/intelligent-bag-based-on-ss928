@@ -78,4 +78,3 @@
 - MR20 使用 `eth1`、`192.168.1.102/32` 到 `192.168.1.200/32` 的 host route，不修改 eth0、默认路由或网关。
 - GNSS UART4 和 MAX98357 I2S 引脚保持不变。
 - 所有真实硬件和 Cloud 结论必须分别标记 BOARD TESTED、PHYSICALLY VERIFIED、CLOUD DEPLOYED 或 BLOCKED。
-

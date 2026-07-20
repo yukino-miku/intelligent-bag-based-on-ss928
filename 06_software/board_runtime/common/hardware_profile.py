@@ -97,4 +97,3 @@ def validate_hardware_profile(config: Mapping[str, Any]) -> None:
             for pin, uses in sorted(conflicts.items())
         )
         raise ValueError(f"hardware pin conflict: {detail}")
-

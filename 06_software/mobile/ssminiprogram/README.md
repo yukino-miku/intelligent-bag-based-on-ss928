@@ -2,6 +2,8 @@
 
 原生小程序包含首页、双摄画面、GNSS 轨迹、BMI270 姿态、monitor、tracks、BLE NUS、WGS84 到 GCJ-02 和本地告警历史。默认只扫描统一设备名 `SS928-SmartBag`。
 
+CloudBase 是可选历史数据源，不替代 BLE。复制 `miniprogram/config/cloud.example.js` 为本地且被 Git 忽略的 `cloud.local.js`，填写自己的 EnvId/deviceId 后再启用。页面通过 `device-data-service` 统一读取，Cloud 超时或失败会回退 BLE，并显示来源与 stale 状态；双摄视频仍走板端局域网接口。
+
 ## 双摄实时画面
 
 首页进入“**双摄实时画面**”后可配置：
@@ -42,4 +44,8 @@ node tests/alarm-utils.test.js
 node tests/track-utils.test.js
 node tests/camera-transport.test.js
 node tests/alert-state.test.js
+node tests/cloud-security.test.js
+node tests/device-data-service.test.js
 ```
+
+云函数源码在 `cloudfunctions/smartbag-api`。部署前创建 `device_bindings` 等集合、配置 nonce TTL 和 `SMARTBAG_DEVICE_SECRETS_JSON` 环境变量；不能把 OPENID、EnvId、HMAC secret、管理员密钥或固定 `deviceId` 写入仓库。当前仓库只完成源码与 mock 测试，不表示已部署 CloudBase。

@@ -31,4 +31,3 @@ __all__ = [
     "parse_mr20_datagram",
     "parse_mr20_frame",
 ]
-

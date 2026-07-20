@@ -63,7 +63,6 @@ def parse_mr20_frame(
         status=statuses.get(data[6] & 0x07, "unknown"),
     )
 
-
 def parse_mr20_datagram(
     payload: bytes,
 ) -> tuple[MR20ObjectListStatus | MR20Target | MR20UnknownFrame, ...]:
@@ -75,4 +74,3 @@ def parse_mr20_datagram(
         parse_mr20_frame(payload[offset : offset + FRAME_SIZE])
         for offset in range(0, len(payload), FRAME_SIZE)
     )
-

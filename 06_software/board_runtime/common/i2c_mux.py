@@ -214,4 +214,3 @@ class I2cMuxTransaction:
             }
         )
         return result
-

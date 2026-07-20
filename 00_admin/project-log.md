@@ -1,5 +1,12 @@
 # Project Log
 
+## 2026-07-20
+
+- 从 `agent/alternating-dual-camera@a5f6d815b924129fca03c8392912f31b843da636` 创建 `agent/sanda-hardware-refresh`；来源固定为 `sanda-tt/ss928@970351c84a12f3219e7910ee488ac5ff579d6f98`，未修改来源仓库和现有 PR #2。
+- 通过 GitHub Compare/Tree/Contents API 审计上游 19 个新增提交和 28,904 项树记录；本机 partial clone fetch 因 443 连接重置失败，审计清单保留 blob SHA、许可状态和迁移决策。
+- 重实现统一 I2C mux、双 TM6605、双灯、MR20、来源融合、输出策略和 Cloud 安全链路；未复制上游 SDK、模型、PDF、二进制或许可不明运行代码。
+- 本地完成 267 项 Python、6 个 JS 测试文件、24 个 JS 语法、mock/replay/配置/脚本检查；Windows 上仅跳过 Linux `fcntl` 进程锁测试。收尾时板端未枚举为 USB 串口/网卡且 SSH 不可达，真实板端项保持 BLOCKED。
+
 ## 2026-07-19
 
 - 从基线 `06c6cfd1dc11a0f92c54ce8aad5252d554ececa5` 创建独立实验分支 `agent/alternating-dual-camera`，未修改正式集成分支。
