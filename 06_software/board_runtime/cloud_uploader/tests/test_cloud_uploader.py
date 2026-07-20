@@ -72,6 +72,24 @@ class CloudUploaderTest(unittest.TestCase):
             events.write_text(events.read_text(encoding="utf-8") + '{"typ":"alert","level":0}\n', encoding="utf-8")
             self.assertEqual(0, reader.read([events])[0]["level"])
 
+    def test_jsonl_cursor_is_not_advanced_when_durable_sink_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            events = root / "events.jsonl"
+            cursor = root / "cursors.json"
+            events.write_text('{"typ":"alert","level":3}\n', encoding="utf-8")
+            reader = JsonlTailReader(cursor)
+
+            def reject(_event) -> None:
+                raise OSError("queue unavailable")
+
+            with self.assertRaises(OSError):
+                reader.read_into([events], reject)
+            self.assertFalse(cursor.exists())
+            accepted = []
+            self.assertEqual(1, reader.read_into([events], accepted.append))
+            self.assertEqual(3, accepted[0]["level"])
+
 
 if __name__ == "__main__":
     unittest.main()

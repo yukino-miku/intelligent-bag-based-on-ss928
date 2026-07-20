@@ -110,7 +110,16 @@ class JsonlTailReader:
             self.offsets: dict[str, int] = {}
 
     def read(self, paths: Iterable[Path]) -> list[dict[str, object]]:
-        events = []
+        events: list[dict[str, object]] = []
+        self.read_into(paths, events.append)
+        return events
+
+    def read_into(
+        self,
+        paths: Iterable[Path],
+        sink: Callable[[dict[str, object]], None],
+    ) -> int:
+        delivered = 0
         changed = False
         for path in paths:
             key = str(path)
@@ -119,25 +128,31 @@ class JsonlTailReader:
                 offset = self.offsets.get(key, 0)
                 if offset > size:
                     offset = 0
-                with path.open("r", encoding="utf-8", errors="replace") as handle:
-                    handle.seek(offset)
-                    for line in handle:
-                        try:
-                            value = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        if isinstance(value, dict):
-                            events.append(value)
-                    self.offsets[key] = handle.tell()
-                    changed = True
             except OSError:
                 continue
+            try:
+                handle = path.open("r", encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            with handle:
+                handle.seek(offset)
+                for line in handle:
+                    try:
+                        value = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(value, dict):
+                        # Persist the cursor only after the durable queue accepts the event.
+                        sink(value)
+                        delivered += 1
+                self.offsets[key] = handle.tell()
+                changed = True
         if changed:
             self.cursor_file.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.cursor_file.with_suffix(self.cursor_file.suffix + ".tmp")
             temporary.write_text(json.dumps(self.offsets, sort_keys=True), encoding="utf-8")
             temporary.replace(self.cursor_file)
-        return events
+        return delivered
 
 
 class HttpsJsonTransport:
@@ -276,8 +291,12 @@ def run(config: UploaderConfig, *, once: bool = False) -> int:
     while True:
         for kind, snapshot in read_status_files(config.status_files):
             uploader.enqueue(kind, snapshot)
-        for event in tails.read(config.event_jsonl_files):
-            uploader.enqueue(str(event.get("type") or event.get("typ") or "event"), event)
+        tails.read_into(
+            config.event_jsonl_files,
+            lambda event: uploader.enqueue(
+                str(event.get("type") or event.get("typ") or "event"), event
+            ),
+        )
         try:
             uploader.flush_once()
         except (OSError, RuntimeError, urllib.error.URLError) as exc:
