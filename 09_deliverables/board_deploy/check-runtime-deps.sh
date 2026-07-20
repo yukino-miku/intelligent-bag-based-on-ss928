@@ -2,6 +2,8 @@
 set -eu
 
 fail=0
+PYTHON=${SMARTBAG_PYTHON:-/root/smartbag/venv/bin/python}
+[ -x "$PYTHON" ] || PYTHON=python3
 for command_name in python3 curl v4l2-ctl bluetoothctl; do
     if command -v "$command_name" >/dev/null 2>&1; then
         echo "OK   $command_name"
@@ -23,7 +25,7 @@ else
     echo "WARN gst-launch-1.0 missing; snapshot/MJPEG baseline does not require it" >&2
 fi
 
-python3 - <<'PY' || fail=1
+"$PYTHON" - <<'PY' || fail=1
 import importlib
 import platform
 import sys

@@ -1,19 +1,26 @@
 [Unit]
-Description=SS928 SmartBag source fusion, actuators, BLE and detector supervisor
-After=bluetooth.service network.target
-Wants=bluetooth.service network.target
-Conflicts=smartbag-vision.service
+Description=Legacy standalone SmartBag controller entry (not enabled by default)
+After=local-fs.target smartbag-safe-off.service bluetooth.service
+Wants=smartbag-safe-off.service bluetooth.service
+Conflicts=smartbag-controller.service smartbag-alternating-vision.service smartbag-video.service
 
 [Service]
 Type=simple
 RuntimeDirectory=smartbag
 WorkingDirectory=/root/smartbag/controller
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/etc/smartbag/smartbag.env
 ExecStartPre=/root/smartbag/apply-smartbag-pinmux.sh
-ExecStart=/usr/bin/python3 /root/smartbag/controller/smartbag_alert_controller.py --config /etc/smartbag/config.json --detector-cwd /root/smartbag/vision --gnss-command "/usr/bin/python3 /root/smartbag/gnss/dx_gp21_tracker.py --config /root/smartbag/gnss/config.ss928_uart4.json --command-stdin --no-ble" --imu-command "/usr/bin/python3 /root/smartbag/imu/bmi270_backpack.py --config /root/smartbag/imu/config.example.json --hardware-profile /etc/smartbag/hardware.json --command-stdin --no-ble"
-Restart=on-failure
+ExecStartPre=/root/smartbag/venv/bin/python /root/smartbag/board-deploy/wait_for_hardware.py --profile controller --config /etc/smartbag/config.json --timeout-s 30
+ExecStart=/root/smartbag/venv/bin/python /root/smartbag/controller/smartbag_alert_controller.py --config /etc/smartbag/config.json --detector-cwd /root/smartbag/vision --gnss-command "/root/smartbag/venv/bin/python /root/smartbag/gnss/dx_gp21_tracker.py --config /root/smartbag/gnss/config.ss928_uart4.json --command-stdin --no-ble" --imu-command "/root/smartbag/venv/bin/python /root/smartbag/imu/bmi270_backpack.py --config /root/smartbag/imu/config.example.json --hardware-profile /etc/smartbag/hardware.json --command-stdin --no-ble"
+ExecStopPost=-/root/smartbag/venv/bin/python /root/smartbag/board-deploy/safe_off.py --hardware /etc/smartbag/hardware.json
+Restart=always
 RestartSec=2
 KillMode=control-group
-TimeoutStopSec=10
+TimeoutStopSec=12
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
 
 [Install]
-WantedBy=smartbag.target
+WantedBy=multi-user.target

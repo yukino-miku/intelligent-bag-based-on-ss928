@@ -2,6 +2,8 @@
 
 ## 2026-07-20 Rev2 硬件刷新
 
+- `LOCAL IMPLEMENTED`：autonomous 分支默认改为单模型交替双摄、0–4 四档触觉、有界持续灯光/音频、固定 venv、systemd controller/safe-off/boot-selftest 和完整 validation orchestrator。
+- `BOARD NOT RUN`：用户要求本轮先不执行板端烧录，因此没有上传、enable、执行器通电、断开电脑或两次重启证据；`POWER_ONLY_AUTOSTART_NOT_READY`。
 - `IMPLEMENTED + UNIT TESTED`：TCA9548A 统一事务、BMI270 CH0、左右 TM6605 CH1/CH2、灯光调度、MR20 解析/replay、来源隔离融合、Rev2 OutputPolicy、Cloud uploader 和 Cloud 安全核心。
 - `REPLAY TESTED`：匿名化 MR20 0x60A/0x60B 样例连续两 scan 后才形成 `radar:right_rear` 候选等级；未知帧和错误来源被统计且不报警。
 - `NOT DEPLOYED`：CloudBase 云函数和数据库集合；仓库不含 EnvId、AppID、设备密钥或 HMAC secret。
@@ -10,14 +12,14 @@
 
 ## 已完成
 
-- 新增默认关闭的 `alternating_single_model` 回退模式：原生 V4L2 单 active side、单次模型加载、左右独立 tracker/risk/标定/CSV、稳定 haptic 风险优先调度和 session 报告。
+- 默认改为 `alternating_single_model`：原生 V4L2 单 active side、单次模型加载、左右独立 tracker/risk/标定/CSV、稳定 haptic 风险优先调度和 session 报告。
 - 每片默认只选最后 1 张最新有效帧推理，无积压队列；新增 capture-only 与完整 E2E 两套盲区、跨侧延迟和全阶段 monotonic 时间戳。验收优先使用 `end_to_end_max_gap_ms`。
 - CAUTION/DANGER/EMERGENCY 的普通确认必须跨独立 `slice_id`；单 burst 不能直接满足 DANGER，紧急 fast path 有严格质量条件和原因日志。tracker 可按每侧真实有效 FPS 调整时间缓冲。
 - 交替 detector 内部直接提供左右 raw/overlay snapshot、MJPEG、完整状态 API 和双画面浏览器页，不启动第二个摄像头所有者；HTTP access log 默认关闭。
 - 单侧断线状态机实现 close/unmap、有限指数退避、reopen/remap、恢复耗时和按断线时长重置本侧 tracker；另一侧不重置。硬件拔插闭环仍待实测。
 - 新增左右安装外参、背包坐标转换、production 标定检查器和 camera/backpack 风险日志字段；示例仍是 `calibrated=false` 占位，不能用于正式距离风险验收。
 - Controller 已区分 `state_change` 与 `heartbeat`；切换相机不把未观测侧当成 SAFE，heartbeat 不进入 BLE 历史，stale observation 或单进程 detector 退出会清除对应/全部 PWM 状态。
-- 正式 systemd 使用左右固定双 USB detector；配置拒绝同一真实设备或相同 stream port，跨侧告警被 Controller 拒绝。
+- 正式 systemd 使用 `smartbag.target -> smartbag-controller.service`；controller 内部监督 alternating detector，配置拒绝左右指向同一真实设备。
 - 每个 detector 是相机唯一所有者，使用容量 1 latest-frame buffer、有限断流重连、独立 tracker/RiskModel/stabilizer/CSV 和稳定 haptic JSONL。
 - 左右 PWM 独立；单侧 level=0、超时或 detector 退出只清对应侧，子进程有限退避重启，另一侧继续。
 - 双路 snapshot/MJPEG、聚合状态、浏览器调试页和按需 JPEG；BLE 不传视频。
@@ -47,7 +49,7 @@
 - 左右独立相机内参、畸变、高度、pitch、朝向和风险日志实景校准。
 - PWM sysfs 编号、四路物理方向、电机驱动供电、单侧退出清振和紧急停止。
 - BlueZ NUS、自动 alert、GNSS/IMU/SYS 往返；手机真机 snapshot、局域网/HTTPS/合法域名限制。
-- DX-GP21 UART4、BMI270 IIO/I2C、MAX98357；音频默认关闭。
+- DX-GP21 UART4、BMI270 IIO/I2C、MAX98357；Rev2 音频默认启用但 optional，缺失时必须降级而不能阻断视觉和触觉。
 
 ## 未完成
 

@@ -32,24 +32,30 @@ class HapticBackend(Protocol):
 @dataclass(frozen=True)
 class EffectPattern:
     effect: int
-    count: int
-    interval_ms: int
+    repeat_interval_ms: int
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, object]) -> "EffectPattern":
         effect = int(raw.get("effect", 0))
-        count = int(raw.get("count", 0))
-        interval_ms = int(raw.get("interval_ms", 0))
-        if effect not in range(256) or count < 0 or interval_ms < 0:
+        repeat_interval_ms = int(raw.get("repeat_interval_ms", raw.get("interval_ms", 0)))
+        if effect not in range(256) or repeat_interval_ms < 0:
             raise ValueError("invalid TM6605 effect pattern")
-        return cls(effect, count, interval_ms)
+        if effect > 0 and repeat_interval_ms <= 0:
+            raise ValueError("active TM6605 effect requires repeat_interval_ms > 0")
+        return cls(effect, repeat_interval_ms)
 
 
-@dataclass(frozen=True)
-class ScheduledEffect:
-    at: float
-    side: str
-    effect: int
+@dataclass
+class HapticSideState:
+    requested_level: int = 0
+    applied_level: int = 0
+    effect: int = 0
+    next_play_at: float | None = None
+    cycle_index: int = 0
+    active: bool = False
+    play_count: int = 0
+    error_count: int = 0
+    last_error: str = ""
 
 
 class Tm6605HapticBackend:
@@ -71,11 +77,7 @@ class Tm6605HapticBackend:
             if level not in self.patterns:
                 raise ValueError("haptics.level_effects must define levels 0..4")
         self.clock = clock
-        self._levels = {side: 0 for side in VALID_SIDES}
-        self._pending: list[ScheduledEffect] = []
-        self._play_count = {side: 0 for side in VALID_SIDES}
-        self._errors = {side: 0 for side in VALID_SIDES}
-        self._last_error = {side: "" for side in VALID_SIDES}
+        self._states = {side: HapticSideState() for side in VALID_SIDES}
         self._last_write_mono_s: dict[str, float | None] = {
             side: None for side in VALID_SIDES
         }
@@ -98,49 +100,76 @@ class Tm6605HapticBackend:
             normalized[normalize_side(side)] = normalize_level(level)
         for side in VALID_SIDES:
             level = normalized[side]
-            if level == self._levels[side]:
+            state = self._states[side]
+            if level == state.requested_level and level == state.applied_level:
                 continue
-            self._pending = [item for item in self._pending if item.side != side]
-            if self._levels[side] > 0:
+            if state.active or state.applied_level > 0:
                 self._stop_hardware(side)
-            self._levels[side] = level
+            state.requested_level = level
+            state.applied_level = 0
+            state.effect = 0
+            state.next_play_at = None
+            state.cycle_index = 0
+            state.active = False
             pattern = self.patterns[level]
-            if side in self.transactions and pattern.effect > 0 and pattern.count > 0:
-                self._pending.extend(
-                    ScheduledEffect(now + index * pattern.interval_ms / 1000.0, side, pattern.effect)
-                    for index in range(pattern.count)
-                )
+            if side in self.transactions and level > 0 and pattern.effect > 0:
+                state.applied_level = level
+                state.effect = pattern.effect
+                state.next_play_at = now
+                state.active = True
         self.tick(now)
 
     def tick(self, now: float | None = None) -> None:
         now = self.clock() if now is None else float(now)
-        ready = sorted((item for item in self._pending if item.at <= now), key=lambda item: item.at)
-        self._pending = [item for item in self._pending if item.at > now]
-        for item in ready:
-            self._play(item.side, item.effect)
+        for side in VALID_SIDES:
+            state = self._states[side]
+            if not state.active or state.next_play_at is None or state.next_play_at > now:
+                continue
+            self._play(side, state.effect)
+            state.cycle_index += 1
+            interval_s = self.patterns[state.applied_level].repeat_interval_ms / 1000.0
+            state.next_play_at = now + interval_s
 
     def stop_side(self, side: str) -> None:
         side = normalize_side(side)
-        self._pending = [item for item in self._pending if item.side != side]
-        self._levels[side] = 0
+        state = self._states[side]
+        state.requested_level = 0
+        state.applied_level = 0
+        state.effect = 0
+        state.next_play_at = None
+        state.cycle_index = 0
+        state.active = False
         self._stop_hardware(side)
 
     def stop_all(self) -> None:
-        self._pending.clear()
         for side in VALID_SIDES:
-            self._levels[side] = 0
-            self._stop_hardware(side)
+            self.stop_side(side)
 
     def status(self) -> dict[str, object]:
+        side_states = {
+            side: {
+                "requested_level": state.requested_level,
+                "applied_level": state.applied_level,
+                "effect": state.effect,
+                "next_play_at": state.next_play_at,
+                "cycle_index": state.cycle_index,
+                "active": state.active,
+                "play_count": state.play_count,
+                "error_count": state.error_count,
+                "last_error": state.last_error,
+            }
+            for side, state in self._states.items()
+        }
         return {
             "backend": "tm6605_lra",
-            "levels": dict(self._levels),
+            "levels": {side: state.applied_level for side, state in self._states.items()},
+            "sides": side_states,
             "pending_by_side": {
-                side: sum(1 for item in self._pending if item.side == side) for side in VALID_SIDES
+                side: int(state.active) for side, state in self._states.items()
             },
-            "play_count": dict(self._play_count),
-            "error_count": dict(self._errors),
-            "last_error": dict(self._last_error),
+            "play_count": {side: state.play_count for side, state in self._states.items()},
+            "error_count": {side: state.error_count for side, state in self._states.items()},
+            "last_error": {side: state.last_error for side, state in self._states.items()},
             "last_write_mono_s": dict(self._last_write_mono_s),
             "i2c": {side: tx.status() for side, tx in self.transactions.items()},
         }
@@ -157,7 +186,7 @@ class Tm6605HapticBackend:
         try:
             transaction.execute(operation)
             self._last_write_mono_s[side] = self.clock()
-            self._play_count[side] += 1
+            self._states[side].play_count += 1
         except Exception as exc:
             self._record_error(side, exc)
             raise
@@ -176,8 +205,8 @@ class Tm6605HapticBackend:
             raise
 
     def _record_error(self, side: str, exc: Exception) -> None:
-        self._errors[side] += 1
-        self._last_error[side] = f"{type(exc).__name__}: {exc}"
+        self._states[side].error_count += 1
+        self._states[side].last_error = f"{type(exc).__name__}: {exc}"
 
 
 class LegacyPwmHapticBackend:

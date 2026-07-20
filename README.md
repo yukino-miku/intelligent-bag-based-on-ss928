@@ -5,10 +5,10 @@
 ## 当前能力
 
 - PC：USB 摄像头或视频输入，Ultralytics YOLO + BoT-SORT，ROI/OpenVINO CPU/profile，overlay、风险 CSV 和带框视频保存。
-- SS928：正式模式仍为双 USB 摄像头固定左右 detector；另提供默认关闭的“单模型、双 UVC 原生 V4L2 交替采集”实验模式。实验入口已具备最新帧有界调度、跨时间片风险确认、E2E 观测间隔、单侧重连、左右 raw/overlay gateway 和安装外参，但不等同于同步双摄。
+- SS928 Rev2：默认由 `smartbag.target` 启动 controller；controller 只加载一个模型并监督双 UVC 原生 V4L2 交替采集、GNSS、BMI270、MR20、BLE 和本地视频 gateway。任一时刻只打开一侧 UVC，未激活侧显示缓存帧，不等同于同步双摄。
 - 传感器：DX-GP21 GNSS/NMEA/轨迹；BMI270 IIO/I2C、姿态和短时运动趋势；独立跌倒/撞击事件。
 - 移动端：统一 `SS928-SmartBag` BLE NUS 传告警/GNSS/IMU/系统状态；原生微信小程序显示左右画面、自动告警历史、轨迹和姿态。视频不走 BLE。
-- Rev2 外设：TCA9548A CH0/1/2 分别接 BMI270、左/右 TM6605；Pin7/Pin32 驱动左右灯光；右后 MR20 使用独立 `eth1` `/32` host route。Level 1/2 只进入 UI/BLE，Level 3/4 才驱动 LRA 和灯光。
+- Rev2 外设：TCA9548A CH0/1/2 分别接 BMI270、左/右 TM6605；Pin7/Pin32 驱动左右灯光；右后 MR20 使用独立 `eth1` `/32` host route。Level 1–4 均有对应侧触觉模式；Level 3/4 还持续驱动慢闪/快闪灯光和可选方向语音。
 - CloudBase：可选 HTTPS telemetry 和小程序历史查询，默认关闭；板端 HMAC/nonce/离线队列与云端用户绑定不会取代本地 BLE 和本地告警。
 
 ## 快速入口
@@ -42,18 +42,17 @@ py vision_obstacle_tracker.py --source video --video D:\path\input.mp4 --save-ou
 
 ```sh
 cd 09_deliverables/board_deploy
-sudo sh install.sh /path/to/intelligent-bag-based-on-ss928
-sudo install -m 0644 /path/to/yolo11n.pt /root/smartbag/models/yolo11n.pt
+sudo sh install.sh /path/to/intelligent-bag-based-on-ss928 /合法来源/yolo11n.pt /可选/wheelhouse
 # 编辑 config、hardware、MR20 和左右 calibration，再检查
 sudo sh smartbag-hardware-profile.sh show
 sudo sh preflight.sh /etc/smartbag/config.json
-sudo sh start-all.sh
+sudo systemctl enable --now smartbag.target
 sh logs.sh -f
 ```
 
-默认启动左右固定 detector 和双路视频 gateway。新安装默认生成 Rev2 profile，旧设备可用 `smartbag-hardware-profile.sh set legacy_pwm_haptics` 回滚。GNSS 与 BMI270 默认 `--no-ble`，由 controller 独占 BLE。执行器只使用同侧融合后的稳定等级；某个 vision/radar 来源清零只清自己的状态，事件过期、进程退出和服务停止仍会及时清除对应输出。
+安装器创建固定 `/root/smartbag/venv`、要求模型已随安装参数提供、安装 systemd unit 并 enable `smartbag.target`。新安装默认生成 Rev2 profile，旧设备可用 `smartbag-hardware-profile.sh set legacy_pwm_haptics` 回滚。GNSS 与 BMI270 默认 `--no-ble`，由 controller 独占 BLE。执行器只使用同侧融合后的稳定等级；来源清零、stale、进程退出、service stop 和关机都会执行安全清除。
 
-同一 USB 2.0 Hub 无法双路并发 `STREAMON` 时，可按 [board_deploy 实验模式说明](09_deliverables/board_deploy/README.md#11-实验性交替双摄模式)运行 A/B 诊断。每片默认只推理最新 1 帧，未激活侧是缓存帧；纯摄像头切换盲区与包含解码/推理/跟踪/风险/overlay/JPEG 的端到端观测间隔必须分开看。默认配置保持 `fixed_dual_process` 和 `alternating_camera.enabled=false`。
+默认采用 [board_deploy 交替双摄说明](09_deliverables/board_deploy/README.md#11-默认交替双摄模式)。每片默认只推理最新 1 帧，未激活侧是缓存帧；纯摄像头切换盲区与包含解码、推理、跟踪、风险、overlay 和 JPEG 的端到端观测间隔必须分开看。固定双 detector unit 仅保留为诊断兼容入口，不进入默认 target。
 
 ## 未完成与安全边界
 
@@ -62,6 +61,7 @@ sh logs.sh -f
 - 模型、厂商 SDK、MPP、BMI270 config blob、设备密码/IP 不进入仓库。
 - 单目测距和风险提示不是安全认证系统；真实使用前必须做相机标定、硬件在环、误报/漏报、时延、温度和断电恢复测试。
 - MR20 0x60A/0x60B 解析和 replay 已自动测试；真实 0x60B 移动目标、TM6605 LRA、双灯、BLE 闭环和 30 分钟联合运行仍需新硬件实测，详见 [最新硬件刷新摘要](07_tests/results/hardware-refresh/latest-summary.md)。
+- 本轮按用户要求只完成本地完整代码，未执行板端上传、安装、执行器通电或两次重启验收；当前状态见 [Rev2 autonomous 摘要](07_tests/results/rev2-autonomous/latest-summary.md)，不得据此声称 power-only autostart 已实板通过。
 - 40Pin、PWM、LRA/灯光供电、I2S 和传感器电平必须按硬件文档核验，不能直接用 GPIO 给负载供电。CloudBase 源码未部署到真实环境，不能将 mock 测试解释为云端已上线。
 
 `08_media/` 和 `10_archive/` 仅本地使用，不上传 GitHub。

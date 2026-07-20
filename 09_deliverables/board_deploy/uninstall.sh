@@ -3,6 +3,7 @@ set -eu
 
 [ "$(id -u)" -eq 0 ] || { echo "run as root" >&2; exit 1; }
 systemctl stop smartbag.target 2>/dev/null || true
+/root/smartbag/venv/bin/python /root/smartbag/board-deploy/safe_off.py --hardware /etc/smartbag/hardware.json 2>/dev/null || true
 systemctl stop smartbag-alternating-vision.service smartbag-alternating-cleanup.timer 2>/dev/null || true
 systemctl stop smartbag-cloud-uploader.service 2>/dev/null || true
 systemctl disable smartbag.target 2>/dev/null || true
@@ -16,6 +17,9 @@ rm -f /etc/systemd/system/smartbag-vision.service \
       /etc/systemd/system/smartbag-alternating-cleanup.service \
       /etc/systemd/system/smartbag-alternating-cleanup.timer \
       /etc/systemd/system/smartbag-cloud-uploader.service \
+      /etc/systemd/system/smartbag-controller.service \
+      /etc/systemd/system/smartbag-safe-off.service \
+      /etc/systemd/system/smartbag-boot-selftest.service \
       /etc/systemd/system/smartbag.target
 rm -f /etc/systemd/journald.conf.d/smartbag.conf
 systemctl daemon-reload

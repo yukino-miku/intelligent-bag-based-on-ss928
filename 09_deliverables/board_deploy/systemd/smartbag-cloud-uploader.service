@@ -1,18 +1,22 @@
 [Unit]
 Description=Optional SS928 SmartBag CloudBase telemetry uploader
-After=network-online.target smartbag-alert.service
-Wants=network-online.target
+After=network.target smartbag-controller.service
 
 [Service]
 Type=simple
 User=root
 EnvironmentFile=-/etc/smartbag/cloud-uploader.env
 WorkingDirectory=/root/smartbag/cloud-uploader
-ExecStart=/usr/bin/python3 /root/smartbag/cloud-uploader/cloud_uploader.py --config /etc/smartbag/cloud-uploader.json
+ExecStart=/root/smartbag/venv/bin/python /root/smartbag/cloud-uploader/cloud_uploader.py --config /etc/smartbag/cloud-uploader.json
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+KillMode=control-group
+TimeoutStopSec=10
 
 [Install]
 WantedBy=multi-user.target

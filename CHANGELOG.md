@@ -2,11 +2,17 @@
 
 ## 2026-07-20
 
+- 新建 `agent/rev2-autonomous-board-runtime`：默认运行改为 `smartbag.target -> smartbag-controller.service`，controller 内部监督单模型双 UVC 交替采集、GNSS、BMI270、MR20、BLE 和本地视频；固定双 detector 仅保留诊断兼容入口。
+- Rev2 TM6605 改为左右独立有界持续状态机，0–4 震动等级一一映射；灯光 3/4 改为持续慢闪/快闪；音频改为每侧一个待播项、去重、四级抢占三级和 clear/stop 终止。未找到可确认的 TM6605 线性增益寄存器，不声称线性振幅。
+- 增加固定 `/root/smartbag/venv`、模型安装门禁、设备节点有界等待 JSON、`smartbag-safe-off.service`、boot self-test、`rev2-board-validation.py` 和本地/板端 session 目录。
+- BLE alert 增加 effective/haptic/light/audio/接收时间字段；小程序历史改为 100 条，记录 BLE/Cloud 来源、执行器输出和有原因的解除事件，过滤 heartbeat 与短时完全重复事件。
+- 按用户最新要求，本轮未执行板端上传、烧录、通电输出或两次重启验收；相关状态保持 `NOT RUN`，不能标为 power-only ready。
+- 本地验证通过 276 项 Python 测试（另有 1 项 Linux-only `fcntl` 跳过）、6 个小程序测试文件、39 个 shell 语法、22 个跟踪 JSON、compileall、安全关断 dry-run 和 `git diff --check`。
 - 固定审计 `sanda-tt/ss928@970351c84a12f3219e7910ee488ac5ff579d6f98` 相对上次 `d7e10fd06dc553f94d2db3a3d19987ec8648f7dc` 的 19 个提交；没有合并上游历史或复制许可不明厂商资料。
 - 新增 `rev2_tm6605_mr20` 和 `legacy_pwm_haptics` profile、配置迁移/回滚、唯一引脚表与 profile-aware pinmux；Rev2 的 Pin7/Pin32 只用于左右灯光。
 - 新增统一 TCA9548A 原子事务与跨进程锁，BMI270 每笔访问重选 CH0，左右 TM6605 分别重选 CH1/CH2；新增 TM6605 和 PWM 灯光 backend、调度、状态和错误计数。
 - 新增 MR20 14 字节帧、0x60A/0x60B、来源 IP/端口、scan 聚合、多帧确认、replay 和 `eth1` `/32` host route 工具。
-- Controller 改为按 `(source, side)` 融合 vision/radar/manual；来源 timeout/clear 相互隔离，heartbeat 不入历史，Rev2 Level 1/2 不驱动执行器。
+- Controller 改为按 `(source, side)` 融合 vision/radar/manual；来源 timeout/clear 相互隔离，heartbeat 不入历史。后续 autonomous 更新将 Rev2 Level 1/2 恢复为触觉一级/二级，但灯光和音频仍关闭。
 - 新增可选 Cloud uploader、HMAC/nonce/有界离线队列、CloudBase 用户绑定查询与小程序 BLE/Cloud 统一数据源。真实 CloudBase 未部署。
 - 新增硬件 preflight、I2C/TM6605/灯光/MR20 工具、session 记录、可选 cloud systemd unit 和 CI 策略检查。实物输出和 MR20 目标帧仍按 BLOCKED 记录。
 

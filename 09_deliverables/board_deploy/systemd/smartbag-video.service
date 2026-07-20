@@ -1,14 +1,20 @@
 [Unit]
 Description=SS928 SmartBag dual-camera LAN video gateway
-After=network.target smartbag-alert.service
-Wants=network.target smartbag-alert.service
+After=network.target
+Conflicts=smartbag-controller.service smartbag-alternating-vision.service
 
 [Service]
 Type=simple
 WorkingDirectory=/root/smartbag/vision
-ExecStart=/usr/bin/python3 /root/smartbag/vision/dual_camera_gateway.py --config /etc/smartbag/config.json
+EnvironmentFile=-/etc/smartbag/smartbag.env
+ExecStart=/root/smartbag/venv/bin/python /root/smartbag/vision/dual_camera_gateway.py --config /etc/smartbag/config.json
 Restart=on-failure
 RestartSec=2
+KillMode=control-group
+TimeoutStopSec=10
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
 
 [Install]
-WantedBy=smartbag.target
+WantedBy=multi-user.target

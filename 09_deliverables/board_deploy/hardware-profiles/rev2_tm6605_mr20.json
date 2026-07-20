@@ -28,11 +28,11 @@
     "required": true,
     "failure_policy": "fail_service",
     "level_effects": {
-      "0": {"effect": 0, "count": 0, "interval_ms": 0},
-      "1": {"effect": 0, "count": 0, "interval_ms": 0},
-      "2": {"effect": 0, "count": 0, "interval_ms": 0},
-      "3": {"effect": 15, "count": 3, "interval_ms": 750},
-      "4": {"effect": 14, "count": 3, "interval_ms": 300}
+      "0": {"effect": 0, "repeat_interval_ms": 0},
+      "1": {"effect": 15, "repeat_interval_ms": 1800},
+      "2": {"effect": 15, "repeat_interval_ms": 1000},
+      "3": {"effect": 15, "repeat_interval_ms": 600},
+      "4": {"effect": 14, "repeat_interval_ms": 300}
     }
   },
   "lights": {
@@ -43,11 +43,11 @@
     "left": {"chip": 0, "channel": 10, "pin": 7},
     "right": {"chip": 0, "channel": 1, "pin": 32},
     "level_patterns": {
-      "0": {"duty_percent": 0, "on_ms": 0, "off_ms": 0, "count": 0},
-      "1": {"duty_percent": 0, "on_ms": 0, "off_ms": 0, "count": 0},
-      "2": {"duty_percent": 0, "on_ms": 0, "off_ms": 0, "count": 0},
-      "3": {"duty_percent": 50, "on_ms": 1000, "off_ms": 0, "count": 1},
-      "4": {"duty_percent": 80, "on_ms": 200, "off_ms": 200, "count": 3}
+      "0": {"duty_percent": 0, "on_ms": 0, "off_ms": 0, "repeat": false, "mode": "off"},
+      "1": {"duty_percent": 0, "on_ms": 0, "off_ms": 0, "repeat": false, "mode": "off"},
+      "2": {"duty_percent": 0, "on_ms": 0, "off_ms": 0, "repeat": false, "mode": "off"},
+      "3": {"duty_percent": 50, "on_ms": 1000, "off_ms": 1000, "repeat": true, "mode": "slow_blink"},
+      "4": {"duty_percent": 80, "on_ms": 200, "off_ms": 200, "repeat": true, "mode": "fast_blink"}
     }
   },
   "radar": {
@@ -57,13 +57,13 @@
     "failure_policy": "degrade"
   },
   "audio": {
-    "enabled": false,
+    "enabled": true,
     "backend": "max98357",
     "required": false,
     "failure_policy": "degrade"
   },
   "output_policy": {
-    "haptic_level_map": {"0": 0, "1": 0, "2": 0, "3": 3, "4": 4},
+    "haptic_level_map": {"0": 0, "1": 1, "2": 2, "3": 3, "4": 4},
     "light_level_map": {"0": 0, "1": 0, "2": 0, "3": 3, "4": 4},
     "audio_levels": [3, 4]
   }

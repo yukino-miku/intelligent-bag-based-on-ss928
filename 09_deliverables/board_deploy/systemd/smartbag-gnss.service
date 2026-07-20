@@ -1,12 +1,21 @@
 [Unit]
-Description=SS928 SmartBag GNSS diagnostic service
-Conflicts=smartbag-alert.service
+Description=SS928 SmartBag GNSS standalone diagnostic service
+After=local-fs.target
+Conflicts=smartbag-controller.service smartbag-alert.service
 
 [Service]
 Type=simple
 WorkingDirectory=/root/smartbag/gnss
-ExecStart=/usr/bin/python3 /root/smartbag/gnss/dx_gp21_tracker.py --config /root/smartbag/gnss/config.ss928_uart4.json --no-ble
+EnvironmentFile=-/etc/smartbag/smartbag.env
+ExecStartPre=/root/smartbag/venv/bin/python /root/smartbag/board-deploy/wait_for_hardware.py --profile gnss --config /etc/smartbag/config.json --timeout-s 30
+ExecStart=/root/smartbag/venv/bin/python /root/smartbag/gnss/dx_gp21_tracker.py --config /root/smartbag/gnss/config.ss928_uart4.json --no-ble
 Restart=on-failure
+RestartSec=3
+KillMode=control-group
+TimeoutStopSec=10
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target

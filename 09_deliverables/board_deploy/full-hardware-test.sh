@@ -110,7 +110,7 @@ data = {
     "eth0": command("ip", "-brief", "address", "show", "eth0"),
     "eth1": command("ip", "-brief", "address", "show", "eth1"),
     "physical_or_replay": "read_only_preflight",
-    "vision": command("systemctl", "is-active", "smartbag-alert.service") == "active",
+    "vision": command("systemctl", "is-active", "smartbag-controller.service") == "active",
     "radar": bool(hardware.get("radar", {}).get("enabled", False)),
     "ble": not bool(hardware.get("ble", {}).get("disabled", False)),
     "cloud": load("/etc/smartbag/cloud-uploader.json", {}).get("enabled", False)
@@ -133,18 +133,18 @@ if [ "$DURATION_S" -gt 0 ] 2>/dev/null; then
     while [ "$(date +%s)" -lt "$end" ]; do
         now=$(date +%s)
         load=$(cut -d' ' -f1 /proc/loadavg)
-        pid=$(systemctl show -p MainPID --value smartbag-alert.service 2>/dev/null || echo 0)
+        pid=$(systemctl show -p MainPID --value smartbag-controller.service 2>/dev/null || echo 0)
         rss=0
         [ "$pid" -gt 0 ] 2>/dev/null && rss=$(awk '/VmRSS/{print $2}' "/proc/$pid/status" 2>/dev/null || echo 0)
         temp=""
         [ -r /sys/class/thermal/thermal_zone0/temp ] && temp=$(awk '{printf "%.1f", $1/1000}' /sys/class/thermal/thermal_zone0/temp)
-        state=$(systemctl is-active smartbag-alert.service 2>/dev/null || true)
+        state=$(systemctl is-active smartbag-controller.service 2>/dev/null || true)
         printf '%s,%s,%s,%s,%s\n' "$now" "$load" "$rss" "$temp" "$state" >>"$SESSION/controller-status.csv"
         sleep 5
     done
 fi
 
-journalctl -u smartbag-alert.service -u smartbag-cloud-uploader.service \
+journalctl -u smartbag-controller.service -u smartbag-cloud-uploader.service \
     --since "@$START_EPOCH_S" --no-pager >>"$SESSION/errors.log" 2>&1 || true
 
 python3 - "$SESSION/log-offsets.json" "$SESSION/alert-events.csv" "$SESSION/actuator-events.csv" "$SESSION/radar-targets.csv" <<'PY'
@@ -194,7 +194,7 @@ error_lines = [
 ]
 try:
     restarts = int(subprocess.check_output(
-        ["systemctl", "show", "-p", "NRestarts", "--value", "smartbag-alert.service"],
+        ["systemctl", "show", "-p", "NRestarts", "--value", "smartbag-controller.service"],
         text=True,
     ).strip() or "0")
 except Exception:

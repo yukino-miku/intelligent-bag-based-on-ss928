@@ -2,6 +2,12 @@
 
 ## 2026-07-20
 
+- 从 `agent/sanda-hardware-refresh@0fbe815e8a7f51fc32e925bce086be99ceca84a9` 创建 `agent/rev2-autonomous-board-runtime`，不修改基线分支。
+- 将 Rev2 震动、灯光和音频改为有界持续状态；新增本地自主启动 target、固定 venv、模型门禁、硬件等待、安全关断、boot self-test 和分阶段板端验证编排。
+- 默认配置切换为 `alternating_single_model`，controller 统一监督子进程并独占 BLE；核心 unit 不依赖 `network-online.target`，Cloud uploader 保持可选。
+- 小程序本地预警历史扩展为 100 条完整记录，支持 BLE/Cloud 来源、clear 原因、haptic/light/audio 实际决策和重启恢复。
+- 用户明确要求暂不执行板端烧录，因此本轮只完成本地代码和自动测试；实板执行器、安装、断开电脑和两次重启验证均保持 `NOT RUN`。
+- 本地最终回归：276 项 Python 测试通过、1 项 Linux-only `fcntl` 测试跳过；6 个小程序 JavaScript 测试文件、39 个 shell 语法、22 个跟踪 JSON、compileall、safe-off dry-run 和 `git diff --check` 通过。
 - 从 `agent/alternating-dual-camera@a5f6d815b924129fca03c8392912f31b843da636` 创建 `agent/sanda-hardware-refresh`；来源固定为 `sanda-tt/ss928@970351c84a12f3219e7910ee488ac5ff579d6f98`，未修改来源仓库和现有 PR #2。
 - 通过 GitHub Compare/Tree/Contents API 审计上游 19 个新增提交和 28,904 项树记录；本机 partial clone fetch 因 443 连接重置失败，审计清单保留 blob SHA、许可状态和迁移决策。
 - 重实现统一 I2C mux、双 TM6605、双灯、MR20、来源融合、输出策略和 Cloud 安全链路；未复制上游 SDK、模型、PDF、二进制或许可不明运行代码。

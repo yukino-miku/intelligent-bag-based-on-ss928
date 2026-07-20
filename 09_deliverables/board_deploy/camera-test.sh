@@ -4,8 +4,10 @@ set -eu
 DEVICE=${1:?usage: camera-test.sh /dev/videoX [width] [height]}
 WIDTH=${2:-640}
 HEIGHT=${3:-480}
+PYTHON=${SMARTBAG_PYTHON:-/root/smartbag/venv/bin/python}
+[ -x "$PYTHON" ] || PYTHON=python3
 
-python3 - "$DEVICE" "$WIDTH" "$HEIGHT" <<'PY'
+"$PYTHON" - "$DEVICE" "$WIDTH" "$HEIGHT" <<'PY'
 import sys
 import time
 

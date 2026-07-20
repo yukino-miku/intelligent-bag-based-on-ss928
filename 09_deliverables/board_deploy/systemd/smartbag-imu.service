@@ -1,12 +1,21 @@
 [Unit]
-Description=SS928 SmartBag BMI270 diagnostic service
-Conflicts=smartbag-alert.service
+Description=SS928 SmartBag BMI270 standalone diagnostic service
+After=local-fs.target
+Conflicts=smartbag-controller.service smartbag-alert.service
 
 [Service]
 Type=simple
 WorkingDirectory=/root/smartbag/imu
-ExecStart=/usr/bin/python3 /root/smartbag/imu/bmi270_backpack.py --config /root/smartbag/imu/config.example.json --hardware-profile /etc/smartbag/hardware.json --no-ble
+EnvironmentFile=-/etc/smartbag/smartbag.env
+ExecStartPre=/root/smartbag/venv/bin/python /root/smartbag/board-deploy/wait_for_hardware.py --profile imu --config /etc/smartbag/config.json --timeout-s 30
+ExecStart=/root/smartbag/venv/bin/python /root/smartbag/imu/bmi270_backpack.py --config /root/smartbag/imu/config.example.json --hardware-profile /etc/smartbag/hardware.json --no-ble
 Restart=on-failure
+RestartSec=3
+KillMode=control-group
+TimeoutStopSec=10
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target

@@ -22,7 +22,8 @@ class LightPattern:
     duty_percent: int
     on_ms: int
     off_ms: int
-    count: int
+    repeat: bool
+    mode: str
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, object]) -> "LightPattern":
@@ -30,19 +31,26 @@ class LightPattern:
             duty_percent=int(raw.get("duty_percent", 0)),
             on_ms=int(raw.get("on_ms", 0)),
             off_ms=int(raw.get("off_ms", 0)),
-            count=int(raw.get("count", 0)),
+            repeat=bool(raw.get("repeat", int(raw.get("count", 0)) > 0)),
+            mode=str(raw.get("mode", "off")),
         )
-        if not 0 <= pattern.duty_percent <= 100 or min(pattern.on_ms, pattern.off_ms, pattern.count) < 0:
+        if not 0 <= pattern.duty_percent <= 100 or min(pattern.on_ms, pattern.off_ms) < 0:
             raise ValueError("invalid light pattern")
+        if pattern.repeat and (
+            pattern.duty_percent <= 0 or pattern.on_ms <= 0 or pattern.off_ms <= 0
+        ):
+            raise ValueError("repeating light pattern requires duty, on_ms and off_ms > 0")
         return pattern
 
 
-@dataclass(frozen=True)
-class LightStep:
-    at: float
-    side: str
-    enabled: bool
+@dataclass
+class LightSideState:
+    current_level: int = 0
+    phase: str = "off"
+    next_transition: float | None = None
+    cycle_count: int = 0
     duty_percent: int = 0
+    mode: str = "off"
 
 
 class LightBackend(Protocol):
@@ -193,8 +201,7 @@ class PwmLightBackend:
         self.period_ns = int(period_ns)
         self.clock = clock
         self._resolved_chips: dict[str, int] = {}
-        self._levels = {side: 0 for side in VALID_SIDES}
-        self._pending: list[LightStep] = []
+        self._states = {side: LightSideState() for side in VALID_SIDES}
         self._errors = 0
         self._last_error = ""
         self._last_write_mono_s: dict[str, float | None] = {
@@ -215,45 +222,72 @@ class PwmLightBackend:
         now = self.clock() if now is None else float(now)
         for side in VALID_SIDES:
             level = normalize_level(levels.get(side, 0))
-            if level == self._levels[side]:
+            state = self._states[side]
+            if level == state.current_level:
                 continue
-            self._pending = [step for step in self._pending if step.side != side]
             self._set_output(side, False)
-            self._levels[side] = level
+            state.current_level = level
+            state.phase = "off"
+            state.next_transition = None
+            state.cycle_count = 0
+            state.duty_percent = 0
+            state.mode = "off"
             pattern = self.patterns[level]
-            for pulse in range(pattern.count):
-                start = now + pulse * (pattern.on_ms + pattern.off_ms) / 1000.0
-                self._pending.append(LightStep(start, side, True, pattern.duty_percent))
-                self._pending.append(LightStep(start + pattern.on_ms / 1000.0, side, False))
-        self.tick(now)
+            if pattern.repeat:
+                state.phase = "on"
+                state.next_transition = now + pattern.on_ms / 1000.0
+                state.duty_percent = pattern.duty_percent
+                state.mode = pattern.mode
+                self._set_output(side, True, pattern.duty_percent)
 
     def tick(self, now: float | None = None) -> None:
         now = self.clock() if now is None else float(now)
-        ready = sorted((step for step in self._pending if step.at <= now), key=lambda step: step.at)
-        self._pending = [step for step in self._pending if step.at > now]
-        for step in ready:
-            self._set_output(step.side, step.enabled, step.duty_percent)
+        for side in VALID_SIDES:
+            state = self._states[side]
+            if state.next_transition is None or state.next_transition > now:
+                continue
+            pattern = self.patterns[state.current_level]
+            if state.phase == "on":
+                self._set_output(side, False)
+                state.phase = "off"
+                state.next_transition = now + pattern.off_ms / 1000.0
+            else:
+                self._set_output(side, True, pattern.duty_percent)
+                state.phase = "on"
+                state.cycle_count += 1
+                state.next_transition = now + pattern.on_ms / 1000.0
 
     def stop_side(self, side: str) -> None:
         side = normalize_side(side)
-        self._pending = [step for step in self._pending if step.side != side]
-        self._levels[side] = 0
+        self._states[side] = LightSideState()
         self._set_output(side, False)
 
     def stop_all(self) -> None:
-        self._pending.clear()
         for side in VALID_SIDES:
-            self._levels[side] = 0
+            self._states[side] = LightSideState()
             if side in self._resolved_chips:
                 self._set_output(side, False)
 
     def status(self) -> dict[str, object]:
+        side_states = {
+            side: {
+                "current_level": state.current_level,
+                "phase": state.phase,
+                "next_transition": state.next_transition,
+                "cycle_count": state.cycle_count,
+                "duty_percent": state.duty_percent,
+                "mode": state.mode,
+            }
+            for side, state in self._states.items()
+        }
         return {
             "backend": "pwm_lights",
-            "levels": dict(self._levels),
+            "levels": {side: state.current_level for side, state in self._states.items()},
+            "sides": side_states,
             "resolved_chips": dict(self._resolved_chips),
             "pending_by_side": {
-                side: sum(1 for step in self._pending if step.side == side) for side in VALID_SIDES
+                side: int(state.next_transition is not None)
+                for side, state in self._states.items()
             },
             "error_count": self._errors,
             "last_error": self._last_error,

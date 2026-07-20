@@ -6,10 +6,12 @@ PROFILE=${2:-}
 CONFIG=/etc/smartbag/hardware.json
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PROFILE_DIR="$SCRIPT_DIR/hardware-profiles"
+PYTHON=${SMARTBAG_PYTHON:-/root/smartbag/venv/bin/python}
+[ -x "$PYTHON" ] || PYTHON=python3
 
 show() {
     [ -f "$CONFIG" ] || { echo "missing $CONFIG" >&2; exit 1; }
-    python3 -m json.tool "$CONFIG"
+    "$PYTHON" -m json.tool "$CONFIG"
 }
 
 set_profile() {
@@ -23,10 +25,11 @@ set_profile() {
     backup="$CONFIG.bak.$(date -u +%Y%m%dT%H%M%SZ)"
     was_active=0
     systemctl is-active --quiet smartbag.target && was_active=1 || true
-    systemctl stop smartbag.target smartbag-alert.service 2>/dev/null || true
+    systemctl stop smartbag.target smartbag-controller.service smartbag-alert.service 2>/dev/null || true
+    "$PYTHON" "$SCRIPT_DIR/safe_off.py" --hardware "$CONFIG" 2>/dev/null || true
     [ -f "$CONFIG" ] && cp "$CONFIG" "$backup" || backup=""
     cp "$source_file" "$CONFIG"
-    if ! PYTHONPATH=/root/smartbag/common python3 - "$CONFIG" <<'PY'
+    if ! PYTHONPATH=/root/smartbag/common "$PYTHON" - "$CONFIG" <<'PY'
 import json, sys
 from hardware_profile import validate_hardware_profile
 validate_hardware_profile(json.load(open(sys.argv[1], encoding="utf-8")))

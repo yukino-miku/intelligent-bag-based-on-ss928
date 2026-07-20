@@ -6,7 +6,8 @@ from typing import Mapping
 from alert_core import VALID_SIDES, normalize_level
 
 
-DEFAULT_REV2_LEVEL_MAP = {0: 0, 1: 0, 2: 0, 3: 3, 4: 4}
+DEFAULT_REV2_HAPTIC_LEVEL_MAP = {level: level for level in range(5)}
+DEFAULT_REV2_LIGHT_LEVEL_MAP = {0: 0, 1: 0, 2: 0, 3: 3, 4: 4}
 DEFAULT_LEGACY_LEVEL_MAP = {level: level for level in range(5)}
 
 
@@ -15,6 +16,7 @@ class OutputDecision:
     effective_levels: dict[str, int]
     haptic_levels: dict[str, int]
     light_levels: dict[str, int]
+    light_modes: dict[str, str]
     audio_clip: str | None
 
 
@@ -29,10 +31,10 @@ class OutputPolicy:
         audio_levels: tuple[int, ...] = (3, 4),
     ) -> None:
         self.haptic_level_map = self._normalize_map(
-            haptic_level_map or DEFAULT_REV2_LEVEL_MAP
+            haptic_level_map or DEFAULT_REV2_HAPTIC_LEVEL_MAP
         )
         self.light_level_map = self._normalize_map(
-            light_level_map or DEFAULT_REV2_LEVEL_MAP
+            light_level_map or DEFAULT_REV2_LIGHT_LEVEL_MAP
         )
         self.audio_levels = tuple(sorted({normalize_level(level) for level in audio_levels}))
 
@@ -43,13 +45,18 @@ class OutputPolicy:
         config: Mapping[str, object] | None = None,
     ) -> "OutputPolicy":
         raw = config or {}
-        default_map = (
+        haptic_default = (
             DEFAULT_LEGACY_LEVEL_MAP
             if profile == "legacy_pwm_haptics"
-            else DEFAULT_REV2_LEVEL_MAP
+            else DEFAULT_REV2_HAPTIC_LEVEL_MAP
         )
-        haptic_map = raw.get("haptic_level_map", default_map)
-        light_map = raw.get("light_level_map", default_map)
+        light_default = (
+            DEFAULT_LEGACY_LEVEL_MAP
+            if profile == "legacy_pwm_haptics"
+            else DEFAULT_REV2_LIGHT_LEVEL_MAP
+        )
+        haptic_map = raw.get("haptic_level_map", haptic_default)
+        light_map = raw.get("light_level_map", light_default)
         audio_levels = raw.get("audio_levels", (3, 4))
         if not isinstance(haptic_map, Mapping) or not isinstance(light_map, Mapping):
             raise ValueError("output_policy level maps must be objects")
@@ -75,12 +82,16 @@ class OutputPolicy:
         lights = {
             side: self.light_level_map[effective[side]] for side in VALID_SIDES
         }
+        light_modes = {
+            side: "slow_blink" if lights[side] == 3 else "fast_blink" if lights[side] == 4 else "off"
+            for side in VALID_SIDES
+        }
         clip = audio_clip
         if clip is not None:
             side = "left" if clip.startswith("L") else "right"
             if effective[side] not in self.audio_levels:
                 clip = None
-        return OutputDecision(effective, haptic, lights, clip)
+        return OutputDecision(effective, haptic, lights, light_modes, clip)
 
     @staticmethod
     def _normalize_map(raw: Mapping[int | str, int]) -> dict[int, int]:

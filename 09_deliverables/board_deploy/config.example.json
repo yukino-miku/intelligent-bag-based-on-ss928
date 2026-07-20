@@ -1,6 +1,6 @@
 {
   "paths": {
-    "python": "/usr/bin/python3",
+    "python": "/root/smartbag/venv/bin/python",
     "vision": "/root/smartbag/vision",
     "model": "/root/smartbag/models/yolo11n.pt"
   },
@@ -13,10 +13,10 @@
     "backoff_s": 1.0
   },
   "vision_runtime": {
-    "mode": "fixed_dual_process"
+    "mode": "alternating_single_model"
   },
   "alternating_camera": {
-    "enabled": false,
+    "enabled": true,
     "backend": "v4l2_stream_toggle",
     "width": 640,
     "height": 480,
@@ -124,7 +124,7 @@
     "max_event_age_s": 2.0
   },
   "audio": {
-    "enabled": false,
+    "enabled": true,
     "root": "/root/smartbag/audio"
   },
   "ble": {

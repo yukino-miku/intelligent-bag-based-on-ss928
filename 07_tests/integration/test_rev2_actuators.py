@@ -15,6 +15,9 @@ from hardware_profile import pin_conflicts, validate_hardware_profile  # noqa: E
 from haptics import Tm6605HapticBackend  # noqa: E402
 from i2c_mux import I2cMuxTransaction  # noqa: E402
 from lights import LinuxSysfsPwm, LightPattern, PwmChannelSpec, PwmLightBackend  # noqa: E402
+from smartbag_alert_controller import AudioPlayer, ManagedActuator, alert_event_ble_payload  # noqa: E402
+from alert_core import AlertEvent  # noqa: E402
+from output_policy import OutputPolicy  # noqa: E402
 
 
 class FakeAdapter:
@@ -58,20 +61,47 @@ class FakePwm:
         self.outputs.append((chip, channel, period_ns, duty_percent, enabled))
 
 
+class RecoveringActuatorBackend:
+    def __init__(self, *, fail_first_setup: bool = False) -> None:
+        self.fail_first_setup = fail_first_setup
+        self.setup_calls = 0
+        self.applied: list[tuple[dict[str, int], float | None]] = []
+
+    def preflight(self) -> None:
+        return
+
+    def setup(self) -> None:
+        self.setup_calls += 1
+        if self.fail_first_setup and self.setup_calls == 1:
+            raise OSError("temporary device failure")
+
+    def stop_all(self) -> None:
+        return
+
+    def apply_levels(self, levels: dict[str, int], now: float | None = None) -> None:
+        self.applied.append((dict(levels), now))
+
+    def tick(self, now: float | None = None) -> None:
+        return
+
+    def status(self) -> dict[str, object]:
+        return {"setup_calls": self.setup_calls}
+
+
 LEVEL_EFFECTS = {
-    "0": {"effect": 0, "count": 0, "interval_ms": 0},
-    "1": {"effect": 0, "count": 0, "interval_ms": 0},
-    "2": {"effect": 0, "count": 0, "interval_ms": 0},
-    "3": {"effect": 15, "count": 3, "interval_ms": 750},
-    "4": {"effect": 14, "count": 3, "interval_ms": 300},
+    "0": {"effect": 0, "repeat_interval_ms": 0},
+    "1": {"effect": 15, "repeat_interval_ms": 1800},
+    "2": {"effect": 15, "repeat_interval_ms": 1000},
+    "3": {"effect": 15, "repeat_interval_ms": 600},
+    "4": {"effect": 14, "repeat_interval_ms": 300},
 }
 
 LIGHT_PATTERNS = {
-    "0": {"duty_percent": 0, "on_ms": 0, "off_ms": 0, "count": 0},
-    "1": {"duty_percent": 0, "on_ms": 0, "off_ms": 0, "count": 0},
-    "2": {"duty_percent": 0, "on_ms": 0, "off_ms": 0, "count": 0},
-    "3": {"duty_percent": 50, "on_ms": 1000, "off_ms": 0, "count": 1},
-    "4": {"duty_percent": 80, "on_ms": 200, "off_ms": 200, "count": 3},
+    "0": {"duty_percent": 0, "on_ms": 0, "off_ms": 0, "repeat": False, "mode": "off"},
+    "1": {"duty_percent": 0, "on_ms": 0, "off_ms": 0, "repeat": False, "mode": "off"},
+    "2": {"duty_percent": 0, "on_ms": 0, "off_ms": 0, "repeat": False, "mode": "off"},
+    "3": {"duty_percent": 50, "on_ms": 1000, "off_ms": 1000, "repeat": True, "mode": "slow_blink"},
+    "4": {"duty_percent": 80, "on_ms": 200, "off_ms": 200, "repeat": True, "mode": "fast_blink"},
 }
 
 
@@ -115,8 +145,9 @@ class Tm6605BackendTest(unittest.TestCase):
             opens = sum(1 for event in adapter.events if event[1] == "open")
             self.assertEqual(1, opens)
             backend.apply_levels({"left": 3, "right": 0}, now=10.1)
-            self.assertEqual(2, backend.status()["pending_by_side"]["left"])
-            backend.tick(10.75)
+            self.assertEqual(1, backend.status()["pending_by_side"]["left"])
+            backend.tick(10.6)
+            self.assertEqual(2, backend.status()["play_count"]["left"])
             backend.stop_side("left")
             self.assertEqual(0, backend.status()["pending_by_side"]["left"])
 
@@ -135,7 +166,28 @@ class Tm6605BackendTest(unittest.TestCase):
             backend.stop_side("left")
             status = backend.status()
             self.assertEqual(0, status["pending_by_side"]["left"])
-            self.assertEqual(2, status["pending_by_side"]["right"])
+            self.assertEqual(1, status["pending_by_side"]["right"])
+            self.assertTrue(status["sides"]["right"]["active"])
+
+    def test_heartbeat_and_long_runtime_keep_one_bounded_state_per_side(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            adapter = FakeAdapter()
+            backend = Tm6605HapticBackend(
+                {"left": I2cMuxTransaction("/dev/i2c-0", 0x2D, mux_address=0x70, mux_channel=1, lock_file=str(Path(temp_dir) / "mux.lock"), adapter=adapter)},
+                LEVEL_EFFECTS,
+            )
+            backend.apply_levels({"left": 1, "right": 0}, now=0.0)
+            for index in range(1000):
+                backend.apply_levels({"left": 1, "right": 0}, now=index / 10.0)
+            status = backend.status()
+            self.assertEqual(1, status["pending_by_side"]["left"])
+            self.assertGreater(status["play_count"]["left"], 1)
+            self.assertLess(status["play_count"]["left"], 60)
+            backend.tick(100.0)
+            backend.apply_levels({"left": 4, "right": 0}, now=100.1)
+            status = backend.status()
+            self.assertEqual(4, status["sides"]["left"]["applied_level"])
+            self.assertEqual(14, status["sides"]["left"]["effect"])
 
 
 class PwmLightBackendTest(unittest.TestCase):
@@ -159,6 +211,11 @@ class PwmLightBackendTest(unittest.TestCase):
         self.assertEqual(pending, backend.status()["pending_by_side"]["left"])
         backend.tick(3.0)
         self.assertEqual((0, 10, 1_000_000, 0, False), pwm.outputs[-1])
+        backend.tick(4.0)
+        self.assertEqual((0, 10, 1_000_000, 50, True), pwm.outputs[-1])
+        self.assertEqual("slow_blink", backend.status()["sides"]["left"]["mode"])
+        backend.apply_levels({"left": 4, "right": 0}, now=4.1)
+        self.assertEqual("fast_blink", backend.status()["sides"]["left"]["mode"])
 
     def test_sysfs_setup_clears_old_duty_before_smaller_period(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -177,6 +234,76 @@ class PwmLightBackendTest(unittest.TestCase):
     def test_invalid_pattern_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             LightPattern.from_mapping({"duty_percent": 101, "count": 1})
+
+    def test_persistent_blink_is_bounded_and_levels_one_two_stay_off(self) -> None:
+        pwm = FakePwm()
+        backend = PwmLightBackend(
+            pwm,  # type: ignore[arg-type]
+            {"left": PwmChannelSpec("left", 10, 7, 0), "right": PwmChannelSpec("right", 1, 32, 0)},
+            LIGHT_PATTERNS,
+            period_ns=1_000_000,
+        )
+        backend.setup()
+        backend.apply_levels({"left": 3, "right": 2}, now=0.0)
+        for index in range(1, 1001):
+            backend.tick(float(index))
+            backend.apply_levels({"left": 3, "right": 2}, now=float(index))
+        status = backend.status()
+        self.assertEqual(1, status["pending_by_side"]["left"])
+        self.assertEqual(0, status["pending_by_side"]["right"])
+        self.assertEqual("off", status["sides"]["right"]["phase"])
+
+
+class AudioPlayerTest(unittest.TestCase):
+    def test_duplicate_requests_are_bounded_by_side_and_clear_removes_pending(self) -> None:
+        player = AudioPlayer(Path("/unused"), dry_run=True)
+        for _ in range(1000):
+            player.apply_levels({"left": 3, "right": 0}, requested_clip="L3")
+        self.assertEqual(1, player.status()["queue_depth"])
+        player.apply_levels({"left": 3, "right": 4}, requested_clip="R4")
+        self.assertEqual(2, player.status()["queue_depth"])
+        player.clear_side("left")
+        self.assertEqual({"right": "R4"}, player.status()["pending_by_side"])
+        player.clear()
+        self.assertEqual(0, player.status()["queue_depth"])
+
+    def test_level_four_replaces_level_three_and_payload_exposes_outputs(self) -> None:
+        player = AudioPlayer(Path("/unused"), dry_run=True)
+        player.apply_levels({"left": 3, "right": 0}, requested_clip="L3")
+        player.apply_levels({"left": 4, "right": 0}, requested_clip="L4")
+        self.assertEqual({"left": "L4"}, player.status()["pending_by_side"])
+        policy = OutputPolicy.for_profile("rev2_tm6605_mr20")
+        decision = policy.decide({"left": 3, "right": 0}, "L3")
+        payload = __import__("json").loads(alert_event_ble_payload(
+            AlertEvent("left", 3, source="vision:left"),
+            decision=decision,
+            audio_enabled=True,
+        ))
+        self.assertEqual(3, payload["haptic_level"])
+        self.assertEqual("slow_blink", payload["light_mode"])
+        self.assertEqual("L3", payload["audio_clip"])
+        self.assertTrue(payload["audio_enabled"])
+
+
+class ManagedActuatorRecoveryTest(unittest.TestCase):
+    def test_optional_backend_replays_desired_levels_after_recovery(self) -> None:
+        primary = RecoveringActuatorBackend(fail_first_setup=True)
+        fallback = RecoveringActuatorBackend()
+        actuator = ManagedActuator(
+            "lights",
+            primary,
+            fallback,
+            {"required": False, "failure_policy": "degrade"},
+        )
+        actuator.initialize()
+        self.assertEqual("degraded", actuator.state)
+        actuator.apply_levels({"left": 3, "right": 0}, now=1.0)
+        self.assertEqual(({"left": 3, "right": 0}, 1.0), fallback.applied[-1])
+
+        self.assertTrue(actuator.retry_if_degraded(now=30.0, interval_s=30.0))
+        self.assertEqual("online", actuator.state)
+        self.assertEqual(({"left": 3, "right": 0}, 30.0), primary.applied[-1])
+        self.assertEqual({"left": 3, "right": 0}, actuator.status()["desired_levels"])
 
 
 class HardwareProfileTest(unittest.TestCase):

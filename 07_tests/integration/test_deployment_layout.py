@@ -7,8 +7,8 @@ DEPLOY = ROOT / "09_deliverables" / "board_deploy"
 
 
 class DeploymentLayoutTest(unittest.TestCase):
-    def test_default_unit_uses_configured_dual_camera_supervisor(self) -> None:
-        unit = (DEPLOY / "systemd" / "smartbag-alert.service").read_text(encoding="utf-8")
+    def test_default_unit_uses_configured_alternating_camera_supervisor(self) -> None:
+        unit = (DEPLOY / "systemd" / "smartbag-controller.service").read_text(encoding="utf-8")
         self.assertIn("/root/smartbag/vision", unit)
         self.assertIn("/root/smartbag/controller", unit)
         self.assertIn("--config /etc/smartbag/config.json", unit)
@@ -20,8 +20,9 @@ class DeploymentLayoutTest(unittest.TestCase):
 
     def test_target_starts_controller_which_owns_child_processes(self) -> None:
         target = (DEPLOY / "systemd" / "smartbag.target").read_text(encoding="utf-8")
-        self.assertIn("Requires=smartbag-alert.service", target)
-        self.assertIn("smartbag-video.service", target)
+        self.assertIn("smartbag-controller.service", target)
+        self.assertIn("smartbag-safe-off.service", target)
+        self.assertNotIn("smartbag-video.service", target)
         self.assertNotIn("smartbag-gnss.service", target)
         self.assertNotIn("smartbag-imu.service", target)
 
@@ -30,10 +31,10 @@ class DeploymentLayoutTest(unittest.TestCase):
         self.assertNotIn("imx347", target.lower())
         self.assertNotIn("smartbag-vision.service", target)
 
-        alert_unit = (DEPLOY / "systemd" / "smartbag-alert.service").read_text(encoding="utf-8")
+        alert_unit = (DEPLOY / "systemd" / "smartbag-controller.service").read_text(encoding="utf-8")
         diagnostic_unit = (DEPLOY / "systemd" / "smartbag-vision.service").read_text(encoding="utf-8")
-        self.assertIn("Conflicts=smartbag-vision.service", alert_unit)
-        self.assertIn("Conflicts=smartbag-alert.service", diagnostic_unit)
+        self.assertNotIn("smartbag-vision.service", target)
+        self.assertIn("smartbag-controller.service", diagnostic_unit)
 
     def test_mr20_network_is_host_route_without_gateway(self) -> None:
         network = (DEPLOY / "systemd-networkd" / "20-mr20-radar.network").read_text(encoding="utf-8")
