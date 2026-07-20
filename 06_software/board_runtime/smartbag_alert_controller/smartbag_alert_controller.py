@@ -688,6 +688,22 @@ def alert_event_ble_payload(event: AlertEvent, *, effective_level: int | None = 
     return json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
 
 
+def append_alert_event_jsonl(
+    path: str,
+    event: AlertEvent,
+    *,
+    effective_level: int,
+) -> None:
+    if not path or event.event_kind != "state_change":
+        return
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    record = json.loads(alert_event_ble_payload(event, effective_level=effective_level))
+    record["type"] = "alert"
+    with destination.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n")
+
+
 def controller_status_payload(
     state: AlertState,
     detectors: list[DetectorProcess],
@@ -1112,6 +1128,7 @@ def run_controller(args: argparse.Namespace) -> int:
     restart_limit = int(args.detector_restart_limit if args.detector_restart_limit is not None else restart_config.get("limit", 5))
     restart_backoff_s = float(args.detector_restart_backoff if args.detector_restart_backoff is not None else restart_config.get("backoff_s", 1.0))
     status_file = str(args.status_file or config.get("controller_status_file", ""))
+    event_log_jsonl = str(config.get("controller_event_jsonl", ""))
     level_duties = pwm_config.get("level_duty_percent")
     event_queue: "queue.Queue[AlertEvent]" = queue.Queue()
     command_queue: "queue.Queue[str]" = queue.Queue()
@@ -1364,6 +1381,11 @@ def run_controller(args: argparse.Namespace) -> int:
                     continue
                 output = state.apply_event(event)
                 apply_effective_output(output, haptics, lights, audio, output_policy)
+                append_alert_event_jsonl(
+                    event_log_jsonl,
+                    event,
+                    effective_level=(output.levels or {})[event.side],
+                )
                 if ble is not None and should_publish_alert_history(event):
                     ble.send_line(
                         alert_event_ble_payload(
@@ -1385,6 +1407,28 @@ def run_controller(args: argparse.Namespace) -> int:
                             audio.clear()
                         output = state.apply_command(command)
                         apply_effective_output(output, haptics, lights, audio, output_policy)
+                        if command.kind == "clear":
+                            for side in ("left", "right"):
+                                append_alert_event_jsonl(
+                                    event_log_jsonl,
+                                    AlertEvent(
+                                        side=side,
+                                        level=0,
+                                        source="manual",
+                                        clear_reason="manual_clear_all",
+                                    ),
+                                    effective_level=0,
+                                )
+                        elif command.side is not None:
+                            append_alert_event_jsonl(
+                                event_log_jsonl,
+                                AlertEvent(
+                                    side=command.side,
+                                    level=command.level,
+                                    source="manual",
+                                ),
+                                effective_level=(output.levels or {})[command.side],
+                            )
                         if ble is not None:
                             ble.send_line("OK AL " + route.command)
                     elif route.namespace in ("GNSS", "IMU"):
@@ -1419,17 +1463,23 @@ def run_controller(args: argparse.Namespace) -> int:
             expired = state.expire()
             if expired.expired_source_sides:
                 apply_effective_output(expired, haptics, lights, audio, output_policy)
-                if ble is not None:
-                    for source, side in expired.expired_source_sides:
+                for source, side in expired.expired_source_sides:
+                    timeout_event = AlertEvent(
+                        side=side,
+                        level=0,
+                        source=source,
+                        ts=time.monotonic(),
+                        clear_reason="source_timeout",
+                    )
+                    append_alert_event_jsonl(
+                        event_log_jsonl,
+                        timeout_event,
+                        effective_level=(expired.levels or {})[side],
+                    )
+                    if ble is not None:
                         ble.send_line(
                             alert_event_ble_payload(
-                                AlertEvent(
-                                    side=side,
-                                    level=0,
-                                    source=source,
-                                    ts=time.monotonic(),
-                                    clear_reason="source_timeout",
-                                ),
+                                timeout_event,
                                 effective_level=(expired.levels or {})[side],
                             )
                         )

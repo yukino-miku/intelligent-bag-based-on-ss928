@@ -31,7 +31,7 @@
     <view class="summary-panel__head">
       <view>
         <view class="summary-panel__title">{{currentTrackLabel}}</view>
-        <view class="summary-panel__meta">{{latestMeta}}</view>
+        <view class="summary-panel__meta">{{latestMeta}} · {{trackSourceText}}</view>
       </view>
       <view class="summary-panel__badge">{{pointCount}} 点</view>
     </view>

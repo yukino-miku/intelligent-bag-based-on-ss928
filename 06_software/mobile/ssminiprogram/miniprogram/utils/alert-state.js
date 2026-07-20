@@ -8,6 +8,10 @@ const emptySide = (side) => ({
   trackId: null,
   className: "",
   distanceM: null,
+  ttcS: null,
+  source: "unknown",
+  sourceId: null,
+  effectiveLevel: 0,
   receivedAt: "--"
 });
 
@@ -34,6 +38,10 @@ const applyAlertFrame = (state, frame, maxHistory) => {
     trackId: typeof frame.track_id === "number" ? frame.track_id : null,
     className: frame.class || "",
     distanceM: typeof frame.distance_m === "number" ? frame.distance_m : null,
+    ttcS: typeof frame.ttc_s === "number" ? frame.ttc_s : null,
+    source: frame.source || "unknown",
+    sourceId: frame.source_id || null,
+    effectiveLevel: typeof frame.effective_level === "number" ? frame.effective_level : level,
     sourceTs: frame.ts,
     receivedAt
   };

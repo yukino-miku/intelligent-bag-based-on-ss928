@@ -1,0 +1,20 @@
+{
+  "enabled": false,
+  "device_id": "",
+  "endpoint": "https://YOUR_CLOUDBASE_HTTP_TRIGGER.example.com/telemetry",
+  "secret_env": "SMARTBAG_HMAC_SECRET",
+  "queue_file": "/var/lib/smartbag/cloud-queue.jsonl",
+  "cursor_file": "/var/lib/smartbag/cloud-cursors.json",
+  "max_entries": 2000,
+  "max_file_bytes": 4194304,
+  "batch_size": 50,
+  "timeout_s": 5.0,
+  "interval_s": 2.0,
+  "max_backoff_s": 60.0,
+  "status_files": [
+    "/run/smartbag/controller-status.json",
+    "/run/smartbag/gnss-status.json",
+    "/run/smartbag/imu-status.json"
+  ],
+  "event_jsonl_files": ["/var/log/smartbag/controller-events.jsonl"]
+}

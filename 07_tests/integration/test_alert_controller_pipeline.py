@@ -1,6 +1,7 @@
 import io
 import queue
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -16,6 +17,7 @@ from smartbag_alert_controller import (
     DetectorProcess,
     alternating_detector_command_from_config,
     alert_event_ble_payload,
+    append_alert_event_jsonl,
     detector_commands_from_config,
     should_publish_alert_history,
     validate_dual_camera_config,
@@ -206,6 +208,18 @@ class AlertControllerPipelineTest(unittest.TestCase):
         self.assertIn('"name":"DANGER"', payload)
         self.assertIn('"class":"car"', payload)
         self.assertIn('"distance_m":4.2', payload)
+
+    def test_controller_event_log_records_source_and_effective_level(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "events.jsonl"
+            append_alert_event_jsonl(
+                str(path),
+                AlertEvent("right", 3, source="radar:right_rear", ttc_s=1.2),
+                effective_level=4,
+            )
+            text = path.read_text(encoding="utf-8")
+            self.assertIn('"source":"radar:right_rear"', text)
+            self.assertIn('"effective_level":4', text)
 
 
 if __name__ == "__main__":

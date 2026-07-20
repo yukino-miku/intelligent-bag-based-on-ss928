@@ -81,5 +81,7 @@ yolo*.onnx
 /06_software/board_runtime/bmi270_backpack/calibration_data/*.csv
 /06_software/board_runtime/bmi270_backpack/bmi270_config.bin
 *.local.json
+06_software/mobile/ssminiprogram/miniprogram/config/cloud.local.js
+06_software/mobile/ssminiprogram/project.private.config.json
 .env
 *.board.log
