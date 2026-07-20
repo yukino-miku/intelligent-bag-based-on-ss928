@@ -2,6 +2,8 @@
 
 ## 2026-07-20
 
+- 修复 SS928 纯摄像头交替预览黑屏：`stream_only` 首页在没有左右 overlay 时自动使用 raw；MJPEG 去重不再仅依赖会在每次 STREAMON 后重复的 V4L2 sequence，而是同时比较采集和发布时间。
+- 实板回归确认左右 raw 流均可被浏览器解码为 1920x1080，3 秒测试收到 3 个连续 MJPEG 分段，左右在线且 STREAMON/STREAMOFF 失败均为 0；新增 3 项网关测试，交替采集测试文件共 22 项通过。
 - 新建 `agent/rev2-autonomous-board-runtime`：默认运行改为 `smartbag.target -> smartbag-controller.service`，controller 内部监督单模型双 UVC 交替采集、GNSS、BMI270、MR20、BLE 和本地视频；固定双 detector 仅保留诊断兼容入口。
 - Rev2 TM6605 改为左右独立有界持续状态机，0–4 震动等级一一映射；灯光 3/4 改为持续慢闪/快闪；音频改为每侧一个待播项、去重、四级抢占三级和 clear/stop 终止。未找到可确认的 TM6605 线性增益寄存器，不声称线性振幅。
 - 增加固定 `/root/smartbag/venv`、模型安装门禁、设备节点有界等待 JSON、`smartbag-safe-off.service`、boot self-test、`rev2-board-validation.py` 和本地/板端 session 目录。

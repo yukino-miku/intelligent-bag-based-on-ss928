@@ -165,7 +165,17 @@ sudo env LEFT_DEVICE=/dev/v4l/by-path/LEFT-video-index0 \
   --runtime-mode stream_only --serve-bind 0.0.0.0 --serve-port 8081
 ```
 
-打开 `http://<板端地址>:8081/`；非 active 侧是最后缓存帧，页面会显示帧龄。原始 session 在 `/var/log/smartbag/alternating-camera-runs/<SESSION_ID>/`，包括 `session.json`、`switch-events.csv`、`camera-events.csv`、`performance.csv`、`alerts.csv`、`errors.log` 和 summary。
+打开 `http://<板端地址>:8081/`；非 active 侧是最后缓存帧，页面会显示帧龄。`stream_only` 不生成检测 overlay，首页会在左右 overlay 不可用时自动选择 raw，此时按钮文字为“切换为检测画面”。原始 session 在 `/var/log/smartbag/alternating-camera-runs/<SESSION_ID>/`，包括 `session.json`、`switch-events.csv`、`camera-events.csv`、`performance.csv`、`alerts.csv`、`errors.log` 和 summary。
+
+如果页面黑屏，先分别验证状态、单帧和连续流：
+
+```sh
+curl -s http://127.0.0.1:8081/api/v1/status
+curl -f 'http://127.0.0.1:8081/api/v1/camera/left/snapshot.jpg?view=raw' -o /tmp/left.jpg
+curl --max-time 3 'http://127.0.0.1:8081/api/v1/camera/left/mjpeg?view=raw' -o /tmp/left.mjpeg
+```
+
+纯采集时 `raw_available=true`、`overlay_available=false` 是正常状态。snapshot 正常但 MJPEG 长时间只有一个分段时，应检查是否运行了旧版仅按 V4L2 sequence 去重的网关；UVC 每次 STREAMOFF/STREAMON 后 sequence 可能重复，新版同时使用采集和发布时间识别新帧。
 
 只有板端视觉依赖和模型已经通过 `check-runtime-deps.sh` 时，才允许配置 C/D：
 

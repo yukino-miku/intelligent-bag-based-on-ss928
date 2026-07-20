@@ -2,6 +2,7 @@
 
 ## 2026-07-20
 
+- 通过板端 `eth1` 有线地址完成 PC 浏览器双摄预览，定位并修复两层黑屏原因：纯采集没有 overlay 但首页默认请求 overlay，以及 UVC 每次重启流后 sequence 重复导致 MJPEG 错误去重。实板浏览器最终确认左右图像 `naturalWidth/naturalHeight=1920/1080`，未启用 YOLO、PWM 或其他外设。
 - 从 `agent/sanda-hardware-refresh@0fbe815e8a7f51fc32e925bce086be99ceca84a9` 创建 `agent/rev2-autonomous-board-runtime`，不修改基线分支。
 - 将 Rev2 震动、灯光和音频改为有界持续状态；新增本地自主启动 target、固定 venv、模型门禁、硬件等待、安全关断、boot self-test 和分阶段板端验证编排。
 - 默认配置切换为 `alternating_single_model`，controller 统一监督子进程并独占 BLE；核心 unit 不依赖 `network-online.target`，Cloud uploader 保持可选。

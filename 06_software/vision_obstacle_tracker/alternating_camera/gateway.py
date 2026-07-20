@@ -171,7 +171,12 @@ class AlternatingCameraGateway:
                 self._mjpeg(handler, side, view)
                 return
         if parsed.path == "/":
-            page = self._debug_page(query.get("token", [""])[0]).encode("utf-8")
+            default_view = (
+                "overlay"
+                if all(self.latest_frame(side, "overlay") is not None for side in ("left", "right"))
+                else "raw"
+            )
+            page = self._debug_page(query.get("token", [""])[0], default_view).encode("utf-8")
             handler.send_response(HTTPStatus.OK)
             handler.send_header("Content-Type", "text/html; charset=utf-8")
             handler.send_header("Content-Length", str(len(page)))
@@ -285,16 +290,21 @@ class AlternatingCameraGateway:
         handler.send_header("Cache-Control", "no-store")
         handler.end_headers()
         interval_s = 1.0 / self.stream_fps_limit
-        last_sequence = -1
+        last_frame_id: tuple[int, float, float] | None = None
         with self._client_lock:
             self.gateway_clients += 1
         try:
             while True:
                 frame = self.latest_frame(side, view)
-                if frame is None or frame.sequence == last_sequence:
+                frame_id = (
+                    (frame.sequence, frame.captured_at_s, frame.published_at_s)
+                    if frame is not None
+                    else None
+                )
+                if frame is None or frame_id == last_frame_id:
                     time.sleep(min(interval_s, 0.1))
                     continue
-                last_sequence = frame.sequence
+                last_frame_id = frame_id
                 handler.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n")
                 handler.wfile.write(f"Content-Length: {len(frame.data)}\r\n\r\n".encode("ascii"))
                 handler.wfile.write(frame.data)
@@ -318,16 +328,19 @@ class AlternatingCameraGateway:
         handler.wfile.write(body)
 
     @staticmethod
-    def _debug_page(token: str) -> str:
+    def _debug_page(token: str, default_view: str = "raw") -> str:
+        if default_view not in ("raw", "overlay"):
+            raise ValueError("default debug view must be raw or overlay")
         token_query = f"&token={quote_plus(token)}" if token else ""
         status_query = f"?token={quote_plus(token)}" if token else ""
+        toggle_label = "切换为原始画面" if default_view == "overlay" else "切换为检测画面"
         return f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>SS928 交替双摄</title>
 <style>body{{font-family:system-ui,sans-serif;margin:0;background:#101214;color:#eee}}header{{padding:12px 18px;background:#191d20;display:flex;gap:14px;align-items:center}}button{{padding:7px 12px}}.grid{{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:12px}}section{{border:1px solid #444;background:#171a1d;padding:8px}}img{{width:100%;aspect-ratio:4/3;object-fit:contain;background:#000}}pre{{white-space:pre-wrap;font-size:12px;min-height:12em}}@media(max-width:800px){{.grid{{grid-template-columns:1fr}}}}</style></head>
-<body><header><strong>SS928 交替双摄</strong><button id="toggle">切换为原始画面</button><span id="global">读取状态中</span></header><div class="grid">
+<body><header><strong>SS928 交替双摄</strong><button id="toggle">{toggle_label}</button><span id="global">读取状态中</span></header><div class="grid">
 <section><h2>左侧</h2><img id="left-img"><pre id="left"></pre></section>
 <section><h2>右侧</h2><img id="right-img"><pre id="right"></pre></section></div>
-<script>let view='overlay';const token='{token_query}';
+<script>let view='{default_view}';const token='{token_query}';
 function setStreams(){{for(const s of ['left','right'])document.getElementById(s+'-img').src=`/api/v1/camera/${{s}}/mjpeg?view=${{view}}${{token}}&t=${{Date.now()}}`;}}
 document.getElementById('toggle').onclick=()=>{{view=view==='overlay'?'raw':'overlay';document.getElementById('toggle').textContent=view==='overlay'?'切换为原始画面':'切换为检测画面';setStreams();}};
 async function poll(){{try{{const r=await fetch('/api/v1/status{status_query}');const v=await r.json();document.getElementById('global').textContent=`当前采集: ${{v.active_camera||'无'}} | 切换: ${{v.switch_count||0}} | E2E max: ${{v.end_to_end_max_gap_ms??'-'}} ms | CPU: ${{v.cpu_percent??'-'}}% | RSS: ${{v.process_rss_mb??'-'}} MiB`;for(const c of v.cameras)document.getElementById(c.side).textContent=JSON.stringify(c,null,2);}}catch(e){{document.getElementById('global').textContent=String(e);}}setTimeout(poll,1000);}}setStreams();poll();</script></body></html>"""

@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from collections import deque
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.error import HTTPError
 from urllib.request import urlopen
 
@@ -543,6 +544,55 @@ class GatewayTest(unittest.TestCase):
         cameras = {camera["side"]: camera for camera in payload["cameras"]}
         self.assertEqual("live", cameras["left"]["frame_state"])
         self.assertEqual("offline", cameras["right"]["frame_state"])
+
+    def test_debug_page_defaults_to_raw_when_overlay_is_unavailable(self) -> None:
+        with urlopen(self.base + "/", timeout=2.0) as response:
+            page = response.read().decode("utf-8")
+
+        self.assertIn("let view='raw'", page)
+        self.assertIn("切换为检测画面", page)
+
+    def test_debug_page_keeps_overlay_default_when_both_sides_are_available(self) -> None:
+        frame = self.capture.latest_frame("left")
+        self.assertIsNotNone(frame)
+        for side in ("left", "right"):
+            self.gateway.publish_overlay(
+                side,
+                b"\xff\xd8overlay-jpeg\xff\xd9",
+                sequence=frame.sequence,
+                captured_at_s=frame.captured_at_s,
+            )
+
+        with urlopen(self.base + "/", timeout=2.0) as response:
+            page = response.read().decode("utf-8")
+
+        self.assertIn("let view='overlay'", page)
+        self.assertIn("切换为原始画面", page)
+
+    def test_mjpeg_emits_new_capture_when_v4l2_sequence_repeats(self) -> None:
+        first = b"\xff\xd8first-jpeg\xff\xd9"
+        second = b"\xff\xd8second-jpeg\xff\xd9"
+        self.gateway.publish_raw(
+            SimpleNamespace(side="left", data=first, sequence=7, captured_at_s=100.0)
+        )
+
+        with urlopen(self.base + "/api/v1/camera/left/mjpeg?view=raw", timeout=2.0) as response:
+            first_part = self._read_mjpeg_part(response, first)
+            self.gateway.publish_raw(
+                SimpleNamespace(side="left", data=second, sequence=7, captured_at_s=101.0)
+            )
+            second_part = self._read_mjpeg_part(response, second)
+
+        self.assertIn(first, first_part)
+        self.assertIn(second, second_part)
+
+    @staticmethod
+    def _read_mjpeg_part(response, jpeg: bytes) -> bytes:
+        prefix = (
+            b"--frame\r\nContent-Type: image/jpeg\r\n"
+            + f"Content-Length: {len(jpeg)}\r\n\r\n".encode("ascii")
+        )
+        return response.read(len(prefix) + len(jpeg) + 2)
 
     def test_snapshot_uses_cached_mjpeg_and_gateway_never_reopens_camera(self) -> None:
         starts_before = self.capture.devices["left"].start_attempts

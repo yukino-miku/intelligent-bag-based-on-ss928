@@ -645,7 +645,9 @@ python3 alternating_camera_test.py \
   --output-dir /var/log/smartbag/alternating-camera-runs
 ```
 
-B 阶段页面为 `http://<板端地址>:8081/`。状态会标明当前 active side、另一侧缓存帧年龄和离线状态；gateway 只读缓存，不重新打开摄像头。A/B 没有 YOLO，因此 overlay 与 raw 没有检测框差异，不能用它证明 C 阶段 overlay 已通过。
+B 阶段页面为 `http://<板端地址>:8081/`。状态会标明当前 active side、另一侧缓存帧年龄和离线状态；gateway 只读缓存，不重新打开摄像头。A/B 没有 YOLO，也不生成 overlay，页面会自动选择 raw，按钮文字应为“切换为检测画面”；不能用 B 阶段证明 C 阶段检测 overlay 已通过。
+
+若状态显示两侧 online 但页面黑屏，依次检查 `api/v1/status`、`snapshot.jpg?view=raw` 和 `mjpeg?view=raw`。单帧正常但连续流不刷新时，需确认网关没有只按 V4L2 sequence 去重，因为每次 STREAMOFF/STREAMON 后该序号可能重复；当前实现还比较采集时间和发布时间。
 
 依赖齐全后才运行 C：
 
