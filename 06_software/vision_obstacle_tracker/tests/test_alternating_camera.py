@@ -551,6 +551,8 @@ class GatewayTest(unittest.TestCase):
 
         self.assertIn("let view='raw'", page)
         self.assertIn('<button id="toggle" disabled>检测画面不可用</button>', page)
+        self.assertIn("/api/v1/alternating/mjpeg", page)
+        self.assertIn("低延迟交替画面", page)
         self.assertIn(".onerror=", page)
 
     def test_debug_page_keeps_overlay_default_when_both_sides_are_available(self) -> None:
@@ -587,11 +589,39 @@ class GatewayTest(unittest.TestCase):
         self.assertIn(first, first_part)
         self.assertIn(second, second_part)
 
+    def test_alternating_mjpeg_emits_latest_frame_from_both_sides(self) -> None:
+        right = b"\xff\xd8right-jpeg\xff\xd9"
+        left = b"\xff\xd8left-jpeg\xff\xd9"
+        self.gateway.publish_raw(
+            SimpleNamespace(side="right", data=right, sequence=3, captured_at_s=200.0)
+        )
+
+        with urlopen(self.base + "/api/v1/alternating/mjpeg?view=raw", timeout=2.0) as response:
+            right_part = self._read_alternating_mjpeg_part(response, right, "right")
+            self.gateway.publish_raw(
+                SimpleNamespace(side="left", data=left, sequence=4, captured_at_s=201.0)
+            )
+            left_part = self._read_alternating_mjpeg_part(response, left, "left")
+
+        self.assertIn(right, right_part)
+        self.assertIn(b"X-Frame-Side: right", right_part)
+        self.assertIn(left, left_part)
+        self.assertIn(b"X-Frame-Side: left", left_part)
+
     @staticmethod
     def _read_mjpeg_part(response, jpeg: bytes) -> bytes:
         prefix = (
             b"--frame\r\nContent-Type: image/jpeg\r\n"
             + f"Content-Length: {len(jpeg)}\r\n\r\n".encode("ascii")
+        )
+        return response.read(len(prefix) + len(jpeg) + 2)
+
+    @staticmethod
+    def _read_alternating_mjpeg_part(response, jpeg: bytes, side: str) -> bytes:
+        prefix = (
+            b"--frame\r\nContent-Type: image/jpeg\r\n"
+            + f"Content-Length: {len(jpeg)}\r\n".encode("ascii")
+            + f"X-Frame-Side: {side}\r\n\r\n".encode("ascii")
         )
         return response.read(len(prefix) + len(jpeg) + 2)
 

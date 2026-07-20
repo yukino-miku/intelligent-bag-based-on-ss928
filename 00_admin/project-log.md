@@ -2,6 +2,7 @@
 
 ## 2026-07-20
 
+- 继续诊断板端网页卡顿：标称千兆链路的小包延迟约 1–3 ms，但板端累计大量 TCP retransmit，PC 读取 JPEG 仅约 0.7 Mbps；将实际 `eth1` 临时限制为 100M 全双工后达到 27.3 Mbps。新增无积压的低延迟交替流，用左右最新帧把实测更新提高到约 7.63 FPS、最长无帧间隔降至约 400 ms；剩余波动来自 STREAMON 首帧等待和突发出帧，纯采集仍不声称具备检测 overlay。
 - 将板端浏览器预览从实际 1920x1080 降至原生 1280x720，并用 1 帧预热/每片 6 帧平衡切换开销，左右 capture FPS 从约 4.15 提高至约 5.8–6.0；5 秒左右端点各收到 11 个 MJPEG 分段，无流切换错误。页面随后增加 overlay 禁用和断线自动重连。
 - 通过板端 `eth1` 有线地址完成 PC 浏览器双摄预览，定位并修复两层黑屏原因：纯采集没有 overlay 但首页默认请求 overlay，以及 UVC 每次重启流后 sequence 重复导致 MJPEG 错误去重。实板浏览器最终确认左右图像 `naturalWidth/naturalHeight=1920/1080`，未启用 YOLO、PWM 或其他外设。
 - 从 `agent/sanda-hardware-refresh@0fbe815e8a7f51fc32e925bce086be99ceca84a9` 创建 `agent/rev2-autonomous-board-runtime`，不修改基线分支。

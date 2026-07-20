@@ -155,14 +155,20 @@ class AlternatingCameraGateway:
             payload = cameras if parsed.path.endswith("cameras") else {**status, "cameras": cameras}
             self._json(handler, HTTPStatus.OK, payload)
             return
+        view = query.get("view", ["raw"])[0]
+        if view not in ("raw", "overlay"):
+            self._json(handler, HTTPStatus.BAD_REQUEST, {"error": "invalid_view"})
+            return
+        if parsed.path == "/api/v1/alternating/snapshot.jpg":
+            self._alternating_snapshot(handler, view)
+            return
+        if parsed.path == "/api/v1/alternating/mjpeg":
+            self._alternating_mjpeg(handler, view)
+            return
         for side in ("left", "right"):
             base = f"/api/v1/camera/{side}"
             if parsed.path == f"{base}/status":
                 self._json(handler, HTTPStatus.OK, self._side_status(side, self._combined_status()))
-                return
-            view = query.get("view", ["raw"])[0]
-            if view not in ("raw", "overlay"):
-                self._json(handler, HTTPStatus.BAD_REQUEST, {"error": "invalid_view"})
                 return
             if parsed.path == f"{base}/snapshot.jpg":
                 self._snapshot(handler, side, view)
@@ -284,6 +290,31 @@ class AlternatingCameraGateway:
         handler.end_headers()
         handler.wfile.write(frame.data)
 
+    def _alternating_snapshot(self, handler: BaseHTTPRequestHandler, view: str) -> None:
+        frame = self._newest_frame(view)
+        if frame is None:
+            self._json(handler, HTTPStatus.SERVICE_UNAVAILABLE, {"error": f"{view}_unavailable"})
+            return
+        handler.send_response(HTTPStatus.OK)
+        handler.send_header("Content-Type", "image/jpeg")
+        handler.send_header("Content-Length", str(len(frame.data)))
+        handler.send_header("Cache-Control", "no-store")
+        handler.send_header("X-Frame-View", view)
+        handler.send_header("X-Frame-Side", frame.side)
+        handler.send_header(
+            "X-Frame-Age-Ms",
+            f"{max(0.0, time.monotonic() - frame.captured_at_s) * 1000.0:.1f}",
+        )
+        handler.end_headers()
+        handler.wfile.write(frame.data)
+
+    def _newest_frame(self, view: str) -> PublishedJpeg | None:
+        frames = [self.latest_frame(side, view) for side in ("left", "right")]
+        available = [frame for frame in frames if frame is not None]
+        if not available:
+            return None
+        return max(available, key=lambda frame: (frame.published_at_s, frame.captured_at_s))
+
     def _mjpeg(self, handler: BaseHTTPRequestHandler, side: str, view: str) -> None:
         handler.send_response(HTTPStatus.OK)
         handler.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
@@ -317,6 +348,40 @@ class AlternatingCameraGateway:
             with self._client_lock:
                 self.gateway_clients = max(0, self.gateway_clients - 1)
 
+    def _alternating_mjpeg(self, handler: BaseHTTPRequestHandler, view: str) -> None:
+        handler.send_response(HTTPStatus.OK)
+        handler.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+        handler.send_header("Cache-Control", "no-store")
+        handler.end_headers()
+        interval_s = 1.0 / self.stream_fps_limit
+        last_frame_id: tuple[str, int, float, float] | None = None
+        with self._client_lock:
+            self.gateway_clients += 1
+        try:
+            while True:
+                frame = self._newest_frame(view)
+                frame_id = (
+                    (frame.side, frame.sequence, frame.captured_at_s, frame.published_at_s)
+                    if frame is not None
+                    else None
+                )
+                if frame is None or frame_id == last_frame_id:
+                    time.sleep(min(interval_s, 0.02))
+                    continue
+                last_frame_id = frame_id
+                handler.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n")
+                handler.wfile.write(f"Content-Length: {len(frame.data)}\r\n".encode("ascii"))
+                handler.wfile.write(f"X-Frame-Side: {frame.side}\r\n\r\n".encode("ascii"))
+                handler.wfile.write(frame.data)
+                handler.wfile.write(b"\r\n")
+                handler.wfile.flush()
+                time.sleep(interval_s)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return
+        finally:
+            with self._client_lock:
+                self.gateway_clients = max(0, self.gateway_clients - 1)
+
     @staticmethod
     def _json(handler: BaseHTTPRequestHandler, status: HTTPStatus, payload: object) -> None:
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -338,17 +403,20 @@ class AlternatingCameraGateway:
         toggle_disabled = "" if overlay_ready else " disabled"
         return f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>SS928 交替双摄</title>
-<style>body{{font-family:system-ui,sans-serif;margin:0;background:#101214;color:#eee}}header{{padding:12px 18px;background:#191d20;display:flex;gap:14px;align-items:center}}button{{padding:7px 12px}}.grid{{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:12px}}section{{border:1px solid #444;background:#171a1d;padding:8px}}img{{width:100%;aspect-ratio:4/3;object-fit:contain;background:#000}}pre{{white-space:pre-wrap;font-size:12px;min-height:12em}}@media(max-width:800px){{.grid{{grid-template-columns:1fr}}}}</style></head>
-<body><header><strong>SS928 交替双摄</strong><button id="toggle"{toggle_disabled}>{toggle_label}</button><span id="global">读取状态中</span></header><div class="grid">
+<style>body{{font-family:system-ui,sans-serif;margin:0;background:#101214;color:#eee}}header{{padding:12px 18px;background:#191d20;display:flex;gap:14px;align-items:center;flex-wrap:wrap}}button{{padding:7px 12px}}.live{{margin:12px;border:1px solid #444;background:#171a1d;padding:8px}}.live img{{max-height:68vh}}.grid{{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:0 12px 12px}}section{{border:1px solid #444;background:#171a1d;padding:8px}}img{{width:100%;aspect-ratio:4/3;object-fit:contain;background:#000}}pre{{white-space:pre-wrap;font-size:12px;min-height:12em}}@media(max-width:800px){{.grid{{grid-template-columns:1fr}}}}</style></head>
+<body><header><strong>SS928 交替双摄</strong><button id="toggle"{toggle_disabled}>{toggle_label}</button><span id="global">读取状态中</span></header>
+<section class="live"><h2>低延迟交替画面</h2><img id="alternating-img"><div id="active-note">等待摄像头</div></section><div class="grid">
 <section><h2>左侧</h2><img id="left-img"><pre id="left"></pre></section>
 <section><h2>右侧</h2><img id="right-img"><pre id="right"></pre></section></div>
 <script>let view='{default_view}',overlayReady={str(overlay_ready).lower()};const token='{token_query}',reconnectTimers={{}},toggle=document.getElementById('toggle');
 function connectStream(s){{document.getElementById(s+'-img').src=`/api/v1/camera/${{s}}/mjpeg?view=${{view}}${{token}}&t=${{Date.now()}}`;}}
-function setStreams(){{for(const s of ['left','right'])connectStream(s);}}
+function connectAlternating(){{document.getElementById('alternating-img').src=`/api/v1/alternating/mjpeg?view=${{view}}${{token}}&t=${{Date.now()}}`;}}
+function setStreams(){{connectAlternating();for(const s of ['left','right'])connectStream(s);}}
 function updateToggle(){{toggle.disabled=!overlayReady&&view==='raw';toggle.textContent=view==='overlay'?'切换为原始画面':overlayReady?'切换为检测画面':'检测画面不可用';}}
 for(const s of ['left','right'])document.getElementById(s+'-img').onerror=()=>{{clearTimeout(reconnectTimers[s]);reconnectTimers[s]=setTimeout(()=>connectStream(s),1000);}};
+document.getElementById('alternating-img').onerror=()=>{{clearTimeout(reconnectTimers.alternating);reconnectTimers.alternating=setTimeout(connectAlternating,1000);}};
 toggle.onclick=()=>{{if(view==='raw'&&!overlayReady)return;view=view==='overlay'?'raw':'overlay';updateToggle();setStreams();}};
-async function poll(){{try{{const r=await fetch('/api/v1/status{status_query}');const v=await r.json();overlayReady=v.cameras.length===2&&v.cameras.every(c=>c.overlay_available);if(view==='overlay'&&!overlayReady){{view='raw';setStreams();}}updateToggle();document.getElementById('global').textContent=`当前采集: ${{v.active_camera||'无'}} | 切换: ${{v.switch_count||0}} | E2E max: ${{v.end_to_end_max_gap_ms??'-'}} ms | CPU: ${{v.cpu_percent??'-'}}% | RSS: ${{v.process_rss_mb??'-'}} MiB`;for(const c of v.cameras)document.getElementById(c.side).textContent=JSON.stringify(c,null,2);}}catch(e){{document.getElementById('global').textContent=String(e);}}setTimeout(poll,1000);}}setStreams();poll();</script></body></html>"""
+async function poll(){{try{{const r=await fetch('/api/v1/status{status_query}');const v=await r.json();overlayReady=v.cameras.length===2&&v.cameras.every(c=>c.overlay_available);if(view==='overlay'&&!overlayReady){{view='raw';setStreams();}}updateToggle();document.getElementById('global').textContent=`当前采集: ${{v.active_camera||'切换中'}} | 切换: ${{v.switch_count||0}} | E2E max: ${{v.end_to_end_max_gap_ms??'-'}} ms | CPU: ${{v.cpu_percent??'-'}}% | RSS: ${{v.process_rss_mb??'-'}} MiB`;document.getElementById('active-note').textContent=`当前来源: ${{v.active_camera||'切换中'}}；下方非活动侧显示最近缓存帧`;for(const c of v.cameras)document.getElementById(c.side).textContent=JSON.stringify(c,null,2);}}catch(e){{document.getElementById('global').textContent=String(e);}}setTimeout(poll,1000);}}setStreams();poll();</script></body></html>"""
 
     def __enter__(self) -> "AlternatingCameraGateway":
         self.start()

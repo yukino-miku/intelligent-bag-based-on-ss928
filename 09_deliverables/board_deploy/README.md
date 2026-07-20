@@ -165,12 +165,13 @@ sudo env LEFT_DEVICE=/dev/v4l/by-path/LEFT-video-index0 \
   --runtime-mode stream_only --serve-bind 0.0.0.0 --serve-port 8081
 ```
 
-打开 `http://<板端地址>:8081/`；非 active 侧是最后缓存帧，页面会显示帧龄。`stream_only` 不生成检测 overlay，首页会在左右 overlay 不可用时自动选择 raw，此时按钮文字为“切换为检测画面”。原始 session 在 `/var/log/smartbag/alternating-camera-runs/<SESSION_ID>/`，包括 `session.json`、`switch-events.csv`、`camera-events.csv`、`performance.csv`、`alerts.csv`、`errors.log` 和 summary。
+打开 `http://<板端地址>:8081/`；顶部“低延迟交替画面”始终显示左右两侧中最新的一帧，下方两个窗口用于观察各侧最近缓存帧和帧龄。`stream_only` 不生成检测 overlay，首页会在左右 overlay 不可用时自动选择 raw，并禁用按钮显示“检测画面不可用”。原始 session 在 `/var/log/smartbag/alternating-camera-runs/<SESSION_ID>/`，包括 `session.json`、`switch-events.csv`、`camera-events.csv`、`performance.csv`、`alerts.csv`、`errors.log` 和 summary。
 
 如果页面黑屏，先分别验证状态、单帧和连续流：
 
 ```sh
 curl -s http://127.0.0.1:8081/api/v1/status
+curl --max-time 3 'http://127.0.0.1:8081/api/v1/alternating/mjpeg?view=raw' -o /tmp/alternating.mjpeg
 curl -f 'http://127.0.0.1:8081/api/v1/camera/left/snapshot.jpg?view=raw' -o /tmp/left.jpg
 curl --max-time 3 'http://127.0.0.1:8081/api/v1/camera/left/mjpeg?view=raw' -o /tmp/left.mjpeg
 ```
@@ -188,6 +189,21 @@ sudo env WIDTH=1280 HEIGHT=720 FPS=30 SLICE_MS=400 \
 ```
 
 本组实测左右均约 5.8–6.0 capture FPS，较 1080p/4 帧组的约 4.15 FPS 提高约 43%，且无 STREAMON/STREAMOFF 失败。网页左右并排显示：当前侧成批更新，另一侧保持缓存帧，不会把整个页面在左右画面之间闪切。纯摄像头模式会禁用不可用的检测画面按钮，MJPEG 断线后每秒尝试重连。
+
+若重点是低延迟调试，可再降到 `640x480`，把 `--stream-fps-limit` 提高到 30，并优先观察顶部交替流。单侧流天然会在另一侧采集时冻结；这不是以太网带宽不足，也不能通过回放旧帧真正修复。两路相机共用同一 USB 2.0 控制器时，每次 STREAMOFF/STREAMON 的首帧等待仍是主要抖动来源。
+
+若板端和电脑都显示千兆全双工，但 JPEG 下载只有约 1 Mbps 且 `netstat -s` 出现大量 TCP retransmit，可临时限制实际接线网口只协商 100M 全双工作对照。以下 advertisement mask 适用于本次 SS928 实板的 `ethtool`，重启或链路重建后可能恢复，执行前必须先用 `ip route get <PC_IP>` 确认实际接口：
+
+```sh
+ip route get 192.168.1.10
+sudo ethtool -s eth1 autoneg on advertise 0x008  # 100baseT/Full only
+ethtool eth1 | grep -E 'Speed:|Duplex:|Link detected:'
+
+# 恢复本板原来的 10/100/1000 自动协商集合
+sudo ethtool -s eth1 autoneg on advertise 0x02f
+```
+
+2026-07-20 实测从异常千兆切到 100M 全双工后，20 张 JPEG 吞吐由约 0.7 Mbps 升至 27.3 Mbps；顶部交替流达到约 7.63 FPS，最长帧间隔约 400 ms。该结果说明现场千兆 PHY/网线兼容异常会叠加视频卡顿，但 100M 已足够当前 MJPEG 调试流。不要仅凭小包 ping 判断视频链路正常。
 
 只有板端视觉依赖和模型已经通过 `check-runtime-deps.sh` 时，才允许配置 C/D：
 

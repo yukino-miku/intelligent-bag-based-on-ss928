@@ -2,6 +2,7 @@
 
 ## 2026-07-20
 
+- 增加 `/api/v1/alternating/mjpeg` 低延迟交替流和网页主画面，直接转发左右最新帧且不回放旧帧；保留左右缓存窗口。实板发现现场千兆协商伴随大量 TCP 重传，临时限制为 100M 全双工后 JPEG 吞吐由约 0.7 Mbps 升至 27.3 Mbps，交替流达到约 7.63 FPS、最长帧间隔约 400 ms；剩余抖动来自共享 USB 2.0 下每次约 240–300 ms 的 STREAMOFF/STREAMON 切换。
 - 增加 SS928 720p 交替预览实测配置：1280x720、30 FPS 请求、400 ms 时间片、1 帧预热、每片 6 帧，左右 capture FPS 约 5.8–6.0；明确网页是并排 live/cached 更新而非整页左右闪切。
 - 纯摄像头页面在 overlay 不可用时禁用“检测画面”切换，并为左右 MJPEG 增加 1 秒断线重连，避免误入空 overlay 或网关重启后保持黑屏。
 - 修复 SS928 纯摄像头交替预览黑屏：`stream_only` 首页在没有左右 overlay 时自动使用 raw；MJPEG 去重不再仅依赖会在每次 STREAMON 后重复的 V4L2 sequence，而是同时比较采集和发布时间。
