@@ -3,11 +3,11 @@
 ## 2026-07-20 Rev2 硬件刷新
 
 - `LOCAL IMPLEMENTED`：autonomous 分支默认改为单模型交替双摄、0–4 四档触觉、有界持续灯光/音频、固定 venv、systemd controller/safe-off/boot-selftest 和完整 validation orchestrator。
-- `BOARD NOT RUN`：用户要求本轮先不执行板端烧录，因此没有上传、enable、执行器通电、断开电脑或两次重启证据；`POWER_ONLY_AUTOSTART_NOT_READY`。
+- `BOARD STAGING + CAMERA PARTIAL PASS`：提交 `a660901` 已通过 USB-UART 暂存到 `/root/smartbag-staging/a660901` 并校验 SHA-256；没有执行生产安装或 enable。双 UVC 交替采集 10/10 切换成功，两张快照完成 SS928 NPU 执行并生成输出，但现场无目标类别，通用 ACL harness 在 `EnvDeinit()` 退出时仍异常；`POWER_ONLY_AUTOSTART_NOT_READY`。
 - `IMPLEMENTED + UNIT TESTED`：TCA9548A 统一事务、BMI270 CH0、左右 TM6605 CH1/CH2、灯光调度、MR20 解析/replay、来源隔离融合、Rev2 OutputPolicy、Cloud uploader 和 Cloud 安全核心。
 - `REPLAY TESTED`：匿名化 MR20 0x60A/0x60B 样例连续两 scan 后才形成 `radar:right_rear` 候选等级；未知帧和错误来源被统计且不报警。
 - `NOT DEPLOYED`：CloudBase 云函数和数据库集合；仓库不含 EnvId、AppID、设备密钥或 HMAC secret。
-- `BLOCKED`：真实 TCA9548A/BMI270/TM6605、左右灯光、MR20 0x60B 移动目标、雷达到执行器/BLE 闭环、30 分钟联合运行。2026-07-20 收尾时 Windows 未枚举板端 USB 串口/USB 网卡且 SSH 不可达，没有实物日志前不标记 PHYSICALLY VERIFIED。
+- `BLOCKED`：真实 TCA9548A/BMI270/TM6605、左右灯光、MR20 0x60B 移动目标、雷达到执行器/BLE 闭环、30 分钟联合运行。本次只连接和测试两台摄像头，其他模块未运行，不能标记 PHYSICALLY VERIFIED。
 - 视觉风险算法没有被雷达代码改写。vision、radar、manual 独立稳定并按同侧最大值输出；一个来源退出、clear 或 stale 不会误清另一个来源。
 
 ## 已完成
@@ -39,6 +39,14 @@
 - 30 分钟纯采集 session `20260719-112904_ss928_v4l2_640x480_30fps` 运行 1800.247 s，3620/3620 切换成功，左右各 7240 帧、4.022 FPS，无 ENOSPC/STREAMON/OFF/首帧超时；capture-only 最大盲区 580.264 ms，RSS 平均/峰值 30.471/33.539 MiB，温度仍为 null。
 - 左右 sysfs 逻辑 unbind/rebind 均恢复，约 3.024/2.998 s；另一侧继续采集，raw HTTP 保持 200。修复 reconnect 汇总后复测正确记录 `camera_reconnects=1`。物理拔插仍未验证。
 - 长测使用修复前的无界诊断列表，RSS 首末增加 6.301 MiB；随后已改为有界 deque 和精确累计量，但修复后的第二个 30 分钟 session 尚未执行。
+
+## 2026-07-20 摄像头隔离复测
+
+- `/dev/video0` 和 `/dev/video2` 对应 USB 路径 `3-1.3`/`3-1.4`，但重启后数字节点会互换；左右身份必须按稳定物理路径或显式映射，不能依赖枚举顺序。
+- 请求 `1680x1050 MJPEG @10` 实际仍得到 `1920x1080` JPEG。10/10 次交替成功，左右各 20 帧，无 STREAMON/OFF、超时、重连、丢帧或 USB 错误；每侧 3.735 FPS，最大 capture-only 盲区 545.945 ms。
+- 左右快照都完成板上 `yolov8n.om` 推理并生成输出；干净启动时 NPU 执行 25.44 ms。当前画面没有交通目标，`conf>=0.25` 无检测，不能作为目标识别命中证据。
+- 临时 ModelZoo harness 已验证模型卸载顺序问题，但 `EnvDeinit()` 仍因板端 ACL 兼容性异常退出。正式 USB 帧到 `Ss928OmBackend`、持续跟踪/风险/overlay 仍为 BLOCKED。
+- 本次没有安装生产目录、enable systemd target 或测试 BMI270、TM6605、灯光、音频、GNSS、MR20、BLE。详细证据见 `07_tests/results/rev2-autonomous/latest-summary.md`。
 
 ## 仍需真实硬件验证
 

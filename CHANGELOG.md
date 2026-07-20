@@ -6,8 +6,11 @@
 - Rev2 TM6605 改为左右独立有界持续状态机，0–4 震动等级一一映射；灯光 3/4 改为持续慢闪/快闪；音频改为每侧一个待播项、去重、四级抢占三级和 clear/stop 终止。未找到可确认的 TM6605 线性增益寄存器，不声称线性振幅。
 - 增加固定 `/root/smartbag/venv`、模型安装门禁、设备节点有界等待 JSON、`smartbag-safe-off.service`、boot self-test、`rev2-board-validation.py` 和本地/板端 session 目录。
 - BLE alert 增加 effective/haptic/light/audio/接收时间字段；小程序历史改为 100 条，记录 BLE/Cloud 来源、执行器输出和有原因的解除事件，过滤 heartbeat 与短时完全重复事件。
-- 按用户最新要求，本轮未执行板端上传、烧录、通电输出或两次重启验收；相关状态保持 `NOT RUN`，不能标为 power-only ready。
-- 本地验证通过 276 项 Python 测试（另有 1 项 Linux-only `fcntl` 跳过）、6 个小程序测试文件、39 个 shell 语法、22 个跟踪 JSON、compileall、安全关断 dry-run 和 `git diff --check`。
+- 后续按用户授权仅做 USB-UART 非生产暂存和摄像头隔离验证：代码暂存到 `/root/smartbag-staging/a660901`，未执行生产安装、systemd enable、执行器通电或 power-only 验收。
+- 双 UVC 请求 `1680x1050 MJPEG @10` 实际输出 1920x1080；10/10 次交替、左右各 20 帧通过，无流错误，最大 capture-only 盲区 545.945 ms。重启后数字 video 节点发生互换，进一步确认必须使用稳定物理路径映射。
+- 两张快照完成板上 `yolov8n.om` NPU 推理并生成输出，纯模型执行约 25.44 ms；现场无项目目标类别。临时 ACL harness 的 `EnvDeinit()` 仍异常，正式 OM 后端和实时视觉链继续标记 BLOCKED。
+- 新增 `serial_binary_transfer.py`，在仅有已登录 USB-UART console 时支持双向单文件传输、临时文件替换和三方 SHA-256 校验，并补充单元测试和使用说明。
+- 本地最终验证运行 280 项 Python 测试（279 通过、1 项 Linux-only `fcntl` 跳过），并通过 6 个小程序测试文件、24 个 JS 语法、38 个 shell 语法、22 个跟踪 JSON、compileall、安全关断 dry-run 和仓库策略检查。
 - 固定审计 `sanda-tt/ss928@970351c84a12f3219e7910ee488ac5ff579d6f98` 相对上次 `d7e10fd06dc553f94d2db3a3d19987ec8648f7dc` 的 19 个提交；没有合并上游历史或复制许可不明厂商资料。
 - 新增 `rev2_tm6605_mr20` 和 `legacy_pwm_haptics` profile、配置迁移/回滚、唯一引脚表与 profile-aware pinmux；Rev2 的 Pin7/Pin32 只用于左右灯光。
 - 新增统一 TCA9548A 原子事务与跨进程锁，BMI270 每笔访问重选 CH0，左右 TM6605 分别重选 CH1/CH2；新增 TM6605 和 PWM 灯光 backend、调度、状态和错误计数。

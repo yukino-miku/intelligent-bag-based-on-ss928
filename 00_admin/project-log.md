@@ -6,8 +6,11 @@
 - 将 Rev2 震动、灯光和音频改为有界持续状态；新增本地自主启动 target、固定 venv、模型门禁、硬件等待、安全关断、boot self-test 和分阶段板端验证编排。
 - 默认配置切换为 `alternating_single_model`，controller 统一监督子进程并独占 BLE；核心 unit 不依赖 `network-online.target`，Cloud uploader 保持可选。
 - 小程序本地预警历史扩展为 100 条完整记录，支持 BLE/Cloud 来源、clear 原因、haptic/light/audio 实际决策和重启恢复。
-- 用户明确要求暂不执行板端烧录，因此本轮只完成本地代码和自动测试；实板执行器、安装、断开电脑和两次重启验证均保持 `NOT RUN`。
-- 本地最终回归：276 项 Python 测试通过、1 项 Linux-only `fcntl` 测试跳过；6 个小程序 JavaScript 测试文件、39 个 shell 语法、22 个跟踪 JSON、compileall、safe-off dry-run 和 `git diff --check` 通过。
+- 用户随后允许在只连接两台摄像头的开发板上做非生产暂存和摄像头识别测试。提交 `a660901` 已通过 USB-UART 暂存到 `/root/smartbag-staging/a660901` 并校验 SHA-256；未执行 `install.sh`、systemd enable、执行器或其他传感器测试。
+- 双 UVC 请求 `1680x1050 MJPEG @10` 时实际得到 1920x1080；10/10 次交替、左右各 20 帧均成功，无流错误，最大 capture-only 盲区 545.945 ms。重启后 `/dev/video0` 与 `/dev/video2` 的物理口映射互换，确认正式配置必须使用稳定路径/身份映射。
+- 左右快照都进入板上 `yolov8n.om` 并生成张量/检测文本，NPU 执行约 25.44 ms；现场无交通目标，`conf>=0.25` 无命中。临时 ModelZoo harness 在修正模型卸载顺序后仍于 `EnvDeinit()` 异常，正式 `Ss928OmBackend`、实时跟踪/风险/overlay 继续标记 BLOCKED。
+- 新增 USB-UART 双向单文件传输工具，支持 `.part` 原子替换和 PC/板端 SHA-256 交叉校验；原始图片、模型和临时二进制只放在 Git 忽略的 `08_media`。
+- 本地最终回归：280 项 Python 测试中 279 项通过、1 项 Linux-only `fcntl` 测试跳过；6 个小程序 JavaScript 测试文件、24 个 JS 语法、38 个 shell 语法、22 个跟踪 JSON、compileall、safe-off dry-run 和仓库策略通过。
 - 从 `agent/alternating-dual-camera@a5f6d815b924129fca03c8392912f31b843da636` 创建 `agent/sanda-hardware-refresh`；来源固定为 `sanda-tt/ss928@970351c84a12f3219e7910ee488ac5ff579d6f98`，未修改来源仓库和现有 PR #2。
 - 通过 GitHub Compare/Tree/Contents API 审计上游 19 个新增提交和 28,904 项树记录；本机 partial clone fetch 因 443 连接重置失败，审计清单保留 blob SHA、许可状态和迁移决策。
 - 重实现统一 I2C mux、双 TM6605、双灯、MR20、来源融合、输出策略和 Cloud 安全链路；未复制上游 SDK、模型、PDF、二进制或许可不明运行代码。

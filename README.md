@@ -61,7 +61,7 @@ sh logs.sh -f
 - 模型、厂商 SDK、MPP、BMI270 config blob、设备密码/IP 不进入仓库。
 - 单目测距和风险提示不是安全认证系统；真实使用前必须做相机标定、硬件在环、误报/漏报、时延、温度和断电恢复测试。
 - MR20 0x60A/0x60B 解析和 replay 已自动测试；真实 0x60B 移动目标、TM6605 LRA、双灯、BLE 闭环和 30 分钟联合运行仍需新硬件实测，详见 [最新硬件刷新摘要](07_tests/results/hardware-refresh/latest-summary.md)。
-- 本轮按用户要求只完成本地完整代码，未执行板端上传、安装、执行器通电或两次重启验收；当前状态见 [Rev2 autonomous 摘要](07_tests/results/rev2-autonomous/latest-summary.md)，不得据此声称 power-only autostart 已实板通过。
+- 2026-07-20 已通过 USB-UART 将代码非生产暂存到板端，并完成双 UVC 交替采集及两张快照进入 SS928 NPU 的隔离测试；没有安装/enable 正式服务，也没有测试其他传感器或执行器。现场无交通目标且临时 ACL harness 退出仍异常，不能据此声称实时 OM 后端或 power-only autostart 已通过；详见 [Rev2 autonomous 摘要](07_tests/results/rev2-autonomous/latest-summary.md)。
 - 40Pin、PWM、LRA/灯光供电、I2S 和传感器电平必须按硬件文档核验，不能直接用 GPIO 给负载供电。CloudBase 源码未部署到真实环境，不能将 mock 测试解释为云端已上线。
 
 `08_media/` 和 `10_archive/` 仅本地使用，不上传 GitHub。
