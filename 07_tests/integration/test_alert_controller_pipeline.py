@@ -1,6 +1,8 @@
 import io
+import json
 import queue
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -11,15 +13,38 @@ CONTROLLER = ROOT / "06_software" / "board_runtime" / "smartbag_alert_controller
 if str(CONTROLLER) not in sys.path:
     sys.path.insert(0, str(CONTROLLER))
 
-from alert_core import AlertEvent, AlertState, event_is_stale, parse_vision_alert_jsonl
+from alert_core import AlertEvent, AlertOutput, AlertState, event_is_stale, parse_vision_alert_jsonl
+from output_policy import OutputPolicy
 from smartbag_alert_controller import (
     DetectorProcess,
     alternating_detector_command_from_config,
     alert_event_ble_payload,
+    append_alert_event_jsonl,
+    append_output_timing_jsonl,
+    apply_effective_output,
     detector_commands_from_config,
     should_publish_alert_history,
     validate_dual_camera_config,
 )
+
+
+class FakeTimedActuator:
+    def __init__(self) -> None:
+        self.writes = {"left": None, "right": None}
+
+    def last_write_mono_s(self, side: str) -> float | None:
+        return self.writes[side]
+
+    def apply_levels(self, levels, now=None) -> None:
+        del now
+        for side, level in levels.items():
+            if level:
+                self.writes[side] = time.monotonic()
+
+
+class FakeAudio:
+    def request(self, clip) -> None:
+        self.clip = clip
 
 
 class AlertControllerPipelineTest(unittest.TestCase):
@@ -206,6 +231,51 @@ class AlertControllerPipelineTest(unittest.TestCase):
         self.assertIn('"name":"DANGER"', payload)
         self.assertIn('"class":"car"', payload)
         self.assertIn('"distance_m":4.2', payload)
+
+    def test_controller_event_log_records_source_and_effective_level(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "events.jsonl"
+            append_alert_event_jsonl(
+                str(path),
+                AlertEvent("right", 3, source="radar:right_rear", ttc_s=1.2),
+                effective_level=4,
+            )
+            text = path.read_text(encoding="utf-8")
+            self.assertIn('"source":"radar:right_rear"', text)
+            self.assertIn('"effective_level":4', text)
+
+    def test_output_timing_records_actual_writes_and_all_latency_fields(self) -> None:
+        haptics = FakeTimedActuator()
+        lights = FakeTimedActuator()
+        timings = {}
+        decision = apply_effective_output(
+            AlertOutput({}, levels={"left": 3, "right": 0}),
+            haptics,
+            lights,
+            FakeAudio(),
+            OutputPolicy.for_profile("legacy_pwm_haptics"),
+            timings=timings,
+            event_side="left",
+        )
+        self.assertIsNotNone(timings["haptic_write_mono_s"])
+        self.assertIsNotNone(timings["light_write_mono_s"])
+        source_ts = min(
+            float(timings["haptic_write_mono_s"]),
+            float(timings["light_write_mono_s"]),
+        ) - 0.01
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "actuator.jsonl"
+            append_output_timing_jsonl(
+                str(path),
+                AlertEvent("left", 3, ts=source_ts, source="vision:left"),
+                decision,
+                timings,
+                ble_transmit_mono_s=source_ts + 0.03,
+            )
+            record = json.loads(path.read_text(encoding="utf-8"))
+        self.assertGreaterEqual(record["alert_to_haptic_latency_ms"], 0.0)
+        self.assertGreaterEqual(record["alert_to_light_latency_ms"], 0.0)
+        self.assertEqual(30.0, record["alert_to_ble_latency_ms"])
 
 
 if __name__ == "__main__":

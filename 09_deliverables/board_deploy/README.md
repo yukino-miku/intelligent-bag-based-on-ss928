@@ -207,6 +207,80 @@ sh /root/smartbag/board-deploy/alternating-report.sh
 
 `smartbag-alternating-vision.service` 与正式 `smartbag-alert.service`、`smartbag-video.service` 互斥。单进程模型只加载一次，但左右 tracker、轨迹、风险、稳定器、标定和 CSV 均独立。风险优先调度只读取稳定后的 haptic 等级，并保留另一侧最小时间片；无新观测不等于 SAFE。heartbeat 只维持 PWM，不进入 BLE 历史；超时、连续切换失败、detector 退出和 SIGTERM 都会清振。
 
+## 12. Rev2 硬件 profile
+
+新安装生成 `/etc/smartbag/hardware.json`，默认 `rev2_tm6605_mr20`。旧四路 PWM 振动只能通过兼容 profile 使用：
+
+```sh
+sudo /root/smartbag/board-deploy/smartbag-hardware-profile.sh show
+sudo /root/smartbag/board-deploy/smartbag-hardware-profile.sh set rev2_tm6605_mr20
+sudo /root/smartbag/board-deploy/smartbag-hardware-profile.sh set legacy_pwm_haptics
+```
+
+切换脚本停止服务、依赖 controller 退出清输出、备份配置、校验 pin conflict，失败时恢复旧文件和服务。Rev2 中 Pin7/Pin32 是左右灯，不再是振动；左右 LRA 由 TCA9548A CH1/CH2 的 TM6605 驱动。详细接线只以 `04_hardware/ss928/40pin-usage.md` 为准。
+
+输出策略：Level 0 全关；Level 1/2 只进入 UI/BLE/Cloud 状态；Level 3 驱动对应侧 TM6605 中等效果和 50% 灯光；Level 4 驱动强效果和 80% 三次闪烁。实际输入是 vision/radar/manual 同侧有效状态的最大值，视觉只能使用稳定后的 haptic level，雷达也必须先通过自己的多帧确认。
+
+## 13. Rev2 预检和物理测试
+
+先只读检查，再由操作员确认供电和接线后显式允许输出：
+
+```sh
+sudo sh hardware-preflight.sh /etc/smartbag/hardware.json
+sudo sh i2c-mux-test.sh
+sh pwm-list.sh
+python3 pwm-probe.py --channel 10
+
+# 以下命令会驱动实物，必须确认独立供电、共地、电压和方向
+sudo sh tm6605-test.sh left 3 --confirm-live-output
+sudo sh tm6605-test.sh right 4 --confirm-live-output
+sudo sh light-test.sh left 3 --confirm-live-output
+sudo sh light-test.sh right 4 --confirm-live-output
+```
+
+PWM `EINVAL` 必须记录实际 pwmchip、npwm、channel、export、period、duty、enable、errno 和 pinmux readback。`pwm-probe.py` 采用 disable -> duty 0 -> period -> duty -> enable，并在退出时关断；不要把 dry-run 或 sysfs 写入成功写成灯具实物响应。
+
+## 14. MR20 网络和回放
+
+默认只配置 `eth1`：板端 `192.168.1.102/32`，右后雷达 `192.168.1.200:2369`，controller 绑定 UDP 2368。先检测实际网络管理器，再显式安装；脚本不会给 eth1 配网关或默认路由：
+
+```sh
+sudo sh mr20-network-install.sh --apply
+sh mr20-network-preflight.sh
+sh mr20-capture.sh --duration-s 30 --output /var/log/smartbag/radar-frames.csv
+python3 /root/smartbag/mr20_radar/mr20_replay.py \
+  --config /etc/smartbag/mr20-radar.json \
+  /root/smartbag/mr20_radar/tests/fixtures/official-example.hex
+```
+
+不要同时让 systemd-networkd 和 NetworkManager 管理 eth1。`ping` 或 0x60A 只证明链路；必须捕获真实 0x60B、验证距离/速度/TTC、多帧 clear，再验证 `radar:right_rear` 到 controller、TM6605、灯光和 BLE 的闭环。
+
+## 15. 可选 CloudBase
+
+`smartbag-cloud-uploader.service` 默认不在 `smartbag.target`。编辑 `/etc/smartbag/cloud-uploader.json`，保持 secret 不在 JSON 中；在权限受限的 `/etc/smartbag/cloud-uploader.env` 写入环境变量后才启用：
+
+```sh
+sudo install -m 0600 /dev/null /etc/smartbag/cloud-uploader.env
+# 在本机交互式编辑：SMARTBAG_HMAC_SECRET=...
+sudo systemctl enable --now smartbag-cloud-uploader.service
+```
+
+小程序真实 EnvId/deviceId 放在被忽略的 `miniprogram/config/cloud.local.js`。云函数使用 `cloud.getWXContext()` 和 `device_bindings`，设备上传使用 HTTPS/HMAC/timestamp/nonce/body SHA256。Cloud 失败会回退 BLE；视频仍通过局域网 HTTP/MJPEG，禁止上传连续视频到 CloudBase。未实际部署函数、集合、TTL 和绑定前，状态只能写 `NOT DEPLOYED`。
+
+## 16. Session 和回滚
+
+```sh
+sudo sh full-hardware-test.sh
+sudo env DURATION_S=1800 sh full-hardware-test.sh  # 30 分钟只读资源/日志采样
+sudo sh smartbag-hardware-profile.sh set legacy_pwm_haptics  # 旧硬件回滚
+# 编辑 /etc/smartbag/hardware.json: hardware.radar.enabled=false
+# 编辑 /etc/smartbag/cloud-uploader.json: enabled=false
+```
+
+session 默认进入 Git 忽略的 `08_media/hardware_refresh_runs/<SESSION_ID>/`，板端独立安装时进入 `/var/log/smartbag/hardware_refresh_runs/`。只有真实执行并保存日志的项目可标 `BOARD TESTED` 或 `PHYSICALLY VERIFIED`；mock、replay 和 Cloud 源码各自使用独立状态。
+
+Controller 将状态变化写入 `/var/log/smartbag/actuator-events.jsonl`，字段包含 source event、controller receive、effective level、实际 TM6605/PWM 写完成和 BLE transmit 的 monotonic 时间；只有时钟域一致且实际发生写入时才计算 `alert_to_haptic_latency_ms`、`alert_to_light_latency_ms` 和 `alert_to_ble_latency_ms`。Level 1/2 被 Rev2 输出策略抑制时不会伪造执行器写入时延。
+
 `--inference-frames-per-slice` 默认只选择每片最后一张最新帧，采集到的其余有效帧只计入采集统计，不进入积压队列。`capture_only_max_blind_ms` 是纯 STREAMOFF/STREAMON/首帧指标；`end_to_end_max_gap_ms` 才包含解码、模型、tracker、风险、overlay、JPEG 和下一轮调度，正式验收只看后者。CAUTION 以上普通升级需要跨不同 slice，避免同一 burst 快速满足多帧确认。
 
 交替 detector 自己提供 `http://<BOARD_IP>:8080/`，无需 `smartbag-video.service`。页面同时显示左右 raw/overlay、active/cached/offline、帧龄、推理 FPS、风险和 E2E 间隔。测试接口：

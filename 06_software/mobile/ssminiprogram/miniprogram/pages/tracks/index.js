@@ -1,4 +1,6 @@
 const trackUtils = require("../../utils/track-utils");
+const { createDeviceDataService } = require("../../services/device-data-service");
+const deviceDataService = createDeviceDataService();
 
 const NUS_SERVICE_UUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E";
 const NUS_RX_UUID = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E";
@@ -41,7 +43,9 @@ Page({
     polyline: [],
     liveEnabled: false,
     commandResponse: "等待连接",
-    logs: []
+    logs: [],
+    trackSourceText: "BLE 本地轨迹",
+    cloudCursor: null
   },
 
   onLoad() {
@@ -53,6 +57,7 @@ Page({
     this.receiveText = "";
     this.trackPoints = [];
     this.trackIndex = -1;
+    this.loadCloudTrackPage(null);
 
     wx.onBluetoothDeviceFound((res) => this.handleDeviceFound(res));
     wx.onBLECharacteristicValueChange((res) => this.handleCharacteristicValue(res));
@@ -418,6 +423,27 @@ Page({
       patch.polyline = [];
     }
     this.setData(patch);
+  },
+
+  loadCloudTrackPage(cursor) {
+    deviceDataService.getTrackPoints(cursor, 100).then((result) => {
+      const rawPoints = [];
+      const items = Array.isArray(result.items) ? result.items : [];
+      for (let index = 0; index < items.length; index += 1) {
+        const payload = items[index] && items[index].payload ? items[index].payload : items[index];
+        const point = payload && (payload.point || payload);
+        const normalized = trackUtils.normalizeTrackPoint(point);
+        if (normalized) rawPoints.push(normalized);
+      }
+      if (rawPoints.length) {
+        this.trackPoints = rawPoints;
+        this.renderTrack(false);
+      }
+      this.setData({
+        cloudCursor: result.cursor || null,
+        trackSourceText: String(result.source || "unknown").toUpperCase() + (result.cloudError ? " 回退" : " 轨迹")
+      });
+    }).catch(() => {});
   },
 
   requestTrackList() {

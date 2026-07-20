@@ -20,8 +20,10 @@
 ## 外设和服务
 
 - 摄像头：两个不同的 USB V4L2 设备；序列号唯一时可用 `/dev/v4l/by-id`，相同型号/序列号时必须固定物理口并用两个不同的 by-path。默认配置不得使用同一真实节点，双路还必须通过并发首帧测试。IMX347 MIPI 只作可选诊断，不进入默认服务。
-- I2C0：BMI270，地址 `0x68`/`0x69`；支持 IIO 和用户态 I2C。
+- Rev2 I2C0：TCA9548A `0x70`；CH0 BMI270 `0x68`，CH1/CH2 左右 TM6605 `0x2d`。每笔事务必须持有 `/run/lock/smartbag-i2c0-mux.lock` 并重新选通道。Legacy 可直接访问 BMI270。
 - UART4：DX-GP21，`/dev/ttyAMA4`，NMEA。
-- PWM sysfs：四路左右震动，等级 0 到 4。
+- Rev2 PWM sysfs：Pin7/Pin32 仅用于左右灯光；振动改为 TM6605/LRA。Legacy 才使用四路 PWM 振动，两个 profile 不得并行。
+- MR20：默认右后雷达 `192.168.1.200:2369`，板端 `eth1` `192.168.1.102:2368`，只允许 `/32` host route，不得修改 eth0、默认路由或网关。
 - I2S：MAX98357 可选音频，默认关闭且不得阻塞震动。
 - 默认只能由 board service/controller 注册一个 Nordic UART Service，广播名 `SS928-SmartBag`；GNSS 和 BMI270 默认 `--no-ble`。
+- Cloud telemetry 是可选独立服务，必须 HTTPS、HMAC、timestamp、nonce、body SHA256、有界离线队列和用户设备绑定；断网/云故障不得阻塞视觉、雷达、BLE 或执行器。

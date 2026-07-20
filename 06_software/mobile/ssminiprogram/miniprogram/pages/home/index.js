@@ -1,3 +1,6 @@
+const { createDeviceDataService } = require("../../services/device-data-service");
+const deviceDataService = createDeviceDataService();
+
 const FEATURE_ENTRIES = [
   {
     key: "cameras",
@@ -40,14 +43,20 @@ Page({
     batteryText: "未接入",
     systemState: "等待 SYS STATUS",
     monitorState: "状态未知",
-    resourceText: "CPU / 内存 / 温度未读取"
+    resourceText: "CPU / 内存 / 温度未读取",
+    statusSourceText: "BLE / Cloud 未连接"
   },
 
   onShow() {
     const status = wx.getStorageSync("smartbagSystemStatus");
-    if (!status || status.typ !== "sys") {
-      return;
-    }
+    if (status && status.typ === "sys") this.applySystemStatus(status, "BLE", false);
+    deviceDataService.getLatestStatus().then((result) => {
+      const record = result.data && result.data.payload ? result.data.payload : result.data;
+      if (record && record.typ === "sys") this.applySystemStatus(record, result.source, result.stale);
+    }).catch(() => {});
+  },
+
+  applySystemStatus(status, source, stale) {
     const detectors = Array.isArray(status.detectors) ? status.detectors : [];
     const running = detectors.filter((item) => item.running).length;
     const resources = status.resources || {};
@@ -60,7 +69,8 @@ Page({
       batteryText: status.battery === null || typeof status.battery === "undefined" ? "未接入" : status.battery + "%",
       systemState: running === detectors.length && running > 0 ? "双摄运行" : "需检查",
       monitorState: "SYS STATUS 已更新",
-      resourceText: parts.length ? parts.join(" · ") : "CPU / 内存 / 温度未读取"
+      resourceText: parts.length ? parts.join(" · ") : "CPU / 内存 / 温度未读取",
+      statusSourceText: String(source || "unknown").toUpperCase() + (stale ? " 数据已陈旧" : " 数据")
     });
   },
 

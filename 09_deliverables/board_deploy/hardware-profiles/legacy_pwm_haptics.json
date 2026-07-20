@@ -1,0 +1,26 @@
+{
+  "profile": "legacy_pwm_haptics",
+  "i2c_mux": {"enabled": false, "required": false, "failure_policy": "degrade"},
+  "imu": {"backend": "bmi270", "required": false, "failure_policy": "degrade"},
+  "haptics": {
+    "backend": "legacy_pwm",
+    "period_ns": 1000000,
+    "required": true,
+    "failure_policy": "fail_service",
+    "level_duty_percent": {
+      "0": [0, 0],
+      "1": [60, 0],
+      "2": [60, 60],
+      "3": [100, 60],
+      "4": [100, 100]
+    }
+  },
+  "lights": {"enabled": false, "required": false, "failure_policy": "degrade"},
+  "radar": {"enabled": false, "required": false, "failure_policy": "degrade"},
+  "audio": {"enabled": false, "backend": "max98357", "required": false, "failure_policy": "degrade"},
+  "output_policy": {
+    "haptic_level_map": {"0": 0, "1": 1, "2": 2, "3": 3, "4": 4},
+    "light_level_map": {"0": 0, "1": 1, "2": 2, "3": 3, "4": 4},
+    "audio_levels": [1, 2, 3, 4]
+  }
+}

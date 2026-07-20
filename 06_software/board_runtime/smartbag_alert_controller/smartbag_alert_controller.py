@@ -13,16 +13,23 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable, Mapping
 
-COMMON_DIR = Path(__file__).resolve().parents[1] / "common"
+BOARD_RUNTIME_DIR = Path(__file__).resolve().parents[1]
+COMMON_DIR = BOARD_RUNTIME_DIR / "common"
+if str(BOARD_RUNTIME_DIR) not in sys.path:
+    sys.path.insert(0, str(BOARD_RUNTIME_DIR))
 if str(COMMON_DIR) not in sys.path:
     sys.path.insert(0, str(COMMON_DIR))
 
 from ble_protocol import route_ble_command
+from hardware_profile import validate_hardware_profile
+from i2c_mux import I2cMuxTransaction
 from runtime_metrics import ResourceSampler, atomic_write_json, status_timestamp
+from mr20_radar import MR20RadarWorker, RadarAlert, load_mr20_config
 
 from alert_core import (
+    DEFAULT_LEVEL_DUTY_PERCENT,
     DEFAULT_PWM_PERIOD_NS,
     MOTOR_PWM_PINS,
     AlertEvent,
@@ -30,10 +37,14 @@ from alert_core import (
     AlertState,
     MOTOR_BY_KEY,
     event_is_stale,
+    normalize_level,
     parse_alert_command,
     parse_vision_alert_jsonl,
 )
 from ble_nus import BleNusServer
+from haptics import DryRunHapticBackend, LegacyPwmHapticBackend, Tm6605HapticBackend
+from lights import DisabledLightBackend, LinuxSysfsPwm, PwmChannelSpec, PwmLightBackend
+from output_policy import OutputDecision, OutputPolicy
 
 
 AUDIO_ROOT = Path("/root/smartbag/audio")
@@ -636,7 +647,7 @@ def should_publish_alert_history(event: AlertEvent) -> bool:
     return event.event_kind == "state_change"
 
 
-def alert_event_ble_payload(event: AlertEvent) -> str:
+def alert_event_ble_payload(event: AlertEvent, *, effective_level: int | None = None) -> str:
     level = max(0, min(4, int(event.level)))
     payload: dict[str, object] = {
         "typ": "alert",
@@ -644,7 +655,11 @@ def alert_event_ble_payload(event: AlertEvent) -> str:
         "level": level,
         "name": RISK_NAMES[level],
         "ts": event.ts,
+        "source": AlertState.event_source(event),
+        "event_kind": event.event_kind,
     }
+    if effective_level is not None:
+        payload["effective_level"] = normalize_level(effective_level)
     if event.score is not None:
         payload["score"] = round(float(event.score), 4)
     if event.track_id is not None:
@@ -653,7 +668,87 @@ def alert_event_ble_payload(event: AlertEvent) -> str:
         payload["class"] = event.class_name
     if event.distance_m is not None:
         payload["distance_m"] = round(float(event.distance_m), 3)
+    if event.source_id is not None:
+        payload["source_id"] = event.source_id
+    if event.ttc_s is not None:
+        payload["ttc_s"] = round(float(event.ttc_s), 3)
+    if event.closing_speed_mps is not None:
+        payload["closing_speed_mps"] = round(float(event.closing_speed_mps), 3)
+    if event.lateral_distance_m is not None:
+        payload["lateral_distance_m"] = round(float(event.lateral_distance_m), 3)
+    if event.longitudinal_distance_m is not None:
+        payload["longitudinal_distance_m"] = round(float(event.longitudinal_distance_m), 3)
+    if event.clear_reason:
+        payload["clear_reason"] = event.clear_reason
+    if event.metadata:
+        allowed = {"target_count", "measurement_count", "status"}
+        metadata = {key: value for key, value in event.metadata.items() if key in allowed}
+        if metadata:
+            payload["metadata"] = metadata
     return json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+
+
+def append_alert_event_jsonl(
+    path: str,
+    event: AlertEvent,
+    *,
+    effective_level: int,
+) -> None:
+    if not path or event.event_kind != "state_change":
+        return
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    record = json.loads(alert_event_ble_payload(event, effective_level=effective_level))
+    record["type"] = "alert"
+    with destination.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n")
+
+
+def append_output_timing_jsonl(
+    path: str,
+    event: AlertEvent,
+    decision: OutputDecision,
+    timings: Mapping[str, float | None],
+    *,
+    ble_transmit_mono_s: float | None,
+) -> None:
+    if not path or event.event_kind != "state_change":
+        return
+    record = {
+        "type": "actuator_timing",
+        "source": AlertState.event_source(event),
+        "side": event.side,
+        "source_event_ts": event.ts,
+        "controller_receive_mono_s": timings.get("controller_receive_mono_s"),
+        "effective_level_mono_s": timings.get("effective_level_mono_s"),
+        "tm6605_write_mono_s": timings.get("haptic_write_mono_s"),
+        "light_pwm_write_mono_s": timings.get("light_write_mono_s"),
+        "ble_transmit_mono_s": ble_transmit_mono_s,
+        "effective_level": decision.effective_levels[event.side],
+        "haptic_level": decision.haptic_levels[event.side],
+        "light_level": decision.light_levels[event.side],
+    }
+    source_ts = event.ts
+    if source_ts is not None:
+        latency_fields = {
+            "haptic_write_mono_s": "alert_to_haptic_latency_ms",
+            "light_write_mono_s": "alert_to_light_latency_ms",
+        }
+        for timing_key, record_key in latency_fields.items():
+            completed_at = timings.get(timing_key)
+            if completed_at is None:
+                continue
+            latency_ms = (completed_at - source_ts) * 1000.0
+            if 0.0 <= latency_ms <= 60_000.0:
+                record[record_key] = round(latency_ms, 3)
+        if ble_transmit_mono_s is not None:
+            latency_ms = (ble_transmit_mono_s - source_ts) * 1000.0
+            if 0.0 <= latency_ms <= 60_000.0:
+                record["alert_to_ble_latency_ms"] = round(latency_ms, 3)
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n")
 
 
 def controller_status_payload(
@@ -661,14 +756,30 @@ def controller_status_payload(
     detectors: list[DetectorProcess],
     modules: dict[str, "RoutedModuleProcess"],
     resource_sampler: ResourceSampler,
+    *,
+    actuators: Mapping[str, ManagedActuator] | None = None,
+    radars: Iterable[MR20RadarWorker] = (),
+    module_states: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     return {
         "typ": "sys",
         "ts": status_timestamp(),
         "pid": os.getpid(),
         "levels": dict(state.levels_by_side),
+        "source_levels": state.source_snapshot(),
         "detectors": [detector.status() for detector in detectors],
-        "modules": sorted(modules),
+        "modules": {
+            namespace: {
+                "running": bool(module.process is not None and module.process.poll() is None),
+                "pid": module.process.pid if module.process is not None and module.process.poll() is None else None,
+            }
+            for namespace, module in sorted(modules.items())
+        },
+        "module_states": dict(module_states or {}),
+        "actuators": {
+            name: actuator.status() for name, actuator in (actuators or {}).items()
+        },
+        "radars": [radar.status() for radar in radars],
         "resources": resource_sampler.sample(),
         "battery": None,
         "ble_video": False,
@@ -739,6 +850,262 @@ def load_controller_config(path: str) -> dict[str, object]:
     return data
 
 
+def _int_config(value: object) -> int:
+    return int(str(value), 0) if isinstance(value, str) else int(value)
+
+
+def _mapping(value: object) -> Mapping[str, object]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def default_legacy_hardware_config(
+    pwm_config: Mapping[str, object],
+    audio_config: Mapping[str, object],
+) -> dict[str, object]:
+    return {
+        "profile": "legacy_pwm_haptics",
+        "i2c_mux": {"enabled": False, "required": False, "failure_policy": "degrade"},
+        "imu": {"backend": "bmi270", "required": False, "failure_policy": "degrade"},
+        "haptics": {
+            "backend": "legacy_pwm",
+            "period_ns": int(pwm_config.get("period_ns", DEFAULT_PWM_PERIOD_NS)),
+            "level_duty_percent": pwm_config.get(
+                "level_duty_percent", DEFAULT_LEVEL_DUTY_PERCENT
+            ),
+            "required": True,
+            "failure_policy": "fail_service",
+        },
+        "lights": {"enabled": False, "required": False, "failure_policy": "degrade"},
+        "radar": {"enabled": False, "required": False, "failure_policy": "degrade"},
+        "audio": {
+            "enabled": bool(audio_config.get("enabled", False)),
+            "backend": "max98357",
+            "required": False,
+            "failure_policy": "degrade",
+        },
+    }
+
+
+def hardware_config_from_controller(
+    config: Mapping[str, object],
+    pwm_config: Mapping[str, object],
+    audio_config: Mapping[str, object],
+) -> dict[str, object]:
+    hardware = config.get("hardware")
+    if isinstance(hardware, Mapping):
+        result = dict(hardware)
+    else:
+        profile_file = str(config.get("hardware_profile_file", "")).strip()
+        if profile_file:
+            loaded = json.loads(Path(profile_file).read_text(encoding="utf-8"))
+            if not isinstance(loaded, dict):
+                raise ValueError("hardware profile file must contain a JSON object")
+            result = loaded
+        else:
+            result = default_legacy_hardware_config(pwm_config, audio_config)
+    validate_hardware_profile(result)
+    return result
+
+
+def module_failure_policy(config: Mapping[str, object]) -> tuple[bool, str]:
+    required = bool(config.get("required", False))
+    policy = str(config.get("failure_policy", "fail_service" if required else "degrade"))
+    return required, policy
+
+
+class ManagedActuator:
+    def __init__(
+        self,
+        name: str,
+        backend: object,
+        fallback: object,
+        config: Mapping[str, object],
+        *,
+        disabled: bool = False,
+    ) -> None:
+        self.name = name
+        self.backend = backend
+        self.fallback = fallback
+        self.required, self.failure_policy = module_failure_policy(config)
+        self.state = "disabled" if disabled else "starting"
+        self.last_error = ""
+
+    def initialize(self, *, preflight_only: bool = False) -> None:
+        if self.state == "disabled":
+            return
+        try:
+            self.backend.preflight()  # type: ignore[attr-defined]
+            if not preflight_only:
+                self.backend.setup()  # type: ignore[attr-defined]
+                self.backend.stop_all()  # type: ignore[attr-defined]
+            self.state = "online"
+        except Exception as exc:
+            self._handle_failure(exc)
+
+    def apply_levels(self, levels: Mapping[str, int], now: float | None = None) -> None:
+        if self.state == "disabled":
+            return
+        try:
+            self.backend.apply_levels(levels, now=now)  # type: ignore[attr-defined]
+        except Exception as exc:
+            self._handle_failure(exc)
+
+    def tick(self, now: float | None = None) -> None:
+        if self.state == "disabled":
+            return
+        try:
+            self.backend.tick(now=now)  # type: ignore[attr-defined]
+        except Exception as exc:
+            self._handle_failure(exc)
+
+    def stop_all(self) -> None:
+        try:
+            self.backend.stop_all()  # type: ignore[attr-defined]
+        except Exception as exc:
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            eprint(f"ERROR {self.name} stop_all failed: {exc}")
+
+    def status(self) -> dict[str, object]:
+        try:
+            detail = self.backend.status()  # type: ignore[attr-defined]
+        except Exception as exc:
+            detail = {"status_error": f"{type(exc).__name__}: {exc}"}
+        return {
+            "state": self.state,
+            "required": self.required,
+            "failure_policy": self.failure_policy,
+            "last_error": self.last_error,
+            "detail": detail,
+        }
+
+    def last_write_mono_s(self, side: str) -> float | None:
+        try:
+            detail = self.backend.status()  # type: ignore[attr-defined]
+            values = detail.get("last_write_mono_s", {})
+            value = values.get(side) if isinstance(values, Mapping) else None
+            return float(value) if value is not None else None
+        except (AttributeError, TypeError, ValueError):
+            return None
+
+    def _handle_failure(self, exc: Exception) -> None:
+        self.last_error = f"{type(exc).__name__}: {exc}"
+        if self.required or self.failure_policy == "fail_service":
+            self.state = "error"
+            raise RuntimeError(f"required module {self.name} failed: {exc}") from exc
+        eprint(f"WARN optional module {self.name} degraded: {exc}")
+        try:
+            self.backend.stop_all()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        self.backend = self.fallback
+        self.backend.setup()  # type: ignore[attr-defined]
+        self.state = "degraded"
+
+
+def build_actuator_runtime(
+    hardware: Mapping[str, object],
+    args: argparse.Namespace,
+    legacy_pwm: PwmController,
+) -> tuple[ManagedActuator, ManagedActuator, OutputPolicy]:
+    profile = str(hardware["profile"])
+    haptic_config = _mapping(hardware.get("haptics"))
+    light_config = _mapping(hardware.get("lights"))
+    mux_config = _mapping(hardware.get("i2c_mux"))
+
+    if args.disable_haptics or args.dry_run:
+        haptic_backend: object = DryRunHapticBackend()
+    elif profile == "legacy_pwm_haptics":
+        haptic_backend = LegacyPwmHapticBackend(
+            legacy_pwm,
+            period_ns=int(haptic_config.get("period_ns", DEFAULT_PWM_PERIOD_NS)),
+            level_duty_percent=_mapping(haptic_config.get("level_duty_percent")),
+        )
+    else:
+        mux_enabled = bool(mux_config.get("enabled", False))
+        mux_address = _int_config(mux_config.get("address", "0x70")) if mux_enabled else None
+        lock_file = str(mux_config.get("lock_file", "/run/lock/smartbag-i2c0-mux.lock"))
+        device = str(mux_config.get("device", "/dev/i2c-0"))
+        target_address = _int_config(haptic_config.get("address", "0x2d"))
+        transactions = {
+            "left": I2cMuxTransaction(
+                device,
+                target_address,
+                mux_address=mux_address,
+                mux_channel=int(haptic_config.get("left_channel", 1)) if mux_enabled else None,
+                lock_file=lock_file,
+            ),
+            "right": I2cMuxTransaction(
+                device,
+                target_address,
+                mux_address=mux_address,
+                mux_channel=int(haptic_config.get("right_channel", 2)) if mux_enabled else None,
+                lock_file=lock_file,
+            ),
+        }
+        haptic_backend = Tm6605HapticBackend(
+            transactions,
+            _mapping(haptic_config.get("level_effects")),
+        )
+
+    haptics = ManagedActuator(
+        "haptics",
+        haptic_backend,
+        DryRunHapticBackend(),
+        haptic_config,
+        disabled=args.disable_haptics,
+    )
+
+    lights_enabled = bool(light_config.get("enabled", False)) and not args.disable_lights
+    if lights_enabled:
+        pwm = LinuxSysfsPwm(Path(args.pwm_root), dry_run=args.dry_run)
+        channels = {
+            side: PwmChannelSpec(
+                side=side,
+                channel=int(_mapping(light_config.get(side))["channel"]),
+                pin=int(_mapping(light_config.get(side))["pin"]),
+                chip=_mapping(light_config.get(side)).get("chip", "auto"),
+            )
+            for side in ("left", "right")
+        }
+        light_backend: object = PwmLightBackend(
+            pwm,
+            channels,
+            _mapping(light_config.get("level_patterns")),
+            period_ns=int(light_config.get("period_ns", DEFAULT_PWM_PERIOD_NS)),
+        )
+    else:
+        light_backend = DisabledLightBackend()
+    lights = ManagedActuator(
+        "lights",
+        light_backend,
+        DisabledLightBackend(),
+        light_config,
+        disabled=not lights_enabled,
+    )
+    output_policy = OutputPolicy.for_profile(
+        profile,
+        _mapping(hardware.get("output_policy")),
+    )
+    return haptics, lights, output_policy
+
+
+def radar_alert_to_event(alert: RadarAlert) -> AlertEvent:
+    return AlertEvent(
+        side=alert.side,
+        level=alert.level,
+        event_kind=alert.event_kind,
+        ts=alert.ts,
+        clear_reason=alert.clear_reason,
+        source=alert.source,
+        source_id=alert.source_id,
+        ttc_s=alert.ttc_s,
+        closing_speed_mps=alert.closing_speed_mps,
+        lateral_distance_m=alert.lateral_distance_m,
+        longitudinal_distance_m=alert.longitudinal_distance_m,
+        metadata=alert.metadata,
+    )
+
+
 def start_stdin_reader(
     event_queue: "queue.Queue[AlertEvent]",
     command_queue: "queue.Queue[str]",
@@ -776,6 +1143,40 @@ def apply_output(output: AlertOutput, pwm: PwmController, audio: AudioPlayer) ->
     audio.request(output.audio_clip)
 
 
+def apply_effective_output(
+    output: AlertOutput,
+    haptics: ManagedActuator,
+    lights: ManagedActuator,
+    audio: AudioPlayer,
+    policy: OutputPolicy,
+    *,
+    now: float | None = None,
+    timings: dict[str, float | None] | None = None,
+    event_side: str | None = None,
+) -> OutputDecision:
+    decision = policy.decide(output.levels or {}, output.audio_clip)
+    if timings is not None:
+        timings["effective_level_mono_s"] = time.monotonic()
+    haptic_before = haptics.last_write_mono_s(event_side) if event_side else None
+    haptics.apply_levels(decision.haptic_levels, now=now)
+    if timings is not None:
+        timings["haptic_apply_mono_s"] = time.monotonic()
+        haptic_after = haptics.last_write_mono_s(event_side) if event_side else None
+        timings["haptic_write_mono_s"] = (
+            haptic_after if haptic_after is not None and haptic_after != haptic_before else None
+        )
+    light_before = lights.last_write_mono_s(event_side) if event_side else None
+    lights.apply_levels(decision.light_levels, now=now)
+    if timings is not None:
+        timings["light_apply_mono_s"] = time.monotonic()
+        light_after = lights.last_write_mono_s(event_side) if event_side else None
+        timings["light_write_mono_s"] = (
+            light_after if light_after is not None and light_after != light_before else None
+        )
+    audio.request(decision.audio_clip)
+    return decision
+
+
 def best_effort_stop_all(pwm: PwmController) -> None:
     try:
         pwm.stop_all()
@@ -788,6 +1189,9 @@ def run_controller(args: argparse.Namespace) -> int:
     validate_dual_camera_config(config)
     pwm_config = config.get("pwm", {}) if isinstance(config.get("pwm", {}), dict) else {}
     audio_config = config.get("audio", {}) if isinstance(config.get("audio", {}), dict) else {}
+    hardware = hardware_config_from_controller(config, pwm_config, audio_config)
+    hardware_audio = _mapping(hardware.get("audio"))
+    radar_hardware = _mapping(hardware.get("radar"))
     timing_config = config.get("timing", {}) if isinstance(config.get("timing", {}), dict) else {}
     ble_config = config.get("ble", {}) if isinstance(config.get("ble", {}), dict) else {}
     pwm_period_ns = int(args.pwm_period_ns or pwm_config.get("period_ns", DEFAULT_PWM_PERIOD_NS))
@@ -798,33 +1202,80 @@ def run_controller(args: argparse.Namespace) -> int:
     restart_limit = int(args.detector_restart_limit if args.detector_restart_limit is not None else restart_config.get("limit", 5))
     restart_backoff_s = float(args.detector_restart_backoff if args.detector_restart_backoff is not None else restart_config.get("backoff_s", 1.0))
     status_file = str(args.status_file or config.get("controller_status_file", ""))
+    event_log_jsonl = str(config.get("controller_event_jsonl", ""))
+    actuator_log_jsonl = str(config.get("controller_actuator_jsonl", ""))
     level_duties = pwm_config.get("level_duty_percent")
     event_queue: "queue.Queue[AlertEvent]" = queue.Queue()
     command_queue: "queue.Queue[str]" = queue.Queue()
     response_queue: "queue.Queue[tuple[str, str]]" = queue.Queue()
     stop_event = threading.Event()
+    module_states: dict[str, str] = {
+        "haptics": "disabled" if args.disable_haptics else "starting",
+        "lights": "disabled" if args.disable_lights else "starting",
+        "radar": "disabled" if args.disable_radar else "starting",
+        "vision": "disabled" if args.disable_vision else "starting",
+        "gnss": "disabled" if args.disable_gnss else "starting",
+        "imu": "disabled" if args.disable_imu else "starting",
+        "ble": "disabled" if args.disable_ble or args.no_ble else "starting",
+        "audio": "disabled" if args.no_audio else "starting",
+    }
+
+    radar_configs = []
+    radar_risk = None
+    radar_enabled = bool(radar_hardware.get("enabled", False)) and not args.disable_radar
+    radar_load_error = ""
+    if radar_enabled:
+        radar_config_path = str(args.mr20_config or radar_hardware.get("config", "")).strip()
+        try:
+            if not radar_config_path:
+                raise ValueError("hardware.radar.config or --mr20-config is required")
+            radar_configs, radar_risk = load_mr20_config(radar_config_path)
+            if not radar_configs:
+                raise ValueError("MR20 config has no enabled radars")
+        except Exception as exc:
+            radar_load_error = f"{type(exc).__name__}: {exc}"
+            required, failure_policy = module_failure_policy(radar_hardware)
+            if required or failure_policy == "fail_service":
+                raise RuntimeError(f"required module radar configuration failed: {exc}") from exc
+            module_states["radar"] = "degraded"
+            eprint(f"WARN optional radar disabled: {exc}")
+            radar_enabled = False
+
+    source_timeouts_s = {
+        "vision": float(timing_config.get("vision_timeout_s", event_timeout_s)),
+        "radar": float(timing_config.get("radar_timeout_s", event_timeout_s)),
+        "manual": float(timing_config.get("manual_timeout_s", max(30.0, event_timeout_s))),
+    }
+    for radar_config in radar_configs:
+        source_timeouts_s[f"radar:{radar_config.name}"] = radar_config.timeout_s
     state = AlertState(
         event_timeout_s=event_timeout_s,
         period_ns=pwm_period_ns,
         level_duty_percent=level_duties if isinstance(level_duties, dict) else None,
+        source_timeouts_s=source_timeouts_s,
     )
-    pwm = PwmController(
+    legacy_pwm = PwmController(
         Path(args.pwm_root),
         period_ns=pwm_period_ns,
         dry_run=args.dry_run,
         skip_pinmux=args.skip_pinmux,
     )
+    haptics, lights, output_policy = build_actuator_runtime(hardware, args, legacy_pwm)
     audio = AudioPlayer(
         Path(args.audio_root or str(audio_config.get("root", AUDIO_ROOT))),
         sample_audio=args.sample_audio,
         dry_run=args.dry_run,
-        enabled=bool(audio_config.get("enabled", False)) and not args.no_audio,
+        enabled=(
+            bool(hardware_audio.get("enabled", audio_config.get("enabled", False)))
+            and not args.no_audio
+        ),
         default_sleep_s=args.audio_sleep_s,
         default_timeout_s=args.audio_timeout_s,
         skip_pinmux=args.skip_pinmux,
     )
     detectors: list[DetectorProcess] = []
     modules: dict[str, RoutedModuleProcess] = {}
+    radars: list[MR20RadarWorker] = []
     ble: BleNusServer | None = None
     resource_sampler = ResourceSampler()
     last_status_write_s = float("-inf")
@@ -832,25 +1283,74 @@ def run_controller(args: argparse.Namespace) -> int:
     def _stop(_signum: int | None = None, _frame: object | None = None) -> None:
         stop_event.set()
 
+    def _status_payload() -> dict[str, object]:
+        return controller_status_payload(
+            state,
+            detectors,
+            modules,
+            resource_sampler,
+            actuators={"haptics": haptics, "lights": lights},
+            radars=radars,
+            module_states=module_states,
+        )
+
     signal.signal(signal.SIGINT, _stop)
     signal.signal(signal.SIGTERM, _stop)
 
     try:
-        pwm.preflight()
+        haptics.initialize(preflight_only=args.preflight_only)
+        lights.initialize(preflight_only=args.preflight_only)
+        module_states["haptics"] = haptics.state
+        module_states["lights"] = lights.state
         if args.preflight_only:
+            eprint(
+                json.dumps(
+                    {
+                        "hardware_profile": hardware["profile"],
+                        "haptics": haptics.status(),
+                        "lights": lights.status(),
+                        "radar_config_count": len(radar_configs),
+                        "radar_config_error": radar_load_error,
+                    },
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                )
+            )
             return 0
-        audio.setup()
-        pwm.setup()
-        audio.start()
-        pwm.stop_all()
+        try:
+            audio.setup()
+            audio.start()
+            module_states["audio"] = "online" if audio.enabled else "disabled"
+        except Exception as exc:
+            required, failure_policy = module_failure_policy(hardware_audio)
+            if required or failure_policy == "fail_service":
+                raise RuntimeError(f"required module audio failed: {exc}") from exc
+            module_states["audio"] = "degraded"
+            eprint(f"WARN optional audio degraded: {exc}")
 
-        if not args.no_ble:
-            try:
-                ble = BleNusServer(ble_name, command_queue.put)
-                ble.start()
-                eprint(f"BLE advertising as {ble_name}")
-            except Exception as exc:
-                eprint(f"WARN BLE disabled: {exc}")
+        if radar_enabled:
+            assert radar_risk is not None
+            for radar_config in radar_configs:
+                worker = MR20RadarWorker(
+                    radar_config,
+                    radar_risk,
+                    lambda alert: event_queue.put(radar_alert_to_event(alert)),
+                )
+                try:
+                    worker.start()
+                    radars.append(worker)
+                    module_states[f"radar:{radar_config.name}"] = "online"
+                except Exception as exc:
+                    required, failure_policy = module_failure_policy(radar_hardware)
+                    if required or failure_policy == "fail_service":
+                        raise RuntimeError(f"required radar {radar_config.name} failed: {exc}") from exc
+                    module_states[f"radar:{radar_config.name}"] = "degraded"
+                    module_states["radar"] = "degraded"
+                    eprint(f"WARN optional radar {radar_config.name} degraded: {exc}")
+            if radars and module_states["radar"] != "degraded":
+                module_states["radar"] = "online"
+        elif module_states["radar"] == "starting":
+            module_states["radar"] = "disabled"
 
         detector_cwd = Path(args.detector_cwd) if args.detector_cwd else None
         configured_left, configured_right = detector_commands_from_config(
@@ -861,9 +1361,11 @@ def run_controller(args: argparse.Namespace) -> int:
         left_detector_command = args.left_detector or configured_left
         right_detector_command = args.right_detector or configured_right
         alternating_detector_command = alternating_detector_command_from_config(config)
-        if args.single_camera and not args.detector:
+        if args.single_camera and not args.detector and not args.disable_vision:
             raise ValueError("--single-camera requires --detector COMMAND")
-        if args.detector:
+        if args.disable_vision:
+            pass
+        elif args.detector:
             detector = DetectorProcess(
                 None,
                 args.detector,
@@ -900,13 +1402,28 @@ def run_controller(args: argparse.Namespace) -> int:
                 )
                 detector.start()
                 detectors.append(detector)
+        module_states["vision"] = "online" if detectors else "disabled"
 
         for namespace, command in (("GNSS", args.gnss_command), ("IMU", args.imu_command)):
+            if (namespace == "GNSS" and args.disable_gnss) or (namespace == "IMU" and args.disable_imu):
+                continue
             if not command:
+                module_states[namespace.lower()] = "disabled"
                 continue
             module = RoutedModuleProcess(namespace, command, response_queue, cwd=detector_cwd)
             module.start()
             modules[namespace] = module
+            module_states[namespace.lower()] = "online"
+
+        if not args.no_ble and not args.disable_ble:
+            try:
+                ble = BleNusServer(ble_name, command_queue.put)
+                ble.start()
+                module_states["ble"] = "online"
+                eprint(f"BLE advertising as {ble_name}")
+            except Exception as exc:
+                module_states["ble"] = "degraded"
+                eprint(f"WARN BLE disabled: {exc}")
 
         if args.stdin_jsonl:
             start_stdin_reader(
@@ -932,12 +1449,43 @@ def run_controller(args: argparse.Namespace) -> int:
                 except queue.Empty:
                     break
                 if event_is_stale(event, time.monotonic(), max_event_age_s):
-                    eprint(f"ignored stale vision event side={event.side} level={event.level} ts={event.ts}")
+                    eprint(
+                        f"ignored stale event source={AlertState.event_source(event)} "
+                        f"side={event.side} level={event.level} ts={event.ts}"
+                    )
                     continue
                 output = state.apply_event(event)
-                apply_output(output, pwm, audio)
+                timings = {"controller_receive_mono_s": time.monotonic()}
+                decision = apply_effective_output(
+                    output,
+                    haptics,
+                    lights,
+                    audio,
+                    output_policy,
+                    timings=timings,
+                    event_side=event.side,
+                )
+                append_alert_event_jsonl(
+                    event_log_jsonl,
+                    event,
+                    effective_level=(output.levels or {})[event.side],
+                )
+                ble_transmit_mono_s = None
                 if ble is not None and should_publish_alert_history(event):
-                    ble.send_line(alert_event_ble_payload(event))
+                    ble.send_line(
+                        alert_event_ble_payload(
+                            event,
+                            effective_level=(output.levels or {})[event.side],
+                        )
+                    )
+                    ble_transmit_mono_s = time.monotonic()
+                append_output_timing_jsonl(
+                    actuator_log_jsonl,
+                    event,
+                    decision,
+                    timings,
+                    ble_transmit_mono_s=ble_transmit_mono_s,
+                )
 
             while True:
                 try:
@@ -951,7 +1499,29 @@ def run_controller(args: argparse.Namespace) -> int:
                         if command.kind == "clear":
                             audio.clear()
                         output = state.apply_command(command)
-                        apply_output(output, pwm, audio)
+                        apply_effective_output(output, haptics, lights, audio, output_policy)
+                        if command.kind == "clear":
+                            for side in ("left", "right"):
+                                append_alert_event_jsonl(
+                                    event_log_jsonl,
+                                    AlertEvent(
+                                        side=side,
+                                        level=0,
+                                        source="manual",
+                                        clear_reason="manual_clear_all",
+                                    ),
+                                    effective_level=0,
+                                )
+                        elif command.side is not None:
+                            append_alert_event_jsonl(
+                                event_log_jsonl,
+                                AlertEvent(
+                                    side=command.side,
+                                    level=command.level,
+                                    source="manual",
+                                ),
+                                effective_level=(output.levels or {})[command.side],
+                            )
                         if ble is not None:
                             ble.send_line("OK AL " + route.command)
                     elif route.namespace in ("GNSS", "IMU"):
@@ -965,7 +1535,7 @@ def run_controller(args: argparse.Namespace) -> int:
                         if ble is not None:
                             ble.send_line(
                                 json.dumps(
-                                    controller_status_payload(state, detectors, modules, resource_sampler),
+                                    _status_payload(),
                                     separators=(",", ":"),
                                 )
                             )
@@ -984,17 +1554,49 @@ def run_controller(args: argparse.Namespace) -> int:
                 eprint(f"{namespace} response: {response[:200]}")
 
             expired = state.expire()
-            if expired.expired_sides:
-                pwm.apply(expired.duties_ns)
-                if ble is not None:
-                    for side in expired.expired_sides:
-                        ble.send_line(alert_event_ble_payload(AlertEvent(side=side, level=0, ts=time.monotonic())))
+            if expired.expired_source_sides:
+                apply_effective_output(expired, haptics, lights, audio, output_policy)
+                for source, side in expired.expired_source_sides:
+                    timeout_event = AlertEvent(
+                        side=side,
+                        level=0,
+                        source=source,
+                        ts=time.monotonic(),
+                        clear_reason="source_timeout",
+                    )
+                    append_alert_event_jsonl(
+                        event_log_jsonl,
+                        timeout_event,
+                        effective_level=(expired.levels or {})[side],
+                    )
+                    if ble is not None:
+                        ble.send_line(
+                            alert_event_ble_payload(
+                                timeout_event,
+                                effective_level=(expired.levels or {})[side],
+                            )
+                        )
             now_s = time.monotonic()
+            haptics.tick(now_s)
+            lights.tick(now_s)
+            module_states["haptics"] = haptics.state
+            module_states["lights"] = lights.state
+            for radar in radars:
+                radar_status = radar.status()
+                radar_name = f"radar:{radar.config.name}"
+                if not radar_status["running"] and radar_status["last_error"]:
+                    required, failure_policy = module_failure_policy(radar_hardware)
+                    module_states[radar_name] = "error" if required else "degraded"
+                    module_states["radar"] = module_states[radar_name]
+                    if required or failure_policy == "fail_service":
+                        raise RuntimeError(
+                            f"required radar {radar.config.name} stopped: {radar_status['last_error']}"
+                        )
             if status_file and now_s - last_status_write_s >= 1.0:
                 try:
                     atomic_write_json(
                         status_file,
-                        controller_status_payload(state, detectors, modules, resource_sampler),
+                        _status_payload(),
                     )
                 except OSError as exc:
                     eprint(f"WARN could not update controller status file: {exc}")
@@ -1002,7 +1604,8 @@ def run_controller(args: argparse.Namespace) -> int:
             time.sleep(args.poll_interval)
     finally:
         stop_event.set()
-        best_effort_stop_all(pwm)
+        for radar in radars:
+            radar.stop()
         for detector in detectors:
             detector.stop()
         for module in modules.values():
@@ -1010,7 +1613,8 @@ def run_controller(args: argparse.Namespace) -> int:
         if ble is not None:
             ble.stop()
         audio.stop()
-        best_effort_stop_all(pwm)
+        haptics.stop_all()
+        lights.stop_all()
     return 0
 
 
@@ -1042,10 +1646,18 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--audio-timeout-s", type=float, default=13.0, help="Fallback sample_audio timeout seconds.")
     parser.add_argument("--ble-name", default=None, help="BLE advertisement name; overrides config.")
     parser.add_argument("--no-ble", action="store_true", help="Disable BLE debug command server.")
+    parser.add_argument("--disable-ble", action="store_true", help="Disable the unified BLE service (diagnostic alias).")
     parser.add_argument("--no-audio", action="store_true", help="Disable audio playback.")
+    parser.add_argument("--mr20-config", default="", help="Override hardware.radar.config with an MR20 JSON config.")
+    parser.add_argument("--disable-haptics", action="store_true", help="Disable all haptic hardware outputs.")
+    parser.add_argument("--disable-lights", action="store_true", help="Disable both side warning lights.")
+    parser.add_argument("--disable-radar", action="store_true", help="Disable all MR20 workers.")
+    parser.add_argument("--disable-vision", action="store_true", help="Do not start configured vision detectors.")
+    parser.add_argument("--disable-imu", action="store_true", help="Do not start the configured IMU subprocess.")
+    parser.add_argument("--disable-gnss", action="store_true", help="Do not start the configured GNSS subprocess.")
     parser.add_argument("--skip-pinmux", action="store_true", help="Skip bspmm pinmux setup.")
     parser.add_argument("--dry-run", action="store_true", help="Print PWM/audio actions without touching hardware.")
-    parser.add_argument("--preflight-only", action="store_true", help="Only check pwmchip0 capacity.")
+    parser.add_argument("--preflight-only", action="store_true", help="Validate configuration and preflight enabled actuators without starting services.")
     return parser.parse_args(argv)
 
 

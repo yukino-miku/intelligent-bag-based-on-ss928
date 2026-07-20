@@ -1,3 +1,3 @@
 # 四路震动模块接线
 
-左侧两路使用 Pin7/PWM10、Pin32/PWM1，右侧两路使用 Pin35/PWM14、Pin37/PWM15，唯一 pinmux 定义见 [40pin-usage.md](40pin-usage.md)。GPIO/PWM 只连接驱动模块控制输入；电机应由外部驱动和独立电源供电，并与板卡共地。系统启动、退出、异常和 detector 超时均必须把四路占空比归零。
+Rev2 使用 TCA9548A CH1/CH2 上的左右 TM6605 驱动 LRA；Pin7/Pin32 改为左右灯光 PWM。旧的四路 PWM 振动接线只属于 `legacy_pwm_haptics` 回滚 profile。唯一引脚定义见 [40pin-usage.md](40pin-usage.md)。LRA 和电机不得直连 GPIO，驱动与负载使用独立合规电源并和板卡共地。系统启动、退出、异常和来源超时必须清除对应输出。

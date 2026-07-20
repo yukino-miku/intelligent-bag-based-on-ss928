@@ -4,6 +4,9 @@
     "iio_path": "auto",
     "i2c_bus": 0,
     "i2c_addr": "0x68",
+    "i2c_mux_addr": null,
+    "i2c_mux_channel": null,
+    "i2c_lock_file": "/run/lock/smartbag-i2c0-mux.lock",
     "config_blob": "auto",
     "init_sensor": true,
     "sample_hz": 50.0

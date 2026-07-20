@@ -1,5 +1,15 @@
 # 更新记录
 
+## 2026-07-20
+
+- 固定审计 `sanda-tt/ss928@970351c84a12f3219e7910ee488ac5ff579d6f98` 相对上次 `d7e10fd06dc553f94d2db3a3d19987ec8648f7dc` 的 19 个提交；没有合并上游历史或复制许可不明厂商资料。
+- 新增 `rev2_tm6605_mr20` 和 `legacy_pwm_haptics` profile、配置迁移/回滚、唯一引脚表与 profile-aware pinmux；Rev2 的 Pin7/Pin32 只用于左右灯光。
+- 新增统一 TCA9548A 原子事务与跨进程锁，BMI270 每笔访问重选 CH0，左右 TM6605 分别重选 CH1/CH2；新增 TM6605 和 PWM 灯光 backend、调度、状态和错误计数。
+- 新增 MR20 14 字节帧、0x60A/0x60B、来源 IP/端口、scan 聚合、多帧确认、replay 和 `eth1` `/32` host route 工具。
+- Controller 改为按 `(source, side)` 融合 vision/radar/manual；来源 timeout/clear 相互隔离，heartbeat 不入历史，Rev2 Level 1/2 不驱动执行器。
+- 新增可选 Cloud uploader、HMAC/nonce/有界离线队列、CloudBase 用户绑定查询与小程序 BLE/Cloud 统一数据源。真实 CloudBase 未部署。
+- 新增硬件 preflight、I2C/TM6605/灯光/MR20 工具、session 记录、可选 cloud systemd unit 和 CI 策略检查。实物输出和 MR20 目标帧仍按 BLOCKED 记录。
+
 ## 2026-07-19
 
 - 完成交替双摄剩余软件链：新增真正进入视觉算法的端到端观测间隔、左右跨侧延迟、完整阶段时间戳和以 E2E max 为优先的验收口径；保留 capture-only 指标用于定位 USB 切换。

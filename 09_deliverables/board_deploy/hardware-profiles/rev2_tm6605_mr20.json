@@ -1,0 +1,70 @@
+{
+  "profile": "rev2_tm6605_mr20",
+  "i2c_mux": {
+    "enabled": true,
+    "device": "/dev/i2c-0",
+    "address": "0x70",
+    "lock_file": "/run/lock/smartbag-i2c0-mux.lock",
+    "channels": {
+      "bmi270": 0,
+      "left_haptic": 1,
+      "right_haptic": 2
+    },
+    "required": true,
+    "failure_policy": "fail_service"
+  },
+  "imu": {
+    "backend": "bmi270",
+    "address": "0x68",
+    "mux_channel": 0,
+    "required": true,
+    "failure_policy": "fail_service"
+  },
+  "haptics": {
+    "backend": "tm6605_lra",
+    "address": "0x2d",
+    "left_channel": 1,
+    "right_channel": 2,
+    "required": true,
+    "failure_policy": "fail_service",
+    "level_effects": {
+      "0": {"effect": 0, "count": 0, "interval_ms": 0},
+      "1": {"effect": 0, "count": 0, "interval_ms": 0},
+      "2": {"effect": 0, "count": 0, "interval_ms": 0},
+      "3": {"effect": 15, "count": 3, "interval_ms": 750},
+      "4": {"effect": 14, "count": 3, "interval_ms": 300}
+    }
+  },
+  "lights": {
+    "enabled": true,
+    "period_ns": 1000000,
+    "required": false,
+    "failure_policy": "degrade",
+    "left": {"chip": 0, "channel": 10, "pin": 7},
+    "right": {"chip": 0, "channel": 1, "pin": 32},
+    "level_patterns": {
+      "0": {"duty_percent": 0, "on_ms": 0, "off_ms": 0, "count": 0},
+      "1": {"duty_percent": 0, "on_ms": 0, "off_ms": 0, "count": 0},
+      "2": {"duty_percent": 0, "on_ms": 0, "off_ms": 0, "count": 0},
+      "3": {"duty_percent": 50, "on_ms": 1000, "off_ms": 0, "count": 1},
+      "4": {"duty_percent": 80, "on_ms": 200, "off_ms": 200, "count": 3}
+    }
+  },
+  "radar": {
+    "enabled": true,
+    "config": "/etc/smartbag/mr20-radar.json",
+    "required": false,
+    "failure_policy": "degrade"
+  },
+  "audio": {
+    "enabled": false,
+    "backend": "max98357",
+    "required": false,
+    "failure_policy": "degrade"
+  },
+  "output_policy": {
+    "haptic_level_map": {"0": 0, "1": 0, "2": 0, "3": 3, "4": 4},
+    "light_level_map": {"0": 0, "1": 0, "2": 0, "3": 3, "4": 4},
+    "audio_levels": [3, 4]
+  }
+}

@@ -32,7 +32,7 @@
         <view class="status-cell__dot status-cell__dot--green">监</view>
         <view class="status-cell__text">
           <view class="status-cell__title">{{monitorState}}</view>
-          <view class="status-cell__meta">来自 BLE SYS STATUS</view>
+          <view class="status-cell__meta">{{statusSourceText}}</view>
         </view>
       </view>
       <view class="status-cell">

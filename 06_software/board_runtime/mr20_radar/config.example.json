@@ -1,0 +1,29 @@
+{
+  "radars": [
+    {
+      "name": "right_rear",
+      "enabled": true,
+      "side": "right",
+      "bind_host": "192.168.1.102",
+      "bind_port": 2368,
+      "source_ip": "192.168.1.200",
+      "source_port": 2369,
+      "lateral_min_m": -3.0,
+      "lateral_max_m": 3.0,
+      "longitudinal_min_m": 0.2,
+      "longitudinal_max_m": 20.0,
+      "approaching_velocity_sign": -1,
+      "min_consecutive_frames": 2,
+      "timeout_s": 1.0,
+      "log_jsonl": "/var/log/smartbag/mr20-right-rear.jsonl"
+    }
+  ],
+  "risk": {
+    "levels": [
+      {"level": 1, "ttc_s": 8.0, "distance_m": 12.0, "closing_speed_mps": 1.0},
+      {"level": 2, "ttc_s": 5.0, "distance_m": 8.0, "closing_speed_mps": 2.0},
+      {"level": 3, "ttc_s": 3.0, "distance_m": 5.0, "closing_speed_mps": 3.0},
+      {"level": 4, "ttc_s": 1.5, "distance_m": 3.0, "closing_speed_mps": 4.0}
+    ]
+  }
+}

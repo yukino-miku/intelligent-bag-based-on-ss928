@@ -5,6 +5,9 @@
     "model": "/root/smartbag/models/yolo11n.pt"
   },
   "controller_status_file": "/run/smartbag/controller-status.json",
+  "controller_event_jsonl": "/var/log/smartbag/controller-events.jsonl",
+  "controller_actuator_jsonl": "/var/log/smartbag/actuator-events.jsonl",
+  "hardware_profile_file": "/etc/smartbag/hardware.json",
   "detector_restart": {
     "limit": 5,
     "backoff_s": 1.0

@@ -10,6 +10,7 @@ Nordic UART Service using BlueZ.
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import json
 import math
@@ -28,6 +29,13 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from fall_bridge import FallEventBridge
 
+COMMON_DIR = Path(__file__).resolve().parents[1] / "common"
+if str(COMMON_DIR) not in sys.path:
+    sys.path.insert(0, str(COMMON_DIR))
+
+from i2c_mux import DEFAULT_LOCK_FILE, I2cMuxTransaction
+from hardware_profile import validate_hardware_profile
+
 try:
     import fcntl
 except ImportError:  # pragma: no cover - Windows simulation only.
@@ -43,6 +51,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "iio_path": "auto",
         "i2c_bus": 0,
         "i2c_addr": "0x68",
+        "i2c_mux_addr": None,
+        "i2c_mux_channel": None,
+        "i2c_lock_file": DEFAULT_LOCK_FILE,
         "config_blob": "auto",
         "init_sensor": True,
         "sample_hz": 50.0,
@@ -151,12 +162,43 @@ def deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]
 
 
 def load_config(path: Optional[str]) -> Dict[str, Any]:
-    cfg = DEFAULT_CONFIG
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
     if path:
         with open(path, "r", encoding="utf-8") as f:
             user_cfg = json.load(f)
         cfg = deep_merge(DEFAULT_CONFIG, user_cfg)
     return cfg
+
+
+def apply_hardware_profile(cfg: Dict[str, Any], profile_path: Optional[str]) -> Dict[str, Any]:
+    if not profile_path:
+        return cfg
+    with open(profile_path, "r", encoding="utf-8") as handle:
+        hardware = json.load(handle)
+    if not isinstance(hardware, dict):
+        raise ValueError("hardware profile must contain a JSON object")
+    validate_hardware_profile(hardware)
+    result = copy.deepcopy(cfg)
+    device = result.setdefault("device", {})
+    mux = hardware.get("i2c_mux", {})
+    imu = hardware.get("imu", {})
+    if not isinstance(device, dict) or not isinstance(mux, dict) or not isinstance(imu, dict):
+        raise ValueError("hardware profile contains invalid I2C or IMU configuration")
+    if str(imu.get("backend", "bmi270")) != "bmi270":
+        raise ValueError("hardware profile IMU backend is not bmi270")
+    if "address" in imu:
+        device["i2c_addr"] = imu["address"]
+    if bool(mux.get("enabled", False)):
+        channels = mux.get("channels", {})
+        if not isinstance(channels, dict):
+            raise ValueError("hardware profile i2c_mux.channels must be an object")
+        device["i2c_mux_addr"] = mux.get("address")
+        device["i2c_mux_channel"] = imu.get("mux_channel", channels.get("bmi270"))
+        device["i2c_lock_file"] = mux.get("lock_file", DEFAULT_LOCK_FILE)
+    else:
+        device["i2c_mux_addr"] = None
+        device["i2c_mux_channel"] = None
+    return result
 
 
 def read_number(path: Path) -> Optional[float]:
@@ -386,14 +428,31 @@ class UserspaceI2cBmi270:
         addr: int,
         config_blob: Any = "auto",
         init_sensor: bool = True,
+        *,
+        mux_addr: Optional[int] = None,
+        mux_channel: Optional[int] = None,
+        lock_file: str = DEFAULT_LOCK_FILE,
+        transaction: Optional[I2cMuxTransaction] = None,
     ):
-        if fcntl is None:
+        if fcntl is None and transaction is None:
             raise RuntimeError("Userspace I2C backend needs Linux fcntl/i2c-dev")
         self.bus = bus
         self.addr = addr
         self.dev_path = f"/dev/i2c-{bus}"
-        self.fd = os.open(self.dev_path, os.O_RDWR)
-        fcntl.ioctl(self.fd, self.I2C_SLAVE, addr)
+        self.transaction = transaction
+        self.fd: Optional[int] = None
+        if self.transaction is None and mux_addr is not None:
+            self.transaction = I2cMuxTransaction(
+                self.dev_path,
+                addr,
+                mux_address=mux_addr,
+                mux_channel=mux_channel,
+                lock_file=lock_file,
+            )
+        if self.transaction is None:
+            assert fcntl is not None
+            self.fd = os.open(self.dev_path, os.O_RDWR)
+            fcntl.ioctl(self.fd, self.I2C_SLAVE, addr)
         chip_id = self.read_reg(self.CHIP_ID)
         if chip_id != self.EXPECTED_CHIP_ID:
             raise RuntimeError(
@@ -404,20 +463,38 @@ class UserspaceI2cBmi270:
             self.initialize(config_blob)
 
     def close(self) -> None:
-        os.close(self.fd)
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
 
     def write_reg(self, reg: int, value: int) -> None:
-        os.write(self.fd, bytes([reg & 0xFF, value & 0xFF]))
+        payload = bytes([reg & 0xFF, value & 0xFF])
+        if self.transaction is not None:
+            self.transaction.execute(lambda device: device.write(payload))
+            return
+        assert self.fd is not None
+        os.write(self.fd, payload)
 
     def write_block(self, reg: int, data: bytes) -> None:
-        os.write(self.fd, bytes([reg & 0xFF]) + data)
+        payload = bytes([reg & 0xFF]) + data
+        if self.transaction is not None:
+            self.transaction.execute(lambda device: device.write(payload))
+            return
+        assert self.fd is not None
+        os.write(self.fd, payload)
 
     def read_reg(self, reg: int) -> int:
         return self.read_block(reg, 1)[0]
 
     def read_block(self, reg: int, length: int) -> bytes:
-        os.write(self.fd, bytes([reg & 0xFF]))
-        data = os.read(self.fd, length)
+        if self.transaction is not None:
+            data = self.transaction.execute(
+                lambda device: device.write_then_read(bytes([reg & 0xFF]), length)
+            )
+        else:
+            assert self.fd is not None
+            os.write(self.fd, bytes([reg & 0xFF]))
+            data = os.read(self.fd, length)
         if len(data) != length:
             raise RuntimeError(f"Short I2C read: wanted {length}, got {len(data)}")
         return data
@@ -1564,7 +1641,13 @@ def print_iio_devices() -> None:
         print(f"{item['path']} name={item['name']} channels={item['channels']}")
 
 
-def probe_bmi270_i2c(bus: Optional[int] = None) -> None:
+def probe_bmi270_i2c(
+    bus: Optional[int] = None,
+    *,
+    mux_addr: Optional[int] = None,
+    mux_channel: Optional[int] = None,
+    lock_file: str = DEFAULT_LOCK_FILE,
+) -> None:
     if fcntl is None:
         print("I2C probe needs Linux fcntl/i2c-dev")
         return
@@ -1577,13 +1660,27 @@ def probe_bmi270_i2c(bus: Optional[int] = None) -> None:
         for addr in (0x68, 0x69):
             dev = f"/dev/i2c-{bus_id}"
             try:
-                fd = os.open(dev, os.O_RDWR)
-                try:
-                    fcntl.ioctl(fd, UserspaceI2cBmi270.I2C_SLAVE, addr)
-                    os.write(fd, bytes([UserspaceI2cBmi270.CHIP_ID]))
-                    chip = os.read(fd, 1)
-                finally:
-                    os.close(fd)
+                if mux_addr is not None:
+                    transaction = I2cMuxTransaction(
+                        dev,
+                        addr,
+                        mux_address=mux_addr,
+                        mux_channel=mux_channel,
+                        lock_file=lock_file,
+                    )
+                    chip = transaction.execute(
+                        lambda device: device.write_then_read(
+                            bytes([UserspaceI2cBmi270.CHIP_ID]), 1
+                        )
+                    )
+                else:
+                    fd = os.open(dev, os.O_RDWR)
+                    try:
+                        fcntl.ioctl(fd, UserspaceI2cBmi270.I2C_SLAVE, addr)
+                        os.write(fd, bytes([UserspaceI2cBmi270.CHIP_ID]))
+                        chip = os.read(fd, 1)
+                    finally:
+                        os.close(fd)
                 if chip:
                     mark = "BMI270" if chip[0] == UserspaceI2cBmi270.EXPECTED_CHIP_ID else "unknown"
                     print(f"{dev} addr=0x{addr:02x} chip_id=0x{chip[0]:02x} {mark}")
@@ -1618,19 +1715,40 @@ def make_imu_source(cfg: Dict[str, Any], args: argparse.Namespace) -> Any:
     if backend in ("auto", "i2c"):
         bus = args.i2c_bus if args.i2c_bus is not None else int(dev_cfg.get("i2c_bus", 0))
         addr = parse_int(args.i2c_addr if args.i2c_addr else dev_cfg.get("i2c_addr", "0x68"))
+        mux_addr_value = getattr(args, "i2c_mux_addr", "") or dev_cfg.get("i2c_mux_addr")
+        mux_channel_value = (
+            getattr(args, "i2c_mux_channel", None)
+            if getattr(args, "i2c_mux_channel", None) is not None
+            else dev_cfg.get("i2c_mux_channel")
+        )
+        mux_addr = parse_int(mux_addr_value) if mux_addr_value not in (None, "") else None
+        mux_channel = int(mux_channel_value) if mux_channel_value is not None else None
+        lock_file = str(
+            getattr(args, "i2c_lock_file", "")
+            or dev_cfg.get("i2c_lock_file", DEFAULT_LOCK_FILE)
+        )
         config_blob = dev_cfg.get("config_blob", "auto")
         init_sensor = bool(dev_cfg.get("init_sensor", True))
         print(
-            f"Using userspace I2C {bus=} addr=0x{addr:02x} init={init_sensor}",
+            f"Using userspace I2C {bus=} addr=0x{addr:02x} init={init_sensor} "
+            f"mux={f'0x{mux_addr:02x}/ch{mux_channel}' if mux_addr is not None else 'direct'}",
             flush=True,
         )
-        return UserspaceI2cBmi270(bus, addr, config_blob, init_sensor)
+        return UserspaceI2cBmi270(
+            bus,
+            addr,
+            config_blob,
+            init_sensor,
+            mux_addr=mux_addr,
+            mux_channel=mux_channel,
+            lock_file=lock_file,
+        )
 
     raise RuntimeError(f"Unknown device backend: {backend}")
 
 
 def run(args: argparse.Namespace) -> int:
-    cfg = load_config(args.config)
+    cfg = apply_hardware_profile(load_config(args.config), args.hardware_profile)
     if args.no_ble:
         cfg["output"]["ble_enabled"] = False
     if args.ble:
@@ -1747,6 +1865,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Path to JSON config. Defaults are built in.",
     )
     parser.add_argument(
+        "--hardware-profile",
+        default="",
+        help="Optional hardware profile JSON; Rev2 routes BMI270 through TCA9548A CH0.",
+    )
+    parser.add_argument(
         "--simulate",
         action="store_true",
         help="Use generated IMU data; useful for PC tests.",
@@ -1778,6 +1901,22 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="",
         help="BMI270 I2C address, usually 0x68 or 0x69.",
     )
+    parser.add_argument(
+        "--i2c-mux-addr",
+        default="",
+        help="Optional TCA9548A address, for example 0x70.",
+    )
+    parser.add_argument(
+        "--i2c-mux-channel",
+        type=int,
+        default=None,
+        help="TCA9548A channel for BMI270; Rev2 uses channel 0.",
+    )
+    parser.add_argument(
+        "--i2c-lock-file",
+        default="",
+        help=f"Cross-process mux lock path; default {DEFAULT_LOCK_FILE}.",
+    )
     parser.add_argument("--ble", action="store_true", help="Force BLE on.")
     parser.add_argument("--no-ble", action="store_true", help="Force BLE off.")
     parser.add_argument("--command-stdin", action="store_true", help="Read STATUS/ZERO/SET commands from stdin for the unified board service.")
@@ -1796,7 +1935,21 @@ def main() -> int:
         print_iio_devices()
         return 0
     if args.probe_i2c:
-        probe_bmi270_i2c(args.i2c_bus)
+        runtime_cfg = apply_hardware_profile(load_config(args.config), args.hardware_profile)
+        device_cfg = runtime_cfg["device"]
+        mux_value = args.i2c_mux_addr or device_cfg.get("i2c_mux_addr")
+        mux_addr = parse_int(mux_value) if mux_value not in (None, "") else None
+        mux_channel = (
+            args.i2c_mux_channel
+            if args.i2c_mux_channel is not None
+            else device_cfg.get("i2c_mux_channel")
+        )
+        probe_bmi270_i2c(
+            args.i2c_bus if args.i2c_bus is not None else int(device_cfg.get("i2c_bus", 0)),
+            mux_addr=mux_addr,
+            mux_channel=int(mux_channel) if mux_channel is not None else None,
+            lock_file=args.i2c_lock_file or str(device_cfg.get("i2c_lock_file", DEFAULT_LOCK_FILE)),
+        )
         return 0
     return run(args)
 

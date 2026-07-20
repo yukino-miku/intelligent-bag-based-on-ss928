@@ -1,5 +1,7 @@
 const SMARTBAG_DEVICE_NAME = "SS928-SmartBag";
 const { createAlertState, applyAlertFrame } = require("../../utils/alert-state");
+const { createDeviceDataService } = require("../../services/device-data-service");
+const deviceDataService = createDeviceDataService();
 const ALERT_HISTORY_STORAGE_KEY = "smartbagAlertHistory";
 const TARGET_DEVICE_NAMES = [SMARTBAG_DEVICE_NAME];
 const TARGET_DEVICE_NAME = TARGET_DEVICE_NAMES.join(" / ");
@@ -77,7 +79,8 @@ Page({
     alertHistory: [],
     systemStatus: null,
     horizonStyle: "",
-    bodyStyle: ""
+    bodyStyle: "",
+    alertSourceText: "BLE 本地告警"
   },
 
   onLoad() {
@@ -94,6 +97,19 @@ Page({
       this.alertState.history = savedHistory.slice(0, 40);
       this.setData({ alertHistory: this.alertState.history });
     }
+    deviceDataService.getAlarmHistory(null, 40).then((result) => {
+      const items = Array.isArray(result.items) ? result.items : [];
+      for (let index = items.length - 1; index >= 0; index -= 1) {
+        const record = items[index] && items[index].payload ? items[index].payload : items[index];
+        if (record && record.typ === "alert") this.alertState = applyAlertFrame(this.alertState, record, 40);
+      }
+      this.setData({
+        leftRisk: this.alertState.current.left,
+        rightRisk: this.alertState.current.right,
+        alertHistory: this.alertState.history,
+        alertSourceText: String(result.source || "unknown").toUpperCase() + (result.cloudError ? " 回退" : " 告警")
+      });
+    }).catch(() => {});
 
     wx.onBluetoothDeviceFound((res) => this.handleDeviceFound(res));
     wx.onBLECharacteristicValueChange((res) => this.handleCharacteristicValue(res));
@@ -340,7 +356,8 @@ Page({
     this.setData({
       leftRisk: this.alertState.current.left,
       rightRisk: this.alertState.current.right,
-      alertHistory: this.alertState.history
+      alertHistory: this.alertState.history,
+      alertSourceText: "BLE 实时告警"
     });
     wx.setStorageSync(ALERT_HISTORY_STORAGE_KEY, this.alertState.history);
   },

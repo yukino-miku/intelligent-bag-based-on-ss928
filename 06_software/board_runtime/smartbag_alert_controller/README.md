@@ -9,7 +9,7 @@ python3 smartbag_alert_controller.py \
   --config /etc/smartbag/config.json \
   --detector-cwd /root/smartbag/vision \
   --gnss-command "python3 /root/smartbag/gnss/dx_gp21_tracker.py --config /root/smartbag/gnss/config.ss928_uart4.json --command-stdin --no-ble" \
-  --imu-command "python3 /root/smartbag/imu/bmi270_backpack.py --config /root/smartbag/imu/config.example.json --command-stdin --no-ble"
+  --imu-command "python3 /root/smartbag/imu/bmi270_backpack.py --config /root/smartbag/imu/config.example.json --hardware-profile /etc/smartbag/hardware.json --command-stdin --no-ble"
 ```
 
 Controller 从 `cameras.left/right` 生成等价于 `--left-detector` 和 `--right-detector` 的命令，固定追加 `--side left|right --emit-alert-jsonl`。也可手动覆盖：
