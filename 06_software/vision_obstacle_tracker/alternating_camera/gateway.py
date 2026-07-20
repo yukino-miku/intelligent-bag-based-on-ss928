@@ -313,7 +313,7 @@ class AlternatingCameraGateway:
         available = [frame for frame in frames if frame is not None]
         if not available:
             return None
-        return max(available, key=lambda frame: (frame.published_at_s, frame.captured_at_s))
+        return max(available, key=lambda frame: (frame.captured_at_s, frame.published_at_s))
 
     def _mjpeg(self, handler: BaseHTTPRequestHandler, side: str, view: str) -> None:
         handler.send_response(HTTPStatus.OK)
