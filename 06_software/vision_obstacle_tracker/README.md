@@ -645,7 +645,7 @@ python3 alternating_camera_test.py \
   --output-dir /var/log/smartbag/alternating-camera-runs
 ```
 
-B 阶段页面为 `http://<板端地址>:8081/`。状态会标明当前 active side、另一侧缓存帧年龄和离线状态；gateway 只读缓存，不重新打开摄像头。A/B 没有 YOLO，也不生成 overlay，页面会自动选择 raw，按钮文字应为“切换为检测画面”；不能用 B 阶段证明 C 阶段检测 overlay 已通过。
+B 阶段页面为 `http://<板端地址>:8081/`。状态会标明当前 active side、另一侧缓存帧年龄和离线状态；gateway 只读缓存，不重新打开摄像头。页面默认只让顶部交替画面使用连续 MJPEG，下方左右对照每秒读取缓存快照，避免同时传输三份重复帧。A/B 没有 YOLO，也不生成 overlay，页面会自动选择 raw，按钮显示“检测画面不可用”并禁用；不能用 B 阶段证明 C 阶段检测 overlay 已通过。
 
 若状态显示两侧 online 但页面黑屏，依次检查 `api/v1/status`、`snapshot.jpg?view=raw` 和 `mjpeg?view=raw`。单帧正常但连续流不刷新时，需确认网关没有只按 V4L2 sequence 去重，因为每次 STREAMOFF/STREAMON 后该序号可能重复；当前实现还比较采集时间和发布时间。
 
@@ -685,7 +685,7 @@ GET /api/v1/camera/{left|right}/snapshot.jpg?view={raw|overlay}
 GET /api/v1/camera/{left|right}/mjpeg?view={raw|overlay}
 ```
 
-访问 `http://<BOARD_IP>:8080/` 可查看低延迟交替画面和左右缓存对照，切换 raw/overlay，并查看 active/cached/offline、帧龄、风险、推理 FPS、E2E 间隔、模型、后端、CPU、RSS 和温度。`alternating/mjpeg` 始终转发左右两侧中最新的一帧，不排队回放旧帧；因此它比任一单侧流连贯，但并不代表两台摄像头同时 STREAMON。左右独立窗口中的未激活侧仍显示最近缓存帧。`--disable-video-gateway` 完全关闭它；`--access-token` 只适合可信局域网基线，公网仍需反向代理、HTTPS、认证和防火墙。视频不走 BLE。
+访问 `http://<BOARD_IP>:8080/` 可查看低延迟交替画面和左右缓存对照，切换 raw/overlay，并查看 active/cached/offline、帧龄、风险、推理 FPS、E2E 间隔、模型、后端、CPU、RSS 和温度。`alternating/mjpeg` 始终转发左右两侧中最新的一帧，不排队回放旧帧；因此它比任一单侧流连贯，但并不代表两台摄像头同时 STREAMON。为降低带宽和浏览器解码开销，左右独立窗口默认每秒刷新缓存快照，不再各自建立连续 MJPEG。`--disable-video-gateway` 完全关闭它；`--access-token` 只适合可信局域网基线，公网仍需反向代理、HTTPS、认证和防火墙。视频不走 BLE。
 
 ### 安装外参与断线恢复
 

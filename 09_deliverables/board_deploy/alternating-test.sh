@@ -12,8 +12,8 @@ exec /usr/bin/python3 "$VISION_ROOT/alternating_camera_test.py" \
     --width "${WIDTH:-640}" \
     --height "${HEIGHT:-480}" \
     --fps "${FPS:-30}" \
-    --slice-ms "${SLICE_MS:-500}" \
-    --warmup-frames "${WARMUP_FRAMES:-2}" \
+    --slice-ms "${SLICE_MS:-300}" \
+    --warmup-frames "${WARMUP_FRAMES:-0}" \
     --frames-per-slice "${FRAMES_PER_SLICE:-4}" \
     --switch-count "${SWITCH_COUNT:-0}" \
     --duration-s "${DURATION_S:-120}" \

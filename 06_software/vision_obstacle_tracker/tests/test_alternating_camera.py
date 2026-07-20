@@ -552,6 +552,10 @@ class GatewayTest(unittest.TestCase):
         self.assertIn("let view='raw'", page)
         self.assertIn('<button id="toggle" disabled>检测画面不可用</button>', page)
         self.assertIn("/api/v1/alternating/mjpeg", page)
+        self.assertIn("/api/v1/camera/${s}/snapshot.jpg", page)
+        self.assertNotIn("/api/v1/camera/${s}/mjpeg", page)
+        self.assertIn("FPS(L/R)", page)
+        self.assertIn("p95_switch_latency_ms", page)
         self.assertIn("低延迟交替画面", page)
         self.assertIn(".onerror=", page)
 

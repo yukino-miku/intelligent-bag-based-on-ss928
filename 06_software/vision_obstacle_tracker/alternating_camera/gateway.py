@@ -409,14 +409,14 @@ class AlternatingCameraGateway:
 <section><h2>左侧</h2><img id="left-img"><pre id="left"></pre></section>
 <section><h2>右侧</h2><img id="right-img"><pre id="right"></pre></section></div>
 <script>let view='{default_view}',overlayReady={str(overlay_ready).lower()};const token='{token_query}',reconnectTimers={{}},toggle=document.getElementById('toggle');
-function connectStream(s){{document.getElementById(s+'-img').src=`/api/v1/camera/${{s}}/mjpeg?view=${{view}}${{token}}&t=${{Date.now()}}`;}}
+function refreshSnapshot(s){{document.getElementById(s+'-img').src=`/api/v1/camera/${{s}}/snapshot.jpg?view=${{view}}${{token}}&t=${{Date.now()}}`;}}
 function connectAlternating(){{document.getElementById('alternating-img').src=`/api/v1/alternating/mjpeg?view=${{view}}${{token}}&t=${{Date.now()}}`;}}
-function setStreams(){{connectAlternating();for(const s of ['left','right'])connectStream(s);}}
+function refreshSnapshots(){{for(const s of ['left','right'])refreshSnapshot(s);}}
+function setStreams(){{connectAlternating();refreshSnapshots();}}
 function updateToggle(){{toggle.disabled=!overlayReady&&view==='raw';toggle.textContent=view==='overlay'?'切换为原始画面':overlayReady?'切换为检测画面':'检测画面不可用';}}
-for(const s of ['left','right'])document.getElementById(s+'-img').onerror=()=>{{clearTimeout(reconnectTimers[s]);reconnectTimers[s]=setTimeout(()=>connectStream(s),1000);}};
 document.getElementById('alternating-img').onerror=()=>{{clearTimeout(reconnectTimers.alternating);reconnectTimers.alternating=setTimeout(connectAlternating,1000);}};
 toggle.onclick=()=>{{if(view==='raw'&&!overlayReady)return;view=view==='overlay'?'raw':'overlay';updateToggle();setStreams();}};
-async function poll(){{try{{const r=await fetch('/api/v1/status{status_query}');const v=await r.json();overlayReady=v.cameras.length===2&&v.cameras.every(c=>c.overlay_available);if(view==='overlay'&&!overlayReady){{view='raw';setStreams();}}updateToggle();document.getElementById('global').textContent=`当前采集: ${{v.active_camera||'切换中'}} | 切换: ${{v.switch_count||0}} | E2E max: ${{v.end_to_end_max_gap_ms??'-'}} ms | CPU: ${{v.cpu_percent??'-'}}% | RSS: ${{v.process_rss_mb??'-'}} MiB`;document.getElementById('active-note').textContent=`当前来源: ${{v.active_camera||'切换中'}}；下方非活动侧显示最近缓存帧`;for(const c of v.cameras)document.getElementById(c.side).textContent=JSON.stringify(c,null,2);}}catch(e){{document.getElementById('global').textContent=String(e);}}setTimeout(poll,1000);}}setStreams();poll();</script></body></html>"""
+async function poll(){{try{{const r=await fetch('/api/v1/status{status_query}');const v=await r.json();overlayReady=v.cameras.length===2&&v.cameras.every(c=>c.overlay_available);if(view==='overlay'&&!overlayReady){{view='raw';setStreams();}}updateToggle();const fps=v.cameras.map(c=>`${{c.side[0].toUpperCase()}}:${{c.effective_fps??'-'}}`).join('/');document.getElementById('global').textContent=`当前采集: ${{v.active_camera||'切换中'}} | FPS(L/R): ${{fps}} | 切换 p95: ${{v.p95_switch_latency_ms??'-'}} ms | CPU: ${{v.cpu_percent??'-'}}% | RSS: ${{v.process_rss_mb??'-'}} MiB`;document.getElementById('active-note').textContent=`当前来源: ${{v.active_camera||'切换中'}}；下方非活动侧显示最近缓存帧`;for(const c of v.cameras)document.getElementById(c.side).textContent=JSON.stringify(c,null,2);refreshSnapshots();}}catch(e){{document.getElementById('global').textContent=String(e);}}setTimeout(poll,1000);}}setStreams();poll();</script></body></html>"""
 
     def __enter__(self) -> "AlternatingCameraGateway":
         self.start()
