@@ -352,10 +352,27 @@ def _model_image_shape(info: _TensorInfo) -> tuple[int, int, str]:
     if len(dims) != 4:
         raise ValueError(f"SS928 YOLO input must have 4 dimensions, got {dims}")
     if dims[1] == 3:
-        return dims[2], dims[3], "chw"
-    if dims[3] == 3:
-        return dims[1], dims[2], "hwc"
-    raise ValueError(f"cannot determine SS928 YOLO input layout from dimensions {dims}")
+        height, width, layout = dims[2], dims[3], "chw"
+    elif dims[3] == 3:
+        height, width, layout = dims[1], dims[2], "hwc"
+    else:
+        raise ValueError(f"cannot determine SS928 YOLO input layout from dimensions {dims}")
+
+    byte_size = int(info.byte_size)
+    if int(info.data_type) == 4 and byte_size == height * width * 3 // 2:
+        if height % 2 or width % 2:
+            raise ValueError(f"SS928 NV12 input dimensions must be even, got {width}x{height}")
+        return height, width, "nv12"
+
+    element_sizes = {0: 4, 1: 2, 2: 1, 3: 4, 4: 1}
+    element_size = element_sizes.get(int(info.data_type))
+    expected_size = height * width * 3 * element_size if element_size else None
+    if expected_size != byte_size:
+        raise ValueError(
+            "unsupported SS928 image tensor storage: "
+            f"dimensions={dims} data_type={info.data_type} bytes={byte_size}"
+        )
+    return height, width, layout
 
 
 def _tensor_dims(info: _TensorInfo) -> tuple[int, ...]:
@@ -393,6 +410,20 @@ def letterbox_for_ss928(
         cv2.BORDER_CONSTANT,
         value=(114, 114, 114),
     )
+    if layout == "nv12":
+        if np.dtype(dtype) != np.dtype(np.uint8):
+            raise ValueError("SS928 NV12 input requires uint8 tensor data")
+        if target_height % 2 or target_width % 2:
+            raise ValueError("SS928 NV12 input dimensions must be even")
+        i420 = cv2.cvtColor(padded, cv2.COLOR_BGR2YUV_I420).reshape(-1)
+        y_size = target_height * target_width
+        chroma_size = y_size // 4
+        nv12 = np.empty(y_size + 2 * chroma_size, dtype=np.uint8)
+        nv12[:y_size] = i420[:y_size]
+        nv12[y_size::2] = i420[y_size : y_size + chroma_size]
+        nv12[y_size + 1 :: 2] = i420[y_size + chroma_size :]
+        return nv12.reshape(target_height * 3 // 2, target_width), scale, float(left), float(top)
+
     rgb = cv2.cvtColor(padded, cv2.COLOR_BGR2RGB)
     converted = rgb.astype(dtype, copy=False)
     if np.issubdtype(np.dtype(dtype), np.floating):

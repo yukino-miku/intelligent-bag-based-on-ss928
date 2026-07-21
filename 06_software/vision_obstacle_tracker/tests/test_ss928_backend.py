@@ -11,6 +11,7 @@ from detector_backend import (
     PortableDetectionResult,
     Ss928OmBackend,
     _TensorInfo,
+    _model_image_shape,
     decode_yolo_84x8400,
     letterbox_for_ss928,
 )
@@ -52,6 +53,12 @@ class FakeRuntime:
         self.closed = True
 
 
+class FakeNv12Runtime(FakeRuntime):
+    def __init__(self):
+        super().__init__()
+        self.input_info = tensor_info(4, (1, 640, 640, 3), 640 * 640 * 3 // 2)
+
+
 class Ss928PreprocessTest(unittest.TestCase):
     def test_letterbox_produces_rgb_chw_uint8(self):
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -75,6 +82,57 @@ class Ss928PreprocessTest(unittest.TestCase):
         self.assertEqual(30, int(tensor[0, 100, 100]))
         self.assertEqual(20, int(tensor[1, 100, 100]))
         self.assertEqual(10, int(tensor[2, 100, 100]))
+
+    def test_model_metadata_detects_static_aipp_nv12_storage(self):
+        info = tensor_info(4, (1, 640, 640, 3), 640 * 640 * 3 // 2)
+
+        self.assertEqual((640, 640, "nv12"), _model_image_shape(info))
+
+    def test_letterbox_produces_nv12_for_static_aipp_model(self):
+        import cv2
+
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        frame[:, :, 0] = 10
+        frame[:, :, 1] = 20
+        frame[:, :, 2] = 30
+
+        tensor, scale, pad_x, pad_y = letterbox_for_ss928(
+            frame,
+            640,
+            640,
+            layout="nv12",
+            dtype=np.uint8,
+        )
+
+        padded = cv2.copyMakeBorder(
+            frame,
+            80,
+            80,
+            0,
+            0,
+            cv2.BORDER_CONSTANT,
+            value=(114, 114, 114),
+        )
+        i420 = cv2.cvtColor(padded, cv2.COLOR_BGR2YUV_I420).reshape(-1)
+        y_size = 640 * 640
+        chroma_size = y_size // 4
+        flat = tensor.reshape(-1)
+
+        self.assertEqual((960, 640), tensor.shape)
+        self.assertTrue(tensor.flags.c_contiguous)
+        self.assertEqual(640 * 640 * 3 // 2, tensor.nbytes)
+        self.assertAlmostEqual(1.0, scale)
+        self.assertAlmostEqual(0.0, pad_x)
+        self.assertAlmostEqual(80.0, pad_y)
+        np.testing.assert_array_equal(flat[:y_size], i420[:y_size])
+        np.testing.assert_array_equal(
+            flat[y_size : y_size + 8 : 2],
+            i420[y_size : y_size + 4],
+        )
+        np.testing.assert_array_equal(
+            flat[y_size + 1 : y_size + 9 : 2],
+            i420[y_size + chroma_size : y_size + chroma_size + 4],
+        )
 
     def test_decode_filters_classes_and_restores_letterbox(self):
         output = np.zeros((84, 8400), dtype=np.float32)
@@ -168,6 +226,22 @@ class Ss928BackendTest(unittest.TestCase):
             self.assertEqual((3, 640, 640), runtime.inputs[0].shape)
             backend.close()
             self.assertTrue(runtime.closed)
+
+    def test_static_aipp_runtime_receives_nv12_input(self):
+        runtime = FakeNv12Runtime()
+        with tempfile.TemporaryDirectory() as directory:
+            model_path = Path(directory) / "fixture.om"
+            model_path.write_bytes(b"fixture")
+            backend = Ss928OmBackend(model_path, runtime=runtime)
+            frame = np.zeros((480, 640, 3), dtype=np.uint8)
+
+            result = backend.predict(frame, conf=0.20, classes=[2], max_det=10)[0]
+
+            self.assertEqual(1, len(result.detections))
+            self.assertEqual("nv12", backend.input_layout)
+            self.assertEqual((960, 640), runtime.inputs[0].shape)
+            self.assertEqual(640 * 640 * 3 // 2, runtime.inputs[0].nbytes)
+            backend.close()
 
     def test_fake_npu_result_reaches_tracking_risk_and_overlay(self):
         runtime = FakeRuntime()

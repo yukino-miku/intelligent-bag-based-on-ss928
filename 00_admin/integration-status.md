@@ -2,9 +2,10 @@
 
 ## 2026-07-21 正式 NPU 后端
 
-- `LOCAL IMPLEMENTED + CROSS-COMPILED`：`Ss928OmBackend`、ACL C ABI、内存预处理、YOLO 输出解码/NMS、轻量 tracker 和原风险/overlay 接口已经连通；ARM64 动态库交叉编译成功。
-- `NOT YET BOARD VERIFIED`：当前代码完成不代表真实双摄连续目标识别完成。仍需在板上核对 tensor 元数据、现场目标命中、左右 ID 隔离、overlay、端到端 FPS/盲区、内存/温度和 30 分钟稳定性。
-- `BOARD CONNECTION BLOCKED`：本轮收尾时 `.102`/`.168` 的 SSH 和视频端口均无响应，Windows 也未枚举板端 USB-UART；没有执行生产覆盖或硬件服务启用。
+- `BOARD FUNCTIONAL PASS`：`Ss928OmBackend` 已在 SS928 上识别静态 AIPP NV12 输入并连续执行。84.425 秒 session 完成 99/99 次左右切换和 99 帧完整 NPU/tracking/risk/overlay，NPU execute 约 25.66 ms，未发生相机流错误或 ACL 退出崩溃。
+- `CAMERA IMAGE BLOCKED`：当前 `/dev/video0` 和 `/dev/video2` 的原始 JPEG 均近乎全黑，连续 50 帧仍无场景。因此现场目标命中、检测框、左右 ID 和真实风险准确性仍未通过，不能把功能短测等同于完整视觉验收。
+- `PERFORMANCE PARTIAL`：合计推理 1.644 FPS，完整 E2E p95/max 为 1219.665/1272.578 ms，max 略超 1200 ms 门限；短测使用 `frames_per_slice=1`、`warmup_frames=0`，正式参数和 30 分钟稳定性仍待非黑画面恢复后复验。
+- 板载模型物理输入为 614400-byte NV12 静态 AIPP，不是 1228800-byte RGB。后端已按 ACL byte size 自动区分 NV12 与普通 RGB tensor，并有回归测试。
 - NPU 路径只需要板端 OpenCV、NumPy、ACL 运行库和 adapter，不需要 torch、torchvision、Ultralytics 或 lap。OpenVINO 继续只属于 PC/通用 CPU 路径。
 - 风险模型、Future Conflict Gate、多帧 stabilizer 和 haptic 输出没有被旁路；NPU 原始输出不能直接驱动震动。
 
@@ -53,7 +54,7 @@
 - `/dev/video0` 和 `/dev/video2` 对应 USB 路径 `3-1.3`/`3-1.4`，但重启后数字节点会互换；左右身份必须按稳定物理路径或显式映射，不能依赖枚举顺序。
 - 请求 `1680x1050 MJPEG @10` 实际仍得到 `1920x1080` JPEG。10/10 次交替成功，左右各 20 帧，无 STREAMON/OFF、超时、重连、丢帧或 USB 错误；每侧 3.735 FPS，最大 capture-only 盲区 545.945 ms。
 - 左右快照都完成板上 `yolov8n.om` 推理并生成输出；干净启动时 NPU 执行 25.44 ms。当前画面没有交通目标，`conf>=0.25` 无检测，不能作为目标识别命中证据。
-- 当时临时 ModelZoo harness 已验证模型卸载顺序问题，但 `EnvDeinit()` 仍因板端 ACL 兼容性异常退出；该次隔离测试中的正式实时链仍为 BLOCKED。2026-07-21 已补齐正式后端代码，实板连续验收状态仍未通过。
+- 当时临时 ModelZoo harness 已验证模型卸载顺序问题，但 `EnvDeinit()` 仍因板端 ACL 兼容性异常退出。2026-07-21 正式 adapter 已在 99 帧连续短测中正常释放；当前阻塞项已收敛为摄像头黑帧、实景目标命中、E2E 门限和长测。
 - 本次没有安装生产目录、enable systemd target 或测试 BMI270、TM6605、灯光、音频、GNSS、MR20、BLE。详细证据见 `07_tests/results/rev2-autonomous/latest-summary.md`。
 
 ## 仍需真实硬件验证

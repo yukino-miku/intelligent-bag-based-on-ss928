@@ -2,12 +2,16 @@
 
 ## 2026-07-21
 
+- 恢复板端以太网 SSH 后完成正式 NPU 短测。ACL 元数据确认板载 `yolov8n.om` 为逻辑 `1x640x640x3 UINT8`、物理 614400-byte 静态 AIPP NV12 输入；修正此前错误的 RGB byte-size 假设，并保留普通 RGB CHW/HWC 模型兼容。
+- 板端 84.425 秒完整链完成 99/99 次左右切换、99 帧 NPU/tracking/risk/overlay；NPU execute 约 25.66 ms，detector 总耗时约 81.1 ms，CPU 平均 14.403%，RSS 平均 115.916 MiB。E2E p95/max 为 1219.665/1272.578 ms，短测尚未达到 1200 ms max 门限。
+- 左右 raw/overlay HTTP 均可读取，但两台相机当前连续输出近乎全黑 JPEG；50 帧持续采样仍黑，且正确 capture 节点和 V4L2 控制已核对。因此记录为 NPU 链功能通过、实景目标命中阻塞，不宣称检测框和风险实景验收通过。
+- 通过离线 aarch64 wheel 安装 NumPy 1.26.4 与 opencv-python-headless 4.10.0.84，只运行摄像头/NPU。发现并停止板上残留、反复访问未连接 TM6605/I2C 的旧 `smartbag-alert.service`，未启动 PWM、BLE、GNSS、IMU、雷达或音频。
+- 本地仓库回归更新为 296 项 Python 测试（295 通过、1 项 Linux-only 跳过）；新增静态 AIPP NV12 格式、Y/UV 排列、字节数和 fake NPU 输入测试。
 - 将此前单图 ModelZoo harness 收敛为正式长驻后端：`libsmartbag_ss928_acl.so` 只在进程启动时初始化 ACL、加载 `yolov8n.om` 并分配输入/输出 dataset；Python 通过 ctypes 传内存 tensor，避免临时文件和逐帧模型加载。
-- 固定并校验当前模型契约：RGB_PLANAR 图像输入、COCO 80 类、单个 FP32 `1x84x8400` 输出；契约不匹配时拒绝启动。当前 ACL 镜像的 `aclFinalize()` 退出异常被限定在原生 adapter 内，正常释放模型、dataset 和 buffer 后由进程退出回收 ACL 全局状态。
+- 固定并校验当前模型契约：ACL 图像 tensor（普通 RGB 或静态 AIPP NV12）、COCO 80 类、单个 FP32 `1x84x8400` 输出；契约不匹配时拒绝启动。当前 ACL 镜像的 `aclFinalize()` 退出异常被限定在原生 adapter 内，正常释放模型、dataset 和 buffer 后由进程退出回收 ACL 全局状态。
 - SS928 输出已经接入原有 tracking、单目测距、速度、Future Conflict Gate、多帧 stabilizer、haptic JSONL、CSV 和 overlay；交替双摄共享一个模型，左右 IoU tracker、StableTrackId、TrackState 和 RiskModel 相互独立。
 - 本地已完成 adapter ARM64 交叉编译和针对预处理、输出解码、ROI 坐标恢复、独立 tracking、controller 参数透传的测试。实板连续 NPU/overlay 状态需在板端网络或串口恢复后补测，不把本地结果记为 BOARD TESTED。
-- 最终回归为 293 项 Python 测试（292 通过、1 项 Linux-only 跳过）、6 个小程序测试文件、24 个 JS 语法、22 个 tracked JSON 和 39 个 shell 语法；compileall、硬件刷新仓库策略与 diff whitespace 通过。ARM64 adapter SHA256 为 `00a496a6576f2f8473274878535715dfe47697b5f33692c4203f5ec913fdbe9d`。
-- 板端连接复查时，PC 仍为 `192.168.1.10/24`，但 `.102`/`.168` 的 SSH、80、8080、8081 和 ping 均无响应，且没有板端 USB-UART COM 口；因此未停止现有预览、未覆盖生产目录，也未把真实连续 NPU/overlay 记为通过。
+- 最终回归为 296 项 Python 测试（295 通过、1 项 Linux-only 跳过）、6 个小程序测试文件、24 个 JS 语法、22 个 tracked JSON 和 39 个 shell 语法；compileall、硬件刷新仓库策略与 diff whitespace 通过。ARM64 adapter SHA256 为 `00a496a6576f2f8473274878535715dfe47697b5f33692c4203f5ec913fdbe9d`。
 
 ## 2026-07-20
 

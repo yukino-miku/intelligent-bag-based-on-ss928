@@ -2,11 +2,15 @@
 
 ## 2026-07-21
 
-- 实现正式 `Ss928OmBackend`：新增常驻 `.om` 模型的 SS928 ACL C ABI，USB BGR 帧直接在内存中完成 RGB planar letterbox、NPU 执行、`1x84x8400 FP32` 解码、类别过滤、class-aware NMS 和原图坐标恢复，不再逐帧写临时图片。
+- 修正 SS928 板载模型输入格式：ACL 元数据的逻辑维度虽然为 `1x640x640x3 UINT8`，实际静态 AIPP 输入仅 614400 bytes，必须提交 NV12。后端现按 tensor byte size 自动识别 NV12，完成 BGR letterbox、I420 到 NV12 UV 交错转换，并保留普通 RGB CHW/HWC 路径。
+- 新增静态 AIPP NV12 元数据、Y/UV 排列、字节数和 fake NPU 端到端测试；仓库级回归为 296 项 Python 测试（295 通过、1 项 Linux-only 跳过）。
+- SS928 短测完成 99/99 次双摄交替和 99 帧完整 NPU/tracking/risk/overlay：NPU execute 约 25.66 ms，detector 总耗时约 81.1 ms，CPU 平均 14.403%，RSS 平均 115.916 MiB。完整 E2E max 1272.578 ms，略高于 1200 ms 门限，仍需调参和长测。
+- 当前两路 UVC 原始 JPEG 连续采样仍近乎全黑；HTTP raw/overlay 和 NPU 链正常，但没有实景目标命中证据。验收状态明确拆为 `BOARD FUNCTIONAL PASS` 与 `CAMERA IMAGE BLOCKED`，不把黑帧推理记为检测准确性通过。
+- 实现正式 `Ss928OmBackend`：新增常驻 `.om` 模型的 SS928 ACL C ABI，USB BGR 帧直接在内存中完成 letterbox，并按模型契约转换为 RGB tensor 或静态 AIPP NV12，再执行 NPU、`1x84x8400 FP32` 解码、类别过滤、class-aware NMS 和原图坐标恢复，不再逐帧写临时图片。
 - NPU 检测结果接入现有稳定 ID、距离/速度估计、Future Conflict Gate、多帧风险稳定、visual/haptic 输出、risk CSV 和 overlay；单摄使用轻量 IoU tracker，交替双摄保持左右 tracker/risk/标定完全独立且只加载一个模型。
 - 双摄 performance CSV 新增 preprocess、NPU execute 和 postprocess 分项；部署配置默认选择 `yolov8n.om` 和 `ss928_om`，preflight 根据后端检查依赖，NPU 路径不要求 torch/Ultralytics/lap。
 - 新增 ARM64 adapter 构建脚本、模型 tensor 契约检查、无 Ultralytics 单元测试和部署说明。代码与交叉编译通过不等同于实板连续目标检测通过，真实 overlay、目标命中、30 分钟稳定性和温度仍需板端验收。
-- 最终本地回归为 293 项 Python 测试（292 通过、1 项 Linux-only 跳过），并通过 6 个小程序测试文件、24 个 JS 语法、22 个 tracked JSON、39 个 shell 语法、compileall、仓库策略和 whitespace 检查。
+- 最终本地回归为 296 项 Python 测试（295 通过、1 项 Linux-only 跳过），并通过 6 个小程序测试文件、24 个 JS 语法、22 个 tracked JSON、39 个 shell 语法、compileall、仓库策略和 whitespace 检查。
 
 ## 2026-07-20
 

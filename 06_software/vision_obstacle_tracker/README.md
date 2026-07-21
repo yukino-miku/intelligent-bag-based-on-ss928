@@ -574,7 +574,7 @@ python3 vision_obstacle_tracker.py \
 
 stdout 只输出 compact `vision_alert` JSONL，模型加载、profile 和普通日志写 stderr。事件等级来自多帧稳定后的 `haptic_level`；风险消失会立即发 level 0。同侧同等级受 rate limit 限制。`--side left|right` 用于双摄固定方向；单摄 `auto` 根据 `x_m` 和 `--side-dead-zone` 路由。
 
-`--detector-backend ultralytics` 保留 PC/OpenVINO 路径。`--detector-backend ss928_om` 使用 `libsmartbag_ss928_acl.so` 调用板端 ACL，模型常驻内存，输入是 USB 帧经 RGB letterbox 后的内存 tensor，输出按 `1x84x8400 FP32` 做类别过滤和 NMS。OpenVINO 仍只属于 PC/通用 CPU 路径，不等于 SS928 NPU。
+`--detector-backend ultralytics` 保留 PC/OpenVINO 路径。`--detector-backend ss928_om` 使用 `libsmartbag_ss928_acl.so` 调用板端 ACL，模型常驻内存。后端根据 ACL tensor 的逻辑维度、数据类型和实际字节数选择输入格式：普通模型使用 RGB CHW/HWC，板载 `yolov8n.om` 的静态 AIPP 模型使用 NV12 letterbox；输出按 `1x84x8400 FP32` 做类别过滤和 NMS。OpenVINO 仍只属于 PC/通用 CPU 路径，不等于 SS928 NPU。
 
 ## SS928 双 USB 摄像头运行
 
