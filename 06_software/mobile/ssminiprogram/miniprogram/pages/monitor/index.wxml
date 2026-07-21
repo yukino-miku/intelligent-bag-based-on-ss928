@@ -60,8 +60,9 @@
     </view>
     <view class="auto-alert-history" wx:if="{{alertHistory.length}}">
       <view class="auto-alert-row" wx:for="{{alertHistory}}" wx:key="key">
-        <text>{{item.receivedAt}}</text><text>{{item.side === 'left' ? '左' : '右'}}</text><text>{{item.name}}</text>
-        <text>{{item.source}}</text><text>{{item.className || '目标'}}</text><text>{{item.distanceM === null ? '--' : item.distanceM + 'm'}}</text><text>{{item.ttcS === null ? '--' : 'TTC ' + item.ttcS + 's'}}</text>
+        <text>{{item.receivedAt}}</text><text>{{item.side === 'left' ? '左' : '右'}}</text><text>{{item.level === 0 ? (item.side === 'left' ? '左侧预警已解除' : '右侧预警已解除') : item.name}}</text>
+        <text>{{item.dataSource}}</text><text>{{item.source}}</text><text>{{item.className || '目标'}}</text><text>{{item.distanceM === null ? '--' : item.distanceM + 'm'}}</text><text>{{item.ttcS === null ? '--' : 'TTC ' + item.ttcS + 's'}}</text>
+        <text wx:if="{{item.level === 0 && item.clearReason}}">{{item.clearReason}}</text><text wx:else>震动 {{item.hapticLevel}} · 灯 {{item.lightMode}} · 音频 {{item.audioClip || '无'}}</text>
       </view>
     </view>
   </view>

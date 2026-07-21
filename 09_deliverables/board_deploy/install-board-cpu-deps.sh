@@ -13,8 +13,8 @@ apt-get install -y \
 if [ -n "$WHEELHOUSE" ]; then
     "$SCRIPT_DIR/install-board-deps-offline.sh" "$WHEELHOUSE"
 else
-    echo "System OpenCV/NumPy installed. torch, torchvision, ultralytics and lap remain BLOCKED."
-    echo "Provide a verified aarch64 CPython 3.10 wheelhouse, then rerun with its directory."
+    echo "System OpenCV/NumPy installed; this is sufficient for the ss928_om Python path."
+    echo "Only the optional ultralytics CPU backend needs verified aarch64 torch/Ultralytics/lap wheels."
 fi
 
 "$SCRIPT_DIR/check-runtime-deps.sh" || true

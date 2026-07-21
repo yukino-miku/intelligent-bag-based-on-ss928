@@ -1,23 +1,35 @@
 # SS928 板端整合状态
 
+## 2026-07-21 正式 NPU 后端
+
+- `BOARD FUNCTIONAL PASS`：`Ss928OmBackend` 已在 SS928 上识别静态 AIPP NV12 输入并连续执行。84.425 秒 session 完成 99/99 次左右切换和 99 帧完整 NPU/tracking/risk/overlay，NPU execute 约 25.66 ms，未发生相机流错误或 ACL 退出崩溃。
+- `CAMERA IMAGE BLOCKED`：当前 `/dev/video0` 和 `/dev/video2` 的原始 JPEG 均近乎全黑，连续 50 帧仍无场景。因此现场目标命中、检测框、左右 ID 和真实风险准确性仍未通过，不能把功能短测等同于完整视觉验收。
+- `PERFORMANCE PARTIAL`：合计推理 1.644 FPS，完整 E2E p95/max 为 1219.665/1272.578 ms，max 略超 1200 ms 门限；短测使用 `frames_per_slice=1`、`warmup_frames=0`，正式参数和 30 分钟稳定性仍待非黑画面恢复后复验。
+- 板载模型物理输入为 614400-byte NV12 静态 AIPP，不是 1228800-byte RGB。后端已按 ACL byte size 自动区分 NV12 与普通 RGB tensor，并有回归测试。
+- 已测试提交 `65364a5b3bd6a06e9ad53687d1942b2ec90bb391` 已安装到 `/root/smartbag/releases/65364a5`，统一 `vision`、`python-packages`、`models` 和 `config` 路径已建立；未创建或启用新的 systemd 服务。
+- NPU 路径只需要板端 OpenCV、NumPy、ACL 运行库和 adapter，不需要 torch、torchvision、Ultralytics 或 lap。OpenVINO 继续只属于 PC/通用 CPU 路径。
+- 风险模型、Future Conflict Gate、多帧 stabilizer 和 haptic 输出没有被旁路；NPU 原始输出不能直接驱动震动。
+
 ## 2026-07-20 Rev2 硬件刷新
 
+- `LOCAL IMPLEMENTED`：autonomous 分支默认改为单模型交替双摄、0–4 四档触觉、有界持续灯光/音频、固定 venv、systemd controller/safe-off/boot-selftest 和完整 validation orchestrator。
+- `BOARD STAGING + CAMERA PARTIAL PASS`：提交 `a660901` 已通过 USB-UART 暂存到 `/root/smartbag-staging/a660901` 并校验 SHA-256；没有执行生产安装或 enable。双 UVC 交替采集 10/10 切换成功，两张快照完成 SS928 NPU 执行并生成输出，但现场无目标类别，通用 ACL harness 在 `EnvDeinit()` 退出时仍异常；`POWER_ONLY_AUTOSTART_NOT_READY`。
 - `IMPLEMENTED + UNIT TESTED`：TCA9548A 统一事务、BMI270 CH0、左右 TM6605 CH1/CH2、灯光调度、MR20 解析/replay、来源隔离融合、Rev2 OutputPolicy、Cloud uploader 和 Cloud 安全核心。
 - `REPLAY TESTED`：匿名化 MR20 0x60A/0x60B 样例连续两 scan 后才形成 `radar:right_rear` 候选等级；未知帧和错误来源被统计且不报警。
 - `NOT DEPLOYED`：CloudBase 云函数和数据库集合；仓库不含 EnvId、AppID、设备密钥或 HMAC secret。
-- `BLOCKED`：真实 TCA9548A/BMI270/TM6605、左右灯光、MR20 0x60B 移动目标、雷达到执行器/BLE 闭环、30 分钟联合运行。2026-07-20 收尾时 Windows 未枚举板端 USB 串口/USB 网卡且 SSH 不可达，没有实物日志前不标记 PHYSICALLY VERIFIED。
+- `BLOCKED`：真实 TCA9548A/BMI270/TM6605、左右灯光、MR20 0x60B 移动目标、雷达到执行器/BLE 闭环、30 分钟联合运行。本次只连接和测试两台摄像头，其他模块未运行，不能标记 PHYSICALLY VERIFIED。
 - 视觉风险算法没有被雷达代码改写。vision、radar、manual 独立稳定并按同侧最大值输出；一个来源退出、clear 或 stale 不会误清另一个来源。
 
 ## 已完成
 
-- 新增默认关闭的 `alternating_single_model` 回退模式：原生 V4L2 单 active side、单次模型加载、左右独立 tracker/risk/标定/CSV、稳定 haptic 风险优先调度和 session 报告。
+- 默认改为 `alternating_single_model`：原生 V4L2 单 active side、单次模型加载、左右独立 tracker/risk/标定/CSV、稳定 haptic 风险优先调度和 session 报告。
 - 每片默认只选最后 1 张最新有效帧推理，无积压队列；新增 capture-only 与完整 E2E 两套盲区、跨侧延迟和全阶段 monotonic 时间戳。验收优先使用 `end_to_end_max_gap_ms`。
 - CAUTION/DANGER/EMERGENCY 的普通确认必须跨独立 `slice_id`；单 burst 不能直接满足 DANGER，紧急 fast path 有严格质量条件和原因日志。tracker 可按每侧真实有效 FPS 调整时间缓冲。
 - 交替 detector 内部直接提供左右 raw/overlay snapshot、MJPEG、完整状态 API 和双画面浏览器页，不启动第二个摄像头所有者；HTTP access log 默认关闭。
 - 单侧断线状态机实现 close/unmap、有限指数退避、reopen/remap、恢复耗时和按断线时长重置本侧 tracker；另一侧不重置。硬件拔插闭环仍待实测。
 - 新增左右安装外参、背包坐标转换、production 标定检查器和 camera/backpack 风险日志字段；示例仍是 `calibrated=false` 占位，不能用于正式距离风险验收。
 - Controller 已区分 `state_change` 与 `heartbeat`；切换相机不把未观测侧当成 SAFE，heartbeat 不进入 BLE 历史，stale observation 或单进程 detector 退出会清除对应/全部 PWM 状态。
-- 正式 systemd 使用左右固定双 USB detector；配置拒绝同一真实设备或相同 stream port，跨侧告警被 Controller 拒绝。
+- 正式 systemd 使用 `smartbag.target -> smartbag-controller.service`；controller 内部监督 alternating detector，配置拒绝左右指向同一真实设备。
 - 每个 detector 是相机唯一所有者，使用容量 1 latest-frame buffer、有限断流重连、独立 tracker/RiskModel/stabilizer/CSV 和稳定 haptic JSONL。
 - 左右 PWM 独立；单侧 level=0、超时或 detector 退出只清对应侧，子进程有限退避重启，另一侧继续。
 - 双路 snapshot/MJPEG、聚合状态、浏览器调试页和按需 JPEG；BLE 不传视频。
@@ -38,6 +50,14 @@
 - 左右 sysfs 逻辑 unbind/rebind 均恢复，约 3.024/2.998 s；另一侧继续采集，raw HTTP 保持 200。修复 reconnect 汇总后复测正确记录 `camera_reconnects=1`。物理拔插仍未验证。
 - 长测使用修复前的无界诊断列表，RSS 首末增加 6.301 MiB；随后已改为有界 deque 和精确累计量，但修复后的第二个 30 分钟 session 尚未执行。
 
+## 2026-07-20 摄像头隔离复测
+
+- `/dev/video0` 和 `/dev/video2` 对应 USB 路径 `3-1.3`/`3-1.4`，但重启后数字节点会互换；左右身份必须按稳定物理路径或显式映射，不能依赖枚举顺序。
+- 请求 `1680x1050 MJPEG @10` 实际仍得到 `1920x1080` JPEG。10/10 次交替成功，左右各 20 帧，无 STREAMON/OFF、超时、重连、丢帧或 USB 错误；每侧 3.735 FPS，最大 capture-only 盲区 545.945 ms。
+- 左右快照都完成板上 `yolov8n.om` 推理并生成输出；干净启动时 NPU 执行 25.44 ms。当前画面没有交通目标，`conf>=0.25` 无检测，不能作为目标识别命中证据。
+- 当时临时 ModelZoo harness 已验证模型卸载顺序问题，但 `EnvDeinit()` 仍因板端 ACL 兼容性异常退出。2026-07-21 正式 adapter 已在 99 帧连续短测中正常释放；当前阻塞项已收敛为摄像头黑帧、实景目标命中、E2E 门限和长测。
+- 本次没有安装生产目录、enable systemd target 或测试 BMI270、TM6605、灯光、音频、GNSS、MR20、BLE。详细证据见 `07_tests/results/rev2-autonomous/latest-summary.md`。
+
 ## 仍需真实硬件验证
 
 - 当前板上没有额外独立 USB 根端口；若要真正并发双摄，需要外接独立控制器或改 MIPI。现有交替方案仍需左右真实拔插恢复测试。
@@ -47,11 +67,11 @@
 - 左右独立相机内参、畸变、高度、pitch、朝向和风险日志实景校准。
 - PWM sysfs 编号、四路物理方向、电机驱动供电、单侧退出清振和紧急停止。
 - BlueZ NUS、自动 alert、GNSS/IMU/SYS 往返；手机真机 snapshot、局域网/HTTPS/合法域名限制。
-- DX-GP21 UART4、BMI270 IIO/I2C、MAX98357；音频默认关闭。
+- DX-GP21 UART4、BMI270 IIO/I2C、MAX98357；Rev2 音频默认启用但 optional，缺失时必须降级而不能阻断视觉和触觉。
 
 ## 未完成
 
-- `Ss928OmBackend` 没有与现有 Python detector、BoT-SORT 和风险链兼容的真实厂商 API。归档仅证明存在 ATC、`.om` 和 C/C++ sample；OpenVINO 不是 SS928 NPU。
-- 板端 `/opt/lib/npu/libascendcl.so` 和 sensor 专用 `yolov8n.om` sample 不能直接消费当前 USB 内存帧；缺少匹配头文件、通用 C ABI、预处理/AIPP 和输出/NMS核对，因此未伪造后端。
+- `Ss928OmBackend` 已实现并接入现有风险链，但真实板端连续运行、现场目标命中和长测仍未验收；NPU tracker 是不依赖 torch 的轻量 IoU tracker，不声称与 BoT-SORT 字节级等价。
+- 当前 adapter 使用受控 CPU 预处理和 ACL 内存拷贝，尚未接入 MPP/VPSS 零拷贝；零拷贝属于性能优化待办，不影响当前接口正确性验收。
 - MPP VENC/RTSP 尚未接入当前 UVC detector 帧。当前交付是 CPU JPEG snapshot/MJPEG 基线，不宣称硬件 H.264/H.265 已完成。
 - 微信小程序真机和正式 AppID/HTTPS/合法域名尚未验证；浏览器页是当前独立板端视频验收入口。

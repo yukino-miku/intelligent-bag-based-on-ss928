@@ -32,6 +32,7 @@ from alternating_camera.vision_runtime import (
     TrackerRuntimeConfig,
 )
 from calibration import CameraExtrinsics, extrinsics_from_mapping, load_calibration_file
+from detector_backend import IndependentIouTracker
 from risk_model import RiskModel
 from vision_core import StableTrackIdManager, TrackState, parse_target_classes
 from vision_obstacle_tracker import (
@@ -40,7 +41,7 @@ from vision_obstacle_tracker import (
     RiskWarningStabilizerConfig,
     SelfObjectFilter,
     create_camera_calibration,
-    create_yolo_model,
+    create_detector_backend,
     crop_frame_for_inference,
     enhance_frame_for_detection,
     ignored_target_assessment,
@@ -131,8 +132,10 @@ class RealSideVisionContext:
         self.target_classes = parse_target_classes(args.target_classes)
         self.frame_index = 0
 
-    def _create_tracker(self) -> IndependentUltralyticsTracker:
+    def _create_tracker(self) -> object:
         args = self.args
+        if args.detector_backend == "ss928_om":
+            return IndependentIouTracker()
         return IndependentUltralyticsTracker(
             TrackerRuntimeConfig(
                 args.tracker,
@@ -336,6 +339,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--warmup-frames", type=int, default=2)
     parser.add_argument("--frames-per-slice", type=int, default=4)
     parser.add_argument("--inference-frames-per-slice", type=int, default=1)
+    parser.add_argument(
+        "--continuous-slice-inference",
+        action="store_true",
+        help=(
+            "Keep the active camera streaming for the full slice and process each captured "
+            "frame immediately instead of batching frames after STREAMOFF."
+        ),
+    )
     parser.add_argument("--max-blind-interval-ms", type=int, default=1200)
     parser.add_argument("--stale-observation-timeout-ms", type=int, default=1800)
     parser.add_argument("--switch-failure-limit", type=int, default=3)
@@ -352,6 +363,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--risk-log-dir", default="")
     parser.add_argument("--latest-summary-path", default="")
     parser.add_argument("--model", default="yolo11n.pt")
+    parser.add_argument(
+        "--detector-backend",
+        choices=("ultralytics", "ss928_om"),
+        default="ultralytics",
+    )
+    parser.add_argument("--ss928-runtime-library", default=None)
+    parser.add_argument("--ss928-acl-config", default=None)
     parser.add_argument("--tracker", default="vehicle_botsort.yaml")
     parser.add_argument("--tracker-nominal-fps", type=float, default=0.0)
     parser.add_argument(
@@ -450,7 +468,7 @@ def _session_id(args: argparse.Namespace) -> str:
 
 def _create_model_with_jsonl_safe_stdout(args: argparse.Namespace) -> object:
     with redirect_stdout(sys.stderr):
-        return create_yolo_model(args)
+        return create_detector_backend(args)
 
 
 def _record_alert(recorder: AlternatingSessionRecorder, payload: dict[str, object]) -> None:
@@ -617,6 +635,9 @@ def run(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
     )
     contexts: dict[str, RealSideVisionContext] = {}
     inference_durations_ms: deque[float] = deque(maxlen=120)
+    detector_preprocess_durations_ms: deque[float] = deque(maxlen=120)
+    npu_inference_durations_ms: deque[float] = deque(maxlen=120)
+    detector_postprocess_durations_ms: deque[float] = deque(maxlen=120)
     tracking_durations_ms: deque[float] = deque(maxlen=120)
     risk_durations_ms: deque[float] = deque(maxlen=120)
     draw_durations_ms: deque[float] = deque(maxlen=120)
@@ -679,7 +700,7 @@ def run(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
         runtime_status.update(
             {
                 "model": args.model,
-                "model_backend": "ultralytics",
+                "model_backend": args.detector_backend,
                 "jpeg_quality": args.jpeg_quality,
             }
         )
@@ -727,20 +748,188 @@ def run(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
             }
         )
 
+        def process_frame(
+            frame,
+            event,
+            *,
+            effective_fps: float,
+        ) -> None:
+            nonlocal selected_inference_frames
+            selected_inference_frames += 1
+            timeline = FrameStageTimeline(
+                slice_id=event.slice_id,
+                side=frame.side,
+                capture_slice_start_s=event.capture_slice_start_s,
+                capture_slice_end_s=event.capture_slice_end_s,
+                streamoff_complete_s=event.streamoff_complete_s,
+            )
+            timeline.decode_start_s = time.monotonic()
+            decode_started_s = time.perf_counter()
+            full_frame = cv2.imdecode(
+                np.frombuffer(frame.data, dtype=np.uint8),
+                cv2.IMREAD_COLOR,
+            )
+            decode_ms = (time.perf_counter() - decode_started_s) * 1000.0
+            timeline.decode_end_s = time.monotonic()
+            if full_frame is None:
+                recorder.error(f"decode failed side={frame.side} sequence={frame.sequence}")
+                timeline.processing_complete_s = time.monotonic()
+                pending_frame_records.append(
+                    {
+                        "frame": frame,
+                        "active_side": frame.side,
+                        "decode_ms": decode_ms,
+                        "selected_for_inference": True,
+                        "timeline": timeline,
+                        "reconnect_count": capture.side_state[frame.side].reconnect_count,
+                        "last_error": "jpeg_decode_failed",
+                    }
+                )
+                return
+
+            gap_metrics = observation_gaps.observe(frame.side, frame.captured_at_s)
+            oldest_pending_ages_ms.append(
+                max(0.0, timeline.decode_start_s - frame.captured_at_s) * 1000.0
+            )
+            inference_view = crop_frame_for_inference(full_frame, args.roi_top_ratio)
+            inference_image = enhance_frame_for_detection(inference_view.image, args.enhance)
+            result = engine.process(
+                frame.side,
+                inference_image,
+                frame.captured_at_s,
+                full_frame=full_frame,
+                y_offset_px=inference_view.y_offset_px,
+                effective_side_fps=effective_fps,
+                slice_id=event.slice_id,
+                timeline=timeline,
+            )
+            inference_durations_ms.append(engine.last_inference_ms)
+            detector_model = engine.model
+            if hasattr(detector_model, "last_preprocess_ms"):
+                detector_preprocess_durations_ms.append(
+                    float(detector_model.last_preprocess_ms)
+                )
+            if hasattr(detector_model, "last_npu_ms"):
+                npu_inference_durations_ms.append(float(detector_model.last_npu_ms))
+            if hasattr(detector_model, "last_postprocess_ms"):
+                detector_postprocess_durations_ms.append(
+                    float(detector_model.last_postprocess_ms)
+                )
+            tracking_durations_ms.append(result.tracking_ms)
+            risk_durations_ms.append(result.risk_ms)
+            recorder.record_single_frame_jump_suppressed(
+                result.single_frame_jump_suppressed_count
+            )
+            inferred_at_s = time.monotonic()
+            inference_times_s.append(inferred_at_s)
+            inference_times_by_side[frame.side].append(inferred_at_s)
+            schedule.update_haptic_level(frame.side, result.haptic_level)
+            for payload in result.alerts:
+                _record_alert(recorder, payload)
+            metadata = _result_metadata(result, event.slice_id)
+            draw_ms = 0.0
+            jpeg_ms = 0.0
+            if gateway is not None:
+                overlay_bytes, draw_ms, jpeg_ms = _encode_overlay(
+                    full_frame,
+                    result,
+                    side=frame.side,
+                    slice_id=event.slice_id,
+                    frame_age_ms=max(0.0, time.monotonic() - frame.captured_at_s) * 1000.0,
+                    args=args,
+                    timeline=timeline,
+                )
+                gateway.publish_overlay(
+                    frame.side,
+                    overlay_bytes,
+                    sequence=frame.sequence,
+                    captured_at_s=frame.captured_at_s,
+                    metadata=metadata,
+                )
+                draw_durations_ms.append(draw_ms)
+                jpeg_durations_ms.append(jpeg_ms)
+            side_times = inference_times_by_side[frame.side]
+            side_inference_fps = (
+                (len(side_times) - 1) / max(side_times[-1] - side_times[0], 1e-6)
+                if len(side_times) >= 2
+                else 0.0
+            )
+            runtime_status["sides"][frame.side].update(
+                {
+                    "slice_id": event.slice_id,
+                    "inference_fps": side_inference_fps,
+                    "inference_ms": engine.last_inference_ms,
+                    "detector_preprocess_ms": float(
+                        getattr(engine.model, "last_preprocess_ms", 0.0)
+                    ),
+                    "npu_inference_ms": float(getattr(engine.model, "last_npu_ms", 0.0)),
+                    "detector_postprocess_ms": float(
+                        getattr(engine.model, "last_postprocess_ms", 0.0)
+                    ),
+                    "tracking_ms": result.tracking_ms,
+                    "risk_ms": result.risk_ms,
+                    "overlay_ms": draw_ms,
+                    "jpeg_encode_ms": jpeg_ms,
+                    "end_to_end_observation_gap_ms": gap_metrics[
+                        "end_to_end_observation_gap_ms"
+                    ],
+                    **metadata,
+                }
+            )
+            timeline.processing_complete_s = time.monotonic()
+            pending_frame_records.append(
+                {
+                    "frame": frame,
+                    "active_side": frame.side,
+                    "decode_ms": decode_ms,
+                    "selected_for_inference": True,
+                    "timeline": timeline,
+                    "end_to_end_observation_gap_ms": gap_metrics[
+                        "end_to_end_observation_gap_ms"
+                    ],
+                    "side_to_side_latency_ms": gap_metrics["side_to_side_latency_ms"],
+                    "reconnect_count": capture.side_state[frame.side].reconnect_count,
+                    "last_error": capture.side_state[frame.side].last_error,
+                }
+            )
+
         consecutive_failed_slices = 0
         while not STOP_REQUESTED:
+            prior_frame_records = pending_frame_records
+            pending_frame_records = []
+
+            def process_captured_frame(frame, event) -> None:
+                if gateway is not None:
+                    gateway.publish_raw(frame, {"slice_id": event.slice_id})
+                live_status = capture.status()
+                process_frame(
+                    frame,
+                    event,
+                    effective_fps=float(
+                        live_status.get(f"{frame.side}_effective_fps", 0.0) or 0.0
+                    ),
+                )
+
             pending_slice = capture.capture_slice(
                 side,
                 slice_ms=schedule.slice_ms_for(side),
                 streamoff_after_slice=True,
+                capture_until_deadline=args.continuous_slice_inference,
+                frame_callback=(
+                    process_captured_frame if args.continuous_slice_inference else None
+                ),
             )
-            for pending_record in pending_frame_records:
+            for pending_record in prior_frame_records:
                 timeline = pending_record["timeline"]
                 timeline.next_camera_streamon_s = pending_slice.event.streamon_start_s
                 timeline.next_camera_first_frame_s = pending_slice.event.first_frame_s
                 recorder.record_frame(**pending_record)
-            pending_frame_records.clear()
             recorder.record_switch(pending_slice.event)
+            if args.continuous_slice_inference:
+                for pending_record in pending_frame_records:
+                    timeline = pending_record["timeline"]
+                    timeline.capture_slice_end_s = pending_slice.event.capture_slice_end_s
+                    timeline.streamoff_complete_s = pending_slice.event.streamoff_complete_s
             if pending_slice.event.success:
                 consecutive_failed_slices = 0
             else:
@@ -762,138 +951,35 @@ def run(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
                 recorder.error(f"tracker reset after extended {side} camera disconnect")
             effective_fps = float(status.get(f"{side}_effective_fps", 0.0) or 0.0)
             captured_valid_frames += len(pending_slice.frames)
-            if gateway is not None:
-                for captured_frame in pending_slice.frames:
-                    gateway.publish_raw(captured_frame, {"slice_id": pending_slice.event.slice_id})
-            selected_frames, skipped_count = select_latest_inference_frames(
-                pending_slice.frames,
-                args.inference_frames_per_slice,
-            )
-            selected_sequences = {frame.sequence for frame in selected_frames}
-            skipped_inference_frames += skipped_count
-            for frame in pending_slice.frames:
-                if frame.sequence in selected_sequences:
-                    continue
-                recorder.record_frame(
-                    frame,
-                    active_side=side,
-                    selected_for_inference=False,
-                    reconnect_count=capture.side_state[side].reconnect_count,
-                    last_error=capture.side_state[side].last_error,
+            if not args.continuous_slice_inference:
+                if gateway is not None:
+                    for captured_frame in pending_slice.frames:
+                        gateway.publish_raw(
+                            captured_frame,
+                            {"slice_id": pending_slice.event.slice_id},
+                        )
+                selected_frames, skipped_count = select_latest_inference_frames(
+                    pending_slice.frames,
+                    args.inference_frames_per_slice,
                 )
-            for frame in selected_frames:
-                selected_inference_frames += 1
-                timeline = FrameStageTimeline(
-                    slice_id=pending_slice.event.slice_id,
-                    side=side,
-                    capture_slice_start_s=pending_slice.event.capture_slice_start_s,
-                    capture_slice_end_s=pending_slice.event.capture_slice_end_s,
-                    streamoff_complete_s=pending_slice.event.streamoff_complete_s,
-                )
-                timeline.decode_start_s = time.monotonic()
-                decode_started_s = time.perf_counter()
-                full_frame = cv2.imdecode(np.frombuffer(frame.data, dtype=np.uint8), cv2.IMREAD_COLOR)
-                decode_ms = (time.perf_counter() - decode_started_s) * 1000.0
-                timeline.decode_end_s = time.monotonic()
-                if full_frame is None:
-                    recorder.error(f"decode failed side={side} sequence={frame.sequence}")
-                    timeline.processing_complete_s = time.monotonic()
+                selected_sequences = {frame.sequence for frame in selected_frames}
+                skipped_inference_frames += skipped_count
+                for frame in pending_slice.frames:
+                    if frame.sequence in selected_sequences:
+                        continue
                     recorder.record_frame(
                         frame,
                         active_side=side,
-                        decode_ms=decode_ms,
-                        selected_for_inference=True,
-                        timeline=timeline,
+                        selected_for_inference=False,
                         reconnect_count=capture.side_state[side].reconnect_count,
-                        last_error="jpeg_decode_failed",
+                        last_error=capture.side_state[side].last_error,
                     )
-                    continue
-                gap_metrics = observation_gaps.observe(side, frame.captured_at_s)
-                oldest_pending_ages_ms.append(
-                    max(0.0, timeline.decode_start_s - frame.captured_at_s) * 1000.0
-                )
-                inference_view = crop_frame_for_inference(full_frame, args.roi_top_ratio)
-                inference_image = enhance_frame_for_detection(inference_view.image, args.enhance)
-                result = engine.process(
-                    side,
-                    inference_image,
-                    frame.captured_at_s,
-                    full_frame=full_frame,
-                    y_offset_px=inference_view.y_offset_px,
-                    effective_side_fps=effective_fps,
-                    slice_id=pending_slice.event.slice_id,
-                    timeline=timeline,
-                )
-                inference_durations_ms.append(engine.last_inference_ms)
-                tracking_durations_ms.append(result.tracking_ms)
-                risk_durations_ms.append(result.risk_ms)
-                recorder.record_single_frame_jump_suppressed(
-                    result.single_frame_jump_suppressed_count
-                )
-                inference_times_s.append(time.monotonic())
-                inference_times_by_side[side].append(time.monotonic())
-                schedule.update_haptic_level(side, result.haptic_level)
-                for payload in result.alerts:
-                    _record_alert(recorder, payload)
-                metadata = _result_metadata(result, pending_slice.event.slice_id)
-                draw_ms = 0.0
-                jpeg_ms = 0.0
-                if gateway is not None:
-                    overlay_bytes, draw_ms, jpeg_ms = _encode_overlay(
-                        full_frame,
-                        result,
-                        side=side,
-                        slice_id=pending_slice.event.slice_id,
-                        frame_age_ms=max(0.0, time.monotonic() - frame.captured_at_s) * 1000.0,
-                        args=args,
-                        timeline=timeline,
+                for frame in selected_frames:
+                    process_frame(
+                        frame,
+                        pending_slice.event,
+                        effective_fps=effective_fps,
                     )
-                    gateway.publish_overlay(
-                        side,
-                        overlay_bytes,
-                        sequence=frame.sequence,
-                        captured_at_s=frame.captured_at_s,
-                        metadata=metadata,
-                    )
-                    draw_durations_ms.append(draw_ms)
-                    jpeg_durations_ms.append(jpeg_ms)
-                side_times = inference_times_by_side[side]
-                side_inference_fps = (
-                    (len(side_times) - 1) / max(side_times[-1] - side_times[0], 1e-6)
-                    if len(side_times) >= 2
-                    else 0.0
-                )
-                runtime_status["sides"][side].update(
-                    {
-                        "slice_id": pending_slice.event.slice_id,
-                        "inference_fps": side_inference_fps,
-                        "inference_ms": engine.last_inference_ms,
-                        "tracking_ms": result.tracking_ms,
-                        "risk_ms": result.risk_ms,
-                        "overlay_ms": draw_ms,
-                        "jpeg_encode_ms": jpeg_ms,
-                        "end_to_end_observation_gap_ms": gap_metrics[
-                            "end_to_end_observation_gap_ms"
-                        ],
-                        **metadata,
-                    }
-                )
-                timeline.processing_complete_s = time.monotonic()
-                pending_frame_records.append(
-                    {
-                        "frame": frame,
-                        "active_side": side,
-                        "decode_ms": decode_ms,
-                        "selected_for_inference": True,
-                        "timeline": timeline,
-                        "end_to_end_observation_gap_ms": gap_metrics[
-                            "end_to_end_observation_gap_ms"
-                        ],
-                        "side_to_side_latency_ms": gap_metrics["side_to_side_latency_ms"],
-                        "reconnect_count": capture.side_state[side].reconnect_count,
-                        "last_error": capture.side_state[side].last_error,
-                    }
-                )
             for context in contexts.values():
                 for payload in context.heartbeat(args.stale_observation_timeout_ms / 1000.0):
                     _record_alert(recorder, payload)
@@ -921,6 +1007,23 @@ def run(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
                             if inference_durations_ms
                             else 0.0
                         ),
+                        "detector_preprocess_ms": (
+                            sum(detector_preprocess_durations_ms)
+                            / len(detector_preprocess_durations_ms)
+                            if detector_preprocess_durations_ms
+                            else 0.0
+                        ),
+                        "npu_inference_ms": (
+                            sum(npu_inference_durations_ms) / len(npu_inference_durations_ms)
+                            if npu_inference_durations_ms
+                            else 0.0
+                        ),
+                        "detector_postprocess_ms": (
+                            sum(detector_postprocess_durations_ms)
+                            / len(detector_postprocess_durations_ms)
+                            if detector_postprocess_durations_ms
+                            else 0.0
+                        ),
                         "tracking_ms": (
                             sum(tracking_durations_ms) / len(tracking_durations_ms)
                             if tracking_durations_ms
@@ -946,7 +1049,11 @@ def run(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
                         "captured_valid_frames": captured_valid_frames,
                         "selected_inference_frames": selected_inference_frames,
                         "skipped_inference_frames": skipped_inference_frames,
-                        "inference_frames_per_slice": args.inference_frames_per_slice,
+                        "inference_frames_per_slice": (
+                            len(pending_slice.frames)
+                            if args.continuous_slice_inference
+                            else args.inference_frames_per_slice
+                        ),
                         "inference_queue_depth": 0,
                         "oldest_pending_frame_age_ms": (
                             max(oldest_pending_ages_ms) if oldest_pending_ages_ms else 0.0
@@ -984,6 +1091,8 @@ def run(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
                 _record_alert(recorder, payload)
         if gateway is not None:
             gateway.stop()
+        if engine is not None:
+            engine.close()
         capture.close()
         recorder.camera_reconnects = sum(
             state.reconnect_count for state in capture.side_state.values()

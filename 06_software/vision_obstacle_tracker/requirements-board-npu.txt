@@ -1,3 +1,3 @@
-# The board NPU runtime is supplied by /opt/lib/npu, not PyPI.
-# NumPy is retained for preprocessing/output parsing once a generic ACL backend exists.
+# SS928 NPU runtime and OpenCV are supplied by the board image/Ubuntu packages.
+# Keep this aligned with Ubuntu 22.04 aarch64 instead of pulling PC wheels.
 numpy==1.21.5

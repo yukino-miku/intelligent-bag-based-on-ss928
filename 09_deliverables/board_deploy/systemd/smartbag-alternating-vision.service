@@ -1,18 +1,22 @@
 [Unit]
 Description=SS928 SmartBag experimental single-model alternating dual-camera controller
-After=local-fs.target dbus.service bluetooth.service
-Wants=bluetooth.service
-Conflicts=smartbag-alert.service smartbag-video.service
+After=local-fs.target dbus.service bluetooth.service smartbag-safe-off.service
+Wants=bluetooth.service smartbag-safe-off.service
+Conflicts=smartbag-controller.service smartbag-alert.service smartbag-video.service
 
 [Service]
 Type=simple
 WorkingDirectory=/root/smartbag/vision
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/etc/smartbag/smartbag.env
 ExecStartPre=/root/smartbag/board-deploy/alternating-preflight.sh /etc/smartbag/config.json
-ExecStart=/usr/bin/python3 /root/smartbag/controller/smartbag_alert_controller.py --config /etc/smartbag/config.json --detector-cwd /root/smartbag/vision --gnss-command "/usr/bin/python3 /root/smartbag/gnss/dx_gp21_tracker.py --config /root/smartbag/gnss/config.ss928_uart4.json --command-stdin --no-ble" --imu-command "/usr/bin/python3 /root/smartbag/imu/bmi270_backpack.py --config /root/smartbag/imu/config.example.json --hardware-profile /etc/smartbag/hardware.json --command-stdin --no-ble"
-Restart=on-failure
+ExecStart=/root/smartbag/venv/bin/python /root/smartbag/controller/smartbag_alert_controller.py --config /etc/smartbag/config.json --detector-cwd /root/smartbag/vision --gnss-command "/root/smartbag/venv/bin/python /root/smartbag/gnss/dx_gp21_tracker.py --config /root/smartbag/gnss/config.ss928_uart4.json --command-stdin --no-ble" --imu-command "/root/smartbag/venv/bin/python /root/smartbag/imu/bmi270_backpack.py --config /root/smartbag/imu/config.example.json --hardware-profile /etc/smartbag/hardware.json --command-stdin --no-ble"
+ExecStopPost=-/root/smartbag/venv/bin/python /root/smartbag/board-deploy/safe_off.py --hardware /etc/smartbag/hardware.json
+Restart=always
 RestartSec=2
 TimeoutStopSec=8
 KillMode=control-group
+StandardInput=null
 StandardOutput=journal
 StandardError=journal
 LogRateLimitIntervalSec=30s

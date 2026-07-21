@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from collections import deque
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.error import HTTPError
 from urllib.request import urlopen
 
@@ -206,6 +207,61 @@ class AlternatingCaptureTest(unittest.TestCase):
         self.assertIsNone(capture.active_side)
         self.assertFalse(any(device.is_streaming for device in shared["devices"]))
         self.assertIsNotNone(result.event.streamoff_end_s)
+        capture.close()
+
+    def test_capture_until_deadline_processes_frames_while_camera_is_streaming(self) -> None:
+        config = AlternatingCaptureConfig(
+            slice_ms=250,
+            frames_per_slice=2,
+            inference_frames_per_slice=1,
+            warmup_frames=0,
+        )
+        capture, clock, shared = build_capture(config=config)
+        callback_sequences = []
+
+        def process_frame(frame, event):
+            self.assertTrue(capture.devices[frame.side].is_streaming)
+            self.assertEqual(event.slice_id, frame.slice_id)
+            callback_sequences.append(frame.sequence)
+            clock.advance(0.050)
+
+        result = capture.capture_slice(
+            "left",
+            streamoff_after_slice=True,
+            capture_until_deadline=True,
+            frame_callback=process_frame,
+        )
+
+        self.assertTrue(result.event.success)
+        self.assertGreaterEqual(result.event.slice_duration_ms, 250.0)
+        self.assertGreater(len(result.frames), config.frames_per_slice)
+        self.assertEqual([frame.sequence for frame in result.frames], callback_sequences)
+        self.assertFalse(any(device.is_streaming for device in shared["devices"]))
+        capture.close()
+
+    def test_frame_processing_failure_stops_stream_and_is_not_camera_disconnect(self) -> None:
+        config = AlternatingCaptureConfig(
+            slice_ms=250,
+            frames_per_slice=1,
+            inference_frames_per_slice=1,
+            warmup_frames=0,
+        )
+        capture, _clock, shared = build_capture(config=config)
+
+        def fail_processing(_frame, _event):
+            raise RuntimeError("simulated NPU failure")
+
+        with self.assertRaisesRegex(RuntimeError, "simulated NPU failure"):
+            capture.capture_slice(
+                "left",
+                streamoff_after_slice=True,
+                capture_until_deadline=True,
+                frame_callback=fail_processing,
+            )
+
+        self.assertEqual("frame_callback_failure", capture.switch_events[-1].error_type)
+        self.assertEqual("ONLINE", capture.side_state["left"].connection_state)
+        self.assertFalse(any(device.is_streaming for device in shared["devices"]))
         capture.close()
 
     def test_streamoff_failure_enters_safe_state_before_other_start(self) -> None:
@@ -503,10 +559,17 @@ class SharedModelRuntimeTest(unittest.TestCase):
 
     def test_shared_mutable_side_state_is_rejected(self) -> None:
         shared_tracker = object()
+        models = []
 
         class FakeModel:
+            def __init__(self):
+                self.closed = False
+
             def predict(self, image, **_kwargs):
                 return [image]
+
+            def close(self):
+                self.closed = True
 
         class BadContext:
             def __init__(self, side):
@@ -516,12 +579,18 @@ class SharedModelRuntimeTest(unittest.TestCase):
             def process_detection(self, result, _image, _timestamp_s, **_context):
                 return result
 
+        def load_model(_path):
+            model = FakeModel()
+            models.append(model)
+            return model
+
         with self.assertRaisesRegex(ValueError, "share mutable state: tracker"):
             SharedModelAlternatingEngine(
                 "fixture.pt",
                 BadContext,
-                model_factory=lambda _path: FakeModel(),
+                model_factory=load_model,
             )
+        self.assertTrue(models[0].closed)
 
 
 class GatewayTest(unittest.TestCase):
@@ -543,6 +612,94 @@ class GatewayTest(unittest.TestCase):
         cameras = {camera["side"]: camera for camera in payload["cameras"]}
         self.assertEqual("live", cameras["left"]["frame_state"])
         self.assertEqual("offline", cameras["right"]["frame_state"])
+
+    def test_debug_page_defaults_to_raw_when_overlay_is_unavailable(self) -> None:
+        with urlopen(self.base + "/", timeout=2.0) as response:
+            page = response.read().decode("utf-8")
+
+        self.assertIn("let view='raw'", page)
+        self.assertIn('<button id="toggle" disabled>检测画面不可用</button>', page)
+        self.assertIn("/api/v1/alternating/mjpeg", page)
+        self.assertNotIn("/api/v1/camera/${displaySide}/snapshot.jpg", page)
+        self.assertNotIn("/api/v1/camera/${s}/mjpeg", page)
+        self.assertIn('id="focus-img"', page)
+        self.assertNotIn('id="left-img"', page)
+        self.assertNotIn('id="right-img"', page)
+        self.assertNotIn("setInterval(rotateSide,1000)", page)
+        self.assertIn("推理 FPS(L/R)", page)
+        self.assertIn("p95_switch_latency_ms", page)
+        self.assertIn("连续检测流", page)
+        self.assertIn(".onerror=", page)
+
+    def test_debug_page_keeps_overlay_default_when_both_sides_are_available(self) -> None:
+        frame = self.capture.latest_frame("left")
+        self.assertIsNotNone(frame)
+        for side in ("left", "right"):
+            self.gateway.publish_overlay(
+                side,
+                b"\xff\xd8overlay-jpeg\xff\xd9",
+                sequence=frame.sequence,
+                captured_at_s=frame.captured_at_s,
+            )
+
+        with urlopen(self.base + "/", timeout=2.0) as response:
+            page = response.read().decode("utf-8")
+
+        self.assertIn("let view='overlay'", page)
+        self.assertIn("切换到原始画面", page)
+
+    def test_mjpeg_emits_new_capture_when_v4l2_sequence_repeats(self) -> None:
+        first = b"\xff\xd8first-jpeg\xff\xd9"
+        second = b"\xff\xd8second-jpeg\xff\xd9"
+        self.gateway.publish_raw(
+            SimpleNamespace(side="left", data=first, sequence=7, captured_at_s=100.0)
+        )
+
+        with urlopen(self.base + "/api/v1/camera/left/mjpeg?view=raw", timeout=2.0) as response:
+            first_part = self._read_mjpeg_part(response, first)
+            self.gateway.publish_raw(
+                SimpleNamespace(side="left", data=second, sequence=7, captured_at_s=101.0)
+            )
+            second_part = self._read_mjpeg_part(response, second)
+
+        self.assertIn(first, first_part)
+        self.assertIn(second, second_part)
+
+    def test_alternating_mjpeg_emits_latest_frame_from_both_sides(self) -> None:
+        right = b"\xff\xd8right-jpeg\xff\xd9"
+        left = b"\xff\xd8left-jpeg\xff\xd9"
+        self.gateway.publish_raw(
+            SimpleNamespace(side="right", data=right, sequence=3, captured_at_s=200.0)
+        )
+
+        with urlopen(self.base + "/api/v1/alternating/mjpeg?view=raw", timeout=2.0) as response:
+            right_part = self._read_alternating_mjpeg_part(response, right, "right")
+            self.gateway.publish_raw(
+                SimpleNamespace(side="left", data=left, sequence=4, captured_at_s=201.0)
+            )
+            left_part = self._read_alternating_mjpeg_part(response, left, "left")
+
+        self.assertIn(right, right_part)
+        self.assertIn(b"X-Frame-Side: right", right_part)
+        self.assertIn(left, left_part)
+        self.assertIn(b"X-Frame-Side: left", left_part)
+
+    @staticmethod
+    def _read_mjpeg_part(response, jpeg: bytes) -> bytes:
+        prefix = (
+            b"--frame\r\nContent-Type: image/jpeg\r\n"
+            + f"Content-Length: {len(jpeg)}\r\n\r\n".encode("ascii")
+        )
+        return response.read(len(prefix) + len(jpeg) + 2)
+
+    @staticmethod
+    def _read_alternating_mjpeg_part(response, jpeg: bytes, side: str) -> bytes:
+        prefix = (
+            b"--frame\r\nContent-Type: image/jpeg\r\n"
+            + f"Content-Length: {len(jpeg)}\r\n".encode("ascii")
+            + f"X-Frame-Side: {side}\r\n\r\n".encode("ascii")
+        )
+        return response.read(len(prefix) + len(jpeg) + 2)
 
     def test_snapshot_uses_cached_mjpeg_and_gateway_never_reopens_camera(self) -> None:
         starts_before = self.capture.devices["left"].start_attempts

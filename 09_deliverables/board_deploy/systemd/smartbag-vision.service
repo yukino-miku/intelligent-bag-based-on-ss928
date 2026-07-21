@@ -1,13 +1,21 @@
 [Unit]
 Description=SS928 SmartBag optional single-detector diagnostic
-Conflicts=smartbag-alert.service
+After=local-fs.target
+Conflicts=smartbag-controller.service smartbag-alert.service smartbag-alternating-vision.service
 
 [Service]
 Type=simple
 WorkingDirectory=/root/smartbag/vision
-ExecStart=/usr/bin/python3 /root/smartbag/vision/vision_obstacle_tracker.py --source camera --camera-device /dev/video0 --runtime-profile board_cpu --model /root/smartbag/models/yolo11n.pt --no-display --side left --emit-alert-jsonl
+EnvironmentFile=-/etc/smartbag/smartbag.env
+ExecStartPre=/root/smartbag/venv/bin/python /root/smartbag/board-deploy/wait_for_hardware.py --profile vision --config /etc/smartbag/config.json --timeout-s 30
+ExecStart=/root/smartbag/venv/bin/python /root/smartbag/vision/vision_obstacle_tracker.py --source camera --camera-device /dev/video0 --runtime-profile board_cpu --model /root/smartbag/models/yolo11n.pt --no-display --side left --emit-alert-jsonl
 Restart=on-failure
+RestartSec=3
 KillMode=control-group
+TimeoutStopSec=10
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target

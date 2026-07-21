@@ -1,7 +1,37 @@
 # Project Log
 
+## 2026-07-21
+
+- 完成 YOLO11n ONNX 到 SS928 OM 的可复现转换。原 1024 ONNX 不能靠改元数据缩成 640，因此从相同 PT 权重重新导出 opset 13 的 `1x3x640x640 -> 1x84x8400` ONNX，并确认 175/175 initializer 与原 ONNX 按字节一致。官方 `SVP_NNN_PC_V1.0.6.0` ATC 在 `SS928V100`、`compile_mode=6`、20 张校准图和 RGB_PLANAR 1/255 AIPP 下完成量化、tiling 与 PICO 指令生成；OM SHA256 为 `9e3c448ab7309428ea78cfdc509926404220fa74dd56c89e4995366f5f16af95`，本地 301 项 Python 测试通过（1 项 Linux-only 跳过）。产物留在 Git 忽略目录，当前以太网断开，未冒充实板验证通过，也未替换默认模型。
+- 纠正“一个画面每秒换边”首版只刷新静态 snapshot、且正式进程每片只推理 1 帧的问题。新增时间片内同步逐帧推理路径，主页改为连续交替 overlay MJPEG；实板 30 秒有效阶段处理 198 帧，流约 6.93 FPS，活动侧约 8 到 9 FPS、左右平均每侧约 3.3 FPS，CPU/RSS 平均约 55.7%/116 MiB，同侧最大观测间隔约 1.95 秒。正式配置固定每侧约 1 秒并把 stale timeout 调整为 2.5 秒，多帧和跨 slice 风险确认未取消。
+- 首版按现场观察需求把网页改为一个主画面、每秒轮换左右缓存快照，但现场确认它仍是幻灯片且每侧检测约 1 FPS；该首版已由上面的连续推理方案取代。
+- 恢复板端以太网 SSH 后完成正式 NPU 短测。ACL 元数据确认板载 `yolov8n.om` 为逻辑 `1x640x640x3 UINT8`、物理 614400-byte 静态 AIPP NV12 输入；修正此前错误的 RGB byte-size 假设，并保留普通 RGB CHW/HWC 模型兼容。
+- 板端 84.425 秒完整链完成 99/99 次左右切换、99 帧 NPU/tracking/risk/overlay；NPU execute 约 25.66 ms，detector 总耗时约 81.1 ms，CPU 平均 14.403%，RSS 平均 115.916 MiB。E2E p95/max 为 1219.665/1272.578 ms，短测尚未达到 1200 ms max 门限。
+- 左右 raw/overlay HTTP 均可读取，但两台相机当前连续输出近乎全黑 JPEG；50 帧持续采样仍黑，且正确 capture 节点和 V4L2 控制已核对。因此记录为 NPU 链功能通过、实景目标命中阻塞，不宣称检测框和风险实景验收通过。
+- 通过离线 aarch64 wheel 安装 NumPy 1.26.4 与 opencv-python-headless 4.10.0.84，只运行摄像头/NPU。发现并停止板上残留、反复访问未连接 TM6605/I2C 的旧 `smartbag-alert.service`，未启动 PWM、BLE、GNSS、IMU、雷达或音频。
+- 将已测试代码提交 `65364a5b3bd6a06e9ad53687d1942b2ec90bb391` 安装到 `/root/smartbag/releases/65364a5`，以软链接提供统一 `vision` 和 `python-packages` 路径，并链接板上合法模型。生产目录 compileall 和模型 metadata smoke test 通过；没有启用新的 systemd 服务，旧 alert unit 已禁用。
+- 本地仓库回归更新为 296 项 Python 测试（295 通过、1 项 Linux-only 跳过）；新增静态 AIPP NV12 格式、Y/UV 排列、字节数和 fake NPU 输入测试。
+- 将此前单图 ModelZoo harness 收敛为正式长驻后端：`libsmartbag_ss928_acl.so` 只在进程启动时初始化 ACL、加载 `yolov8n.om` 并分配输入/输出 dataset；Python 通过 ctypes 传内存 tensor，避免临时文件和逐帧模型加载。
+- 固定并校验当前模型契约：ACL 图像 tensor（普通 RGB 或静态 AIPP NV12）、COCO 80 类、单个 FP32 `1x84x8400` 输出；契约不匹配时拒绝启动。当前 ACL 镜像的 `aclFinalize()` 退出异常被限定在原生 adapter 内，正常释放模型、dataset 和 buffer 后由进程退出回收 ACL 全局状态。
+- SS928 输出已经接入原有 tracking、单目测距、速度、Future Conflict Gate、多帧 stabilizer、haptic JSONL、CSV 和 overlay；交替双摄共享一个模型，左右 IoU tracker、StableTrackId、TrackState 和 RiskModel 相互独立。
+- 本地已完成 adapter ARM64 交叉编译和针对预处理、输出解码、ROI 坐标恢复、独立 tracking、controller 参数透传的测试。实板连续 NPU/overlay 状态需在板端网络或串口恢复后补测，不把本地结果记为 BOARD TESTED。
+- 最终回归为 296 项 Python 测试（295 通过、1 项 Linux-only 跳过）、6 个小程序测试文件、24 个 JS 语法、22 个 tracked JSON 和 39 个 shell 语法；compileall、硬件刷新仓库策略与 diff whitespace 通过。ARM64 adapter SHA256 为 `00a496a6576f2f8473274878535715dfe47697b5f33692c4203f5ec913fdbe9d`。
+
 ## 2026-07-20
 
+- 将纯摄像头网页从三条并行 MJPEG 调整为一条顶部低延迟交替流和每秒左右缓存快照，减少重复传输与浏览器解码；在当前两只摄像头上验证 300 ms 时间片、0 预热丢帧、每片 4 帧，80 帧全部解码正常，左右各约 4.85 FPS，交替总流约 8.52 FPS，p95/最大帧间隔约 311/340 ms。硬件 STREAMON/OFF 仍造成约 0.3 秒周期停顿，未伪装为稳定同步双摄。
+- 继续诊断板端网页卡顿：标称千兆链路的小包延迟约 1–3 ms，但板端累计大量 TCP retransmit，PC 读取 JPEG 仅约 0.7 Mbps；将实际 `eth1` 临时限制为 100M 全双工后达到 27.3 Mbps。新增无积压的低延迟交替流，用左右最新帧把实测更新提高到约 7.63 FPS、最长无帧间隔降至约 400 ms；剩余波动来自 STREAMON 首帧等待和突发出帧，纯采集仍不声称具备检测 overlay。
+- 将板端浏览器预览从实际 1920x1080 降至原生 1280x720，并用 1 帧预热/每片 6 帧平衡切换开销，左右 capture FPS 从约 4.15 提高至约 5.8–6.0；5 秒左右端点各收到 11 个 MJPEG 分段，无流切换错误。页面随后增加 overlay 禁用和断线自动重连。
+- 通过板端 `eth1` 有线地址完成 PC 浏览器双摄预览，定位并修复两层黑屏原因：纯采集没有 overlay 但首页默认请求 overlay，以及 UVC 每次重启流后 sequence 重复导致 MJPEG 错误去重。实板浏览器最终确认左右图像 `naturalWidth/naturalHeight=1920/1080`，未启用 YOLO、PWM 或其他外设。
+- 从 `agent/sanda-hardware-refresh@0fbe815e8a7f51fc32e925bce086be99ceca84a9` 创建 `agent/rev2-autonomous-board-runtime`，不修改基线分支。
+- 将 Rev2 震动、灯光和音频改为有界持续状态；新增本地自主启动 target、固定 venv、模型门禁、硬件等待、安全关断、boot self-test 和分阶段板端验证编排。
+- 默认配置切换为 `alternating_single_model`，controller 统一监督子进程并独占 BLE；核心 unit 不依赖 `network-online.target`，Cloud uploader 保持可选。
+- 小程序本地预警历史扩展为 100 条完整记录，支持 BLE/Cloud 来源、clear 原因、haptic/light/audio 实际决策和重启恢复。
+- 用户随后允许在只连接两台摄像头的开发板上做非生产暂存和摄像头识别测试。提交 `a660901` 已通过 USB-UART 暂存到 `/root/smartbag-staging/a660901` 并校验 SHA-256；未执行 `install.sh`、systemd enable、执行器或其他传感器测试。
+- 双 UVC 请求 `1680x1050 MJPEG @10` 时实际得到 1920x1080；10/10 次交替、左右各 20 帧均成功，无流错误，最大 capture-only 盲区 545.945 ms。重启后 `/dev/video0` 与 `/dev/video2` 的物理口映射互换，确认正式配置必须使用稳定路径/身份映射。
+- 左右快照都进入板上 `yolov8n.om` 并生成张量/检测文本，NPU 执行约 25.44 ms；现场无交通目标，`conf>=0.25` 无命中。临时 ModelZoo harness 在修正模型卸载顺序后仍于 `EnvDeinit()` 异常，正式 `Ss928OmBackend`、实时跟踪/风险/overlay 继续标记 BLOCKED。
+- 新增 USB-UART 双向单文件传输工具，支持 `.part` 原子替换和 PC/板端 SHA-256 交叉校验；原始图片、模型和临时二进制只放在 Git 忽略的 `08_media`。
+- 本地最终回归：280 项 Python 测试中 279 项通过、1 项 Linux-only `fcntl` 测试跳过；6 个小程序 JavaScript 测试文件、24 个 JS 语法、38 个 shell 语法、22 个跟踪 JSON、compileall、safe-off dry-run 和仓库策略通过。
 - 从 `agent/alternating-dual-camera@a5f6d815b924129fca03c8392912f31b843da636` 创建 `agent/sanda-hardware-refresh`；来源固定为 `sanda-tt/ss928@970351c84a12f3219e7910ee488ac5ff579d6f98`，未修改来源仓库和现有 PR #2。
 - 通过 GitHub Compare/Tree/Contents API 审计上游 19 个新增提交和 28,904 项树记录；本机 partial clone fetch 因 443 连接重置失败，审计清单保留 blob SHA、许可状态和迁移决策。
 - 重实现统一 I2C mux、双 TM6605、双灯、MR20、来源融合、输出策略和 Cloud 安全链路；未复制上游 SDK、模型、PDF、二进制或许可不明运行代码。

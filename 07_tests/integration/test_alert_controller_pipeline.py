@@ -219,6 +219,50 @@ class AlertControllerPipelineTest(unittest.TestCase):
 
         self.assertIn("--disable-risk-priority", alternating_detector_command_from_config(config))
 
+    def test_alternating_config_can_enable_continuous_slice_inference(self) -> None:
+        config = {
+            "paths": {"python": "python3", "vision": "/vision", "model": "/models/yolo.pt"},
+            "vision_runtime": {"mode": "alternating_single_model"},
+            "alternating_camera": {
+                "enabled": True,
+                "continuous_slice_inference": True,
+            },
+            "cameras": {
+                "left": {"camera_device": "/dev/v4l/by-path/left"},
+                "right": {"camera_device": "/dev/v4l/by-path/right"},
+            },
+        }
+
+        command = alternating_detector_command_from_config(config)
+
+        self.assertIn("--continuous-slice-inference", command)
+
+    def test_alternating_ss928_backend_is_passed_to_detector(self) -> None:
+        config = {
+            "paths": {"python": "python3", "vision": "/vision", "model": "/models/yolov8n.om"},
+            "vision_runtime": {"mode": "alternating_single_model"},
+            "alternating_camera": {
+                "enabled": True,
+                "detector_backend": "ss928_om",
+                "ss928_runtime_library": "/vision/ss928_backend/lib/libsmartbag_ss928_acl.so",
+                "ss928_acl_config": "/vision/ss928_backend/acl.json",
+            },
+            "cameras": {
+                "left": {"camera_device": "/dev/v4l/by-path/left"},
+                "right": {"camera_device": "/dev/v4l/by-path/right"},
+            },
+        }
+
+        command = alternating_detector_command_from_config(config)
+
+        self.assertIn("--detector-backend ss928_om", command)
+        self.assertIn("--model /models/yolov8n.om", command)
+        self.assertIn(
+            "--ss928-runtime-library /vision/ss928_backend/lib/libsmartbag_ss928_acl.so",
+            command,
+        )
+        self.assertIn("--ss928-acl-config /vision/ss928_backend/acl.json", command)
+
     def test_heartbeat_is_not_mobile_history_but_state_change_is(self) -> None:
         self.assertFalse(should_publish_alert_history(AlertEvent("left", 2, event_kind="heartbeat")))
         self.assertTrue(should_publish_alert_history(AlertEvent("left", 2, event_kind="state_change")))

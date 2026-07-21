@@ -355,7 +355,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--height", type=int, default=None, help="Requested camera height. Defaults come from --runtime-profile.")
     parser.add_argument("--fps", "--camera-fps", dest="fps", type=float, default=None, help="Requested camera FPS or fallback video FPS.")
     parser.add_argument("--model", default="yolo11n.pt", help="Ultralytics YOLO model path/name.")
-    parser.add_argument("--detector-backend", choices=("ultralytics", "ss928_om"), default="ultralytics", help="Detection backend. ss928_om is an explicit integration placeholder until a verified board runtime is available.")
+    parser.add_argument("--detector-backend", choices=("ultralytics", "ss928_om"), default="ultralytics", help="Detection backend. ss928_om uses the board ACL runtime and a compatible .om model.")
+    parser.add_argument("--ss928-runtime-library", default=None, help="Path to libsmartbag_ss928_acl.so. Defaults to the deployed board location or SS928_OM_RUNTIME_LIBRARY.")
+    parser.add_argument("--ss928-acl-config", default=None, help="Optional SS928 ACL JSON configuration passed to aclInit().")
     parser.add_argument("--tracker", default="vehicle_botsort.yaml", help="Ultralytics tracker config, for example vehicle_botsort.yaml.")
     parser.add_argument("--conf", type=float, default=None, help="YOLO confidence threshold. Lower values detect farther/smaller objects.")
     parser.add_argument("--imgsz", type=int, default=None, help="YOLO inference image size. Defaults come from --runtime-profile.")
@@ -527,6 +529,10 @@ def crop_frame_for_inference(frame, roi_top_ratio: float) -> InferenceFrame:
 def restore_result_boxes_to_full_frame(result, y_offset_px: int):
     if y_offset_px <= 0:
         return result
+
+    translate_y = getattr(result, "translated_y", None)
+    if callable(translate_y):
+        return translate_y(float(y_offset_px))
 
     boxes = getattr(result, "boxes", None)
     if boxes is None:
@@ -787,7 +793,11 @@ def create_yolo_model(args: argparse.Namespace, yolo_cls=None):
 
 def create_detector_backend(args: argparse.Namespace) -> DetectorBackend:
     if args.detector_backend == "ss928_om":
-        return Ss928OmBackend(args.model)
+        return Ss928OmBackend(
+            args.model,
+            library_path=getattr(args, "ss928_runtime_library", None),
+            acl_config_path=getattr(args, "ss928_acl_config", None),
+        )
     return UltralyticsBackend(create_yolo_model(args))
 
 
@@ -1057,6 +1067,74 @@ def result_to_observations(
     size_weight: float,
     extrinsics: CameraExtrinsics | None = None,
 ) -> list[DetectionObservation]:
+    portable_detections = getattr(result, "detections", None)
+    if portable_detections is not None:
+        names = result.names
+        observations: list[DetectionObservation] = []
+        for detection in portable_detections:
+            if detection.track_id is None:
+                continue
+            class_id = int(detection.class_id)
+            class_name = names[class_id] if isinstance(names, dict) else names[class_id]
+            if not should_keep_class(class_name, target_classes):
+                continue
+            x1, y1, x2, y2 = [float(value) for value in detection.bbox_xyxy]
+            confidence = float(detection.confidence)
+            distance_estimate = estimate_ground_point_from_bbox(
+                (x1, y1, x2, y2),
+                class_name,
+                calibration,
+                mode=distance_mode,
+                size_weight=size_weight,
+            )
+            camera_ground_point = distance_estimate.point if distance_estimate is not None else None
+            ground_point = (
+                extrinsics.camera_to_backpack(camera_ground_point)
+                if extrinsics is not None and camera_ground_point is not None
+                else camera_ground_point
+            )
+            distance_source = distance_estimate.source if distance_estimate is not None else "unknown"
+            distance_confidence = (
+                distance_estimate.distance_confidence if distance_estimate is not None else 0.0
+            )
+            quality_flags = (
+                distance_estimate.quality_flags if distance_estimate is not None else ("no_distance",)
+            )
+            observations.append(
+                DetectionObservation(
+                    track_id=int(detection.track_id),
+                    class_name=class_name,
+                    confidence=confidence,
+                    bbox_xyxy=(x1, y1, x2, y2),
+                    ground_point=ground_point,
+                    timestamp_s=timestamp_s,
+                    distance_source=distance_source,
+                    ground_distance_m=(
+                        distance_estimate.ground_distance_m if distance_estimate is not None else None
+                    ),
+                    size_distance_m=(
+                        distance_estimate.size_distance_m if distance_estimate is not None else None
+                    ),
+                    distance_confidence=distance_confidence,
+                    ground_confidence=(
+                        distance_estimate.ground_confidence if distance_estimate is not None else 0.0
+                    ),
+                    size_confidence=(
+                        distance_estimate.size_confidence if distance_estimate is not None else 0.0
+                    ),
+                    quality_flags=quality_flags,
+                    observation_quality=compute_observation_quality(
+                        detection_confidence=confidence,
+                        distance_confidence=distance_confidence,
+                        velocity_confidence=0.5,
+                        track_age_frames=1,
+                        quality_flags=quality_flags,
+                    ),
+                    camera_ground_point=camera_ground_point,
+                )
+            )
+        return observations
+
     boxes = getattr(result, "boxes", None)
     if boxes is None or len(boxes) == 0:
         return []
@@ -2087,6 +2165,7 @@ def main() -> None:
     capture.release()
     if video_server is not None:
         video_server.stop()
+    detector.close()
     if writer is not None:
         writer.release()
     risk_logger.close()

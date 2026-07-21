@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import itertools
 import json
 import os
 import queue
@@ -38,6 +37,7 @@ from alert_core import (
     MOTOR_BY_KEY,
     event_is_stale,
     normalize_level,
+    normalize_side,
     parse_alert_command,
     parse_vision_alert_jsonl,
 )
@@ -51,6 +51,7 @@ AUDIO_ROOT = Path("/root/smartbag/audio")
 SAMPLE_AUDIO = "/opt/sample/audio/sample_audio"
 BLE_NAME = "SS928-SmartBag"
 RISK_NAMES = ("SAFE", "ATTENTION", "CAUTION", "DANGER", "EMERGENCY")
+RISK_NAMES_ZH = ("安全", "提醒", "警戒", "危险", "紧急")
 I2S_PINMUX = (
     ("0x102F010C", "0x1202", "Pin12 I2S_BCLK"),
     ("0x102F0108", "0x1102", "Pin38 I2S_WS"),
@@ -169,24 +170,41 @@ class AudioPlayer:
         self.default_sleep_s = default_sleep_s
         self.default_timeout_s = default_timeout_s
         self.skip_pinmux = skip_pinmux
-        self._queue: "queue.PriorityQueue[tuple[int, int, str]]" = queue.PriorityQueue()
-        self._sequence = itertools.count()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._condition = threading.Condition()
+        self._desired_levels = {"left": 0, "right": 0}
+        self._pending_by_side: dict[str, str] = {}
+        self._current_clip: str | None = None
         self._process_lock = threading.Lock()
         self._process: subprocess.Popen[bytes] | None = None
+        self._play_count = 0
+        self._error_count = 0
+        self._last_error = ""
 
     def setup(self) -> None:
-        if self.skip_pinmux or not self.enabled:
+        if not self.enabled:
             return
-        for addr, value, label in I2S_PINMUX:
-            if self.dry_run:
-                eprint(f"DRY bspmm {addr} {value}  # {label}")
-            else:
-                subprocess.run(["bspmm", addr, value], check=True)
+        if not self.dry_run:
+            player = Path(self.sample_audio)
+            if not player.is_file() or not os.access(player, os.X_OK):
+                raise RuntimeError(f"sample_audio is missing or not executable: {player}")
+            missing = [
+                str(self.audio_root / clip / "audio_chn0.aac")
+                for clip in ("L3", "R3", "L4", "R4")
+                if not (self.audio_root / clip / "audio_chn0.aac").is_file()
+            ]
+            if missing:
+                raise RuntimeError("missing Rev2 alert audio: " + ", ".join(missing))
+        if not self.skip_pinmux:
+            for addr, value, label in I2S_PINMUX:
+                if self.dry_run:
+                    eprint(f"DRY bspmm {addr} {value}  # {label}")
+                else:
+                    subprocess.run(["bspmm", addr, value], check=True)
 
     def start(self) -> None:
-        if not self.enabled:
+        if not self.enabled or (self._thread is not None and self._thread.is_alive()):
             return
         self._thread = threading.Thread(target=self._worker, daemon=True)
         self._thread.start()
@@ -194,35 +212,104 @@ class AudioPlayer:
     def request(self, clip: str | None) -> None:
         if not self.enabled or not clip:
             return
-        try:
-            level = int(clip[1:])
-        except ValueError:
-            level = 0
-        self._queue.put((-level, next(self._sequence), clip))
+        side, level = self._clip_parts(clip)
+        levels = dict(self._desired_levels)
+        levels[side] = level
+        self.apply_levels(levels, requested_clip=clip)
+
+    def apply_levels(
+        self,
+        levels: Mapping[str, int],
+        *,
+        requested_clip: str | None = None,
+    ) -> None:
+        if not self.enabled:
+            return
+        normalized = {
+            side: normalize_level(levels.get(side, 0)) for side in ("left", "right")
+        }
+        normalized = {
+            side: level if level in (3, 4) else 0 for side, level in normalized.items()
+        }
+        terminate_current = False
+        with self._condition:
+            for side, level in normalized.items():
+                previous = self._desired_levels[side]
+                self._desired_levels[side] = level
+                if level == previous:
+                    continue
+                self._pending_by_side.pop(side, None)
+                if level > 0:
+                    self._pending_by_side[side] = self._clip_for(side, level)
+                if self._current_clip and self._clip_parts(self._current_clip)[0] == side:
+                    terminate_current = True
+            if requested_clip:
+                side, level = self._clip_parts(requested_clip)
+                if normalized[side] == level and self._current_clip != requested_clip:
+                    self._pending_by_side[side] = requested_clip
+            if self._current_clip and self._pending_by_side:
+                current_level = self._clip_parts(self._current_clip)[1]
+                if max(self._clip_parts(clip)[1] for clip in self._pending_by_side.values()) > current_level:
+                    terminate_current = True
+            self._condition.notify_all()
+        if terminate_current:
+            self._terminate_current()
+
+    def clear_side(self, side: str) -> None:
+        normalized_side = normalize_side(side)
+        terminate_current = False
+        with self._condition:
+            self._desired_levels[normalized_side] = 0
+            self._pending_by_side.pop(normalized_side, None)
+            if self._current_clip:
+                terminate_current = self._clip_parts(self._current_clip)[0] == normalized_side
+            self._condition.notify_all()
+        if terminate_current:
+            self._terminate_current()
 
     def clear(self) -> None:
-        while True:
-            try:
-                self._queue.get_nowait()
-            except queue.Empty:
-                break
-        with self._process_lock:
-            if self._process is not None and self._process.poll() is None:
-                self._process.terminate()
+        with self._condition:
+            self._desired_levels = {"left": 0, "right": 0}
+            self._pending_by_side.clear()
+            self._condition.notify_all()
+        self._terminate_current()
 
     def stop(self) -> None:
         self._stop.set()
         self.clear()
+        with self._condition:
+            self._condition.notify_all()
         if self._thread is not None:
             self._thread.join(timeout=2.0)
 
     def _worker(self) -> None:
         while not self._stop.is_set():
+            with self._condition:
+                self._condition.wait_for(
+                    lambda: self._stop.is_set() or bool(self._pending_by_side),
+                    timeout=0.2,
+                )
+                if self._stop.is_set():
+                    break
+                if not self._pending_by_side:
+                    continue
+                side, clip = max(
+                    self._pending_by_side.items(),
+                    key=lambda item: self._clip_parts(item[1])[1],
+                )
+                self._pending_by_side.pop(side, None)
+                self._current_clip = clip
             try:
-                _priority, _sequence, clip = self._queue.get(timeout=0.2)
-            except queue.Empty:
-                continue
-            self._play(clip)
+                self._play(clip)
+                self._play_count += 1
+            except Exception as exc:
+                self._error_count += 1
+                self._last_error = f"{type(exc).__name__}: {exc}"
+                eprint(f"WARN optional audio playback degraded: {self._last_error}")
+            finally:
+                with self._condition:
+                    if self._current_clip == clip:
+                        self._current_clip = None
 
     def _play(self, clip: str) -> None:
         clip_dir = self.audio_root / clip
@@ -231,8 +318,7 @@ class AudioPlayer:
             eprint(f"DRY play {clip}: cd {clip_dir} && {self.sample_audio} 2")
             return
         if not audio_file.exists():
-            eprint(f"WARN missing audio clip {audio_file}")
-            return
+            raise RuntimeError(f"missing audio clip {audio_file}")
         sleep_s, timeout_s = self._timing_for(clip_dir)
         with self._process_lock:
             self._process = subprocess.Popen(
@@ -256,6 +342,35 @@ class AudioPlayer:
             with self._process_lock:
                 if self._process is process:
                     self._process = None
+
+    def status(self) -> dict[str, object]:
+        with self._condition:
+            return {
+                "enabled": self.enabled,
+                "desired_levels": dict(self._desired_levels),
+                "current_clip": self._current_clip,
+                "pending_by_side": dict(self._pending_by_side),
+                "queue_depth": len(self._pending_by_side),
+                "queue_limit": 2,
+                "play_count": self._play_count,
+                "error_count": self._error_count,
+                "last_error": self._last_error,
+            }
+
+    def _terminate_current(self) -> None:
+        with self._process_lock:
+            if self._process is not None and self._process.poll() is None:
+                self._process.terminate()
+
+    @staticmethod
+    def _clip_parts(clip: str) -> tuple[str, int]:
+        if len(clip) != 2 or clip[0] not in "LR" or clip[1] not in "34":
+            raise ValueError(f"invalid Rev2 audio clip: {clip!r}")
+        return ("left" if clip[0] == "L" else "right", int(clip[1]))
+
+    @staticmethod
+    def _clip_for(side: str, level: int) -> str:
+        return ("L" if side == "left" else "R") + str(level)
 
     def _timing_for(self, clip_dir: Path) -> tuple[float, float]:
         hint = clip_dir / "play_hint.txt"
@@ -541,6 +656,8 @@ def alternating_detector_command_from_config(config: dict[str, object]) -> str:
         "v4l2_stream_toggle",
         "--model",
         str(paths.get("model", "/root/smartbag/models/yolo11n.pt")),
+        "--detector-backend",
+        str(alternating.get("detector_backend", "ultralytics")),
         "--tracker",
         str(alternating.get("tracker", vision_root / "vehicle_botsort.yaml")),
         "--width",
@@ -618,6 +735,12 @@ def alternating_detector_command_from_config(config: dict[str, object]) -> str:
         "--calibration-mode",
         str(alternating.get("calibration_mode", "diagnostic")),
     ]
+    runtime_library = str(alternating.get("ss928_runtime_library", "")).strip()
+    if runtime_library:
+        argv.extend(["--ss928-runtime-library", runtime_library])
+    acl_config = str(alternating.get("ss928_acl_config", "")).strip()
+    if acl_config:
+        argv.extend(["--ss928-acl-config", acl_config])
     logging_config = config.get("logging") if isinstance(config.get("logging"), dict) else {}
     if bool(logging_config.get("risk_csv_enabled", False)):
         argv.extend(
@@ -625,6 +748,8 @@ def alternating_detector_command_from_config(config: dict[str, object]) -> str:
         )
     if bool(alternating.get("prefer_openvino", False)):
         argv.append("--prefer-openvino")
+    if bool(alternating.get("continuous_slice_inference", False)):
+        argv.append("--continuous-slice-inference")
     left_calibration = str(left.get("calibration_file", "")).strip()
     right_calibration = str(right.get("calibration_file", "")).strip()
     if left_calibration:
@@ -647,19 +772,36 @@ def should_publish_alert_history(event: AlertEvent) -> bool:
     return event.event_kind == "state_change"
 
 
-def alert_event_ble_payload(event: AlertEvent, *, effective_level: int | None = None) -> str:
+def alert_event_ble_payload(
+    event: AlertEvent,
+    *,
+    effective_level: int | None = None,
+    decision: OutputDecision | None = None,
+    audio_enabled: bool | None = None,
+    received_ts: float | None = None,
+) -> str:
     level = max(0, min(4, int(event.level)))
     payload: dict[str, object] = {
         "typ": "alert",
         "side": event.side,
         "level": level,
         "name": RISK_NAMES[level],
+        "name_zh": RISK_NAMES_ZH[level],
         "ts": event.ts,
         "source": AlertState.event_source(event),
         "event_kind": event.event_kind,
+        "received_ts": time.time() if received_ts is None else float(received_ts),
     }
     if effective_level is not None:
         payload["effective_level"] = normalize_level(effective_level)
+    if decision is not None:
+        payload["effective_level"] = decision.effective_levels[event.side]
+        payload["haptic_level"] = decision.haptic_levels[event.side]
+        payload["light_level"] = decision.light_levels[event.side]
+        payload["light_mode"] = decision.light_modes[event.side]
+        payload["audio_clip"] = decision.audio_clip
+    if audio_enabled is not None:
+        payload["audio_enabled"] = bool(audio_enabled)
     if event.score is not None:
         payload["score"] = round(float(event.score), 4)
     if event.track_id is not None:
@@ -693,12 +835,21 @@ def append_alert_event_jsonl(
     event: AlertEvent,
     *,
     effective_level: int,
+    decision: OutputDecision | None = None,
+    audio_enabled: bool | None = None,
 ) -> None:
     if not path or event.event_kind != "state_change":
         return
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    record = json.loads(alert_event_ble_payload(event, effective_level=effective_level))
+    record = json.loads(
+        alert_event_ble_payload(
+            event,
+            effective_level=effective_level,
+            decision=decision,
+            audio_enabled=audio_enabled,
+        )
+    )
     record["type"] = "alert"
     with destination.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n")
@@ -727,6 +878,8 @@ def append_output_timing_jsonl(
         "effective_level": decision.effective_levels[event.side],
         "haptic_level": decision.haptic_levels[event.side],
         "light_level": decision.light_levels[event.side],
+        "light_mode": decision.light_modes[event.side],
+        "audio_clip": decision.audio_clip,
     }
     source_ts = event.ts
     if source_ts is not None:
@@ -769,10 +922,7 @@ def controller_status_payload(
         "source_levels": state.source_snapshot(),
         "detectors": [detector.status() for detector in detectors],
         "modules": {
-            namespace: {
-                "running": bool(module.process is not None and module.process.poll() is None),
-                "pid": module.process.pid if module.process is not None and module.process.poll() is None else None,
-            }
+            namespace: module.status()
             for namespace, module in sorted(modules.items())
         },
         "module_states": dict(module_states or {}),
@@ -793,6 +943,8 @@ class RoutedModuleProcess:
         command: str,
         response_queue: "queue.Queue[tuple[str, str]]",
         cwd: Path | None = None,
+        restart_limit: int = 5,
+        restart_backoff_s: float = 1.0,
     ) -> None:
         self.namespace = namespace
         self.command = command
@@ -800,22 +952,47 @@ class RoutedModuleProcess:
         self.cwd = cwd
         self.process: subprocess.Popen[str] | None = None
         self.thread: threading.Thread | None = None
+        self.restart_limit = max(0, int(restart_limit))
+        self.restart_backoff_s = max(0.05, float(restart_backoff_s))
+        self.restart_count = 0
+        self.next_restart_at = 0.0
+        self.last_error = ""
 
-    def start(self) -> None:
-        self.process = subprocess.Popen(
-            shlex.split(self.command),
-            cwd=str(self.cwd) if self.cwd else None,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=None,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
-        )
+    def start(self) -> bool:
+        try:
+            self.process = subprocess.Popen(
+                shlex.split(self.command),
+                cwd=str(self.cwd) if self.cwd else None,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=None,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+            )
+        except Exception as exc:
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            self.next_restart_at = time.monotonic() + self._next_backoff_s()
+            eprint(f"WARN {self.namespace} module start failed: {self.last_error}")
+            return False
         self.thread = threading.Thread(target=self._reader, daemon=True)
         self.thread.start()
+        self.last_error = ""
         eprint(f"started {self.namespace} module pid={self.process.pid}")
+        return True
+
+    def maybe_restart(self, now: float | None = None) -> bool:
+        now = time.monotonic() if now is None else float(now)
+        if self.process is not None and self.process.poll() is None:
+            return True
+        if self.thread is not None and self.thread.is_alive():
+            return False
+        if self.restart_count >= self.restart_limit or now < self.next_restart_at:
+            return False
+        self.restart_count += 1
+        eprint(f"restarting {self.namespace} module attempt={self.restart_count}")
+        return self.start()
 
     def send(self, command: str) -> None:
         if self.process is None or self.process.poll() is not None or self.process.stdin is None:
@@ -831,6 +1008,20 @@ class RoutedModuleProcess:
             except subprocess.TimeoutExpired:
                 self.process.kill()
 
+    def status(self) -> dict[str, object]:
+        return {
+            "running": bool(self.process is not None and self.process.poll() is None),
+            "pid": self.process.pid if self.process is not None and self.process.poll() is None else None,
+            "restart_count": self.restart_count,
+            "restart_limit": self.restart_limit,
+            "next_restart_at": self.next_restart_at,
+            "last_error": self.last_error,
+        }
+
+    def _next_backoff_s(self) -> float:
+        exponent = max(0, self.restart_count - 1)
+        return min(30.0, self.restart_backoff_s * (2**exponent))
+
     def _reader(self) -> None:
         if self.process is None or self.process.stdout is None:
             return
@@ -838,6 +1029,10 @@ class RoutedModuleProcess:
             text = line.strip()
             if text:
                 self.response_queue.put((self.namespace, text))
+        returncode = self.process.poll()
+        if returncode not in (None, 0):
+            self.last_error = f"process exited with code {returncode}"
+        self.next_restart_at = time.monotonic() + self._next_backoff_s()
 
 
 def load_controller_config(path: str) -> dict[str, object]:
@@ -925,10 +1120,14 @@ class ManagedActuator:
     ) -> None:
         self.name = name
         self.backend = backend
+        self.primary_backend = backend
         self.fallback = fallback
         self.required, self.failure_policy = module_failure_policy(config)
         self.state = "disabled" if disabled else "starting"
         self.last_error = ""
+        self.last_retry_mono_s: float | None = None
+        self.retry_count = 0
+        self.desired_levels = {"left": 0, "right": 0}
 
     def initialize(self, *, preflight_only: bool = False) -> None:
         if self.state == "disabled":
@@ -945,8 +1144,11 @@ class ManagedActuator:
     def apply_levels(self, levels: Mapping[str, int], now: float | None = None) -> None:
         if self.state == "disabled":
             return
+        self.desired_levels = {
+            side: normalize_level(levels.get(side, 0)) for side in ("left", "right")
+        }
         try:
-            self.backend.apply_levels(levels, now=now)  # type: ignore[attr-defined]
+            self.backend.apply_levels(self.desired_levels, now=now)  # type: ignore[attr-defined]
         except Exception as exc:
             self._handle_failure(exc)
 
@@ -957,6 +1159,32 @@ class ManagedActuator:
             self.backend.tick(now=now)  # type: ignore[attr-defined]
         except Exception as exc:
             self._handle_failure(exc)
+
+    def retry_if_degraded(self, now: float | None = None, interval_s: float = 30.0) -> bool:
+        now = time.monotonic() if now is None else float(now)
+        if self.state != "degraded":
+            return self.state == "online"
+        if self.last_retry_mono_s is not None and now - self.last_retry_mono_s < interval_s:
+            return False
+        self.last_retry_mono_s = now
+        self.retry_count += 1
+        try:
+            self.primary_backend.preflight()  # type: ignore[attr-defined]
+            self.primary_backend.setup()  # type: ignore[attr-defined]
+            self.primary_backend.stop_all()  # type: ignore[attr-defined]
+            self.primary_backend.apply_levels(  # type: ignore[attr-defined]
+                self.desired_levels,
+                now=now,
+            )
+            self.backend = self.primary_backend
+            self.state = "online"
+            self.last_error = ""
+            eprint(f"optional module {self.name} recovered attempt={self.retry_count}")
+            return True
+        except Exception as exc:
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            eprint(f"WARN optional module {self.name} retry failed: {exc}")
+            return False
 
     def stop_all(self) -> None:
         try:
@@ -975,6 +1203,9 @@ class ManagedActuator:
             "required": self.required,
             "failure_policy": self.failure_policy,
             "last_error": self.last_error,
+            "retry_count": self.retry_count,
+            "last_retry_mono_s": self.last_retry_mono_s,
+            "desired_levels": dict(self.desired_levels),
             "detail": detail,
         }
 
@@ -999,6 +1230,7 @@ class ManagedActuator:
             pass
         self.backend = self.fallback
         self.backend.setup()  # type: ignore[attr-defined]
+        self.backend.apply_levels(self.desired_levels)  # type: ignore[attr-defined]
         self.state = "degraded"
 
 
@@ -1173,7 +1405,13 @@ def apply_effective_output(
         timings["light_write_mono_s"] = (
             light_after if light_after is not None and light_after != light_before else None
         )
-    audio.request(decision.audio_clip)
+    if hasattr(audio, "apply_levels"):
+        audio.apply_levels(
+            decision.effective_levels,
+            requested_clip=decision.audio_clip,
+        )
+    else:
+        audio.request(decision.audio_clip)
     return decision
 
 
@@ -1261,14 +1499,15 @@ def run_controller(args: argparse.Namespace) -> int:
         skip_pinmux=args.skip_pinmux,
     )
     haptics, lights, output_policy = build_actuator_runtime(hardware, args, legacy_pwm)
+    audio_requested_enabled = (
+        bool(hardware_audio.get("enabled", audio_config.get("enabled", False)))
+        and not args.no_audio
+    )
     audio = AudioPlayer(
         Path(args.audio_root or str(audio_config.get("root", AUDIO_ROOT))),
         sample_audio=args.sample_audio,
         dry_run=args.dry_run,
-        enabled=(
-            bool(hardware_audio.get("enabled", audio_config.get("enabled", False)))
-            and not args.no_audio
-        ),
+        enabled=audio_requested_enabled,
         default_sleep_s=args.audio_sleep_s,
         default_timeout_s=args.audio_timeout_s,
         skip_pinmux=args.skip_pinmux,
@@ -1276,7 +1515,12 @@ def run_controller(args: argparse.Namespace) -> int:
     detectors: list[DetectorProcess] = []
     modules: dict[str, RoutedModuleProcess] = {}
     radars: list[MR20RadarWorker] = []
+    radar_restart_count: dict[str, int] = {}
+    radar_next_restart_at: dict[str, float] = {}
     ble: BleNusServer | None = None
+    last_ble_start_attempt_s = float("-inf")
+    audio_recovery_needed = False
+    last_audio_start_attempt_s = float("-inf")
     resource_sampler = ResourceSampler()
     last_status_write_s = float("-inf")
 
@@ -1289,7 +1533,7 @@ def run_controller(args: argparse.Namespace) -> int:
             detectors,
             modules,
             resource_sampler,
-            actuators={"haptics": haptics, "lights": lights},
+            actuators={"haptics": haptics, "lights": lights, "audio": audio},
             radars=radars,
             module_states=module_states,
         )
@@ -1325,6 +1569,9 @@ def run_controller(args: argparse.Namespace) -> int:
             required, failure_policy = module_failure_policy(hardware_audio)
             if required or failure_policy == "fail_service":
                 raise RuntimeError(f"required module audio failed: {exc}") from exc
+            audio.enabled = False
+            audio_recovery_needed = audio_requested_enabled
+            last_audio_start_attempt_s = time.monotonic()
             module_states["audio"] = "degraded"
             eprint(f"WARN optional audio degraded: {exc}")
 
@@ -1336,9 +1583,11 @@ def run_controller(args: argparse.Namespace) -> int:
                     radar_risk,
                     lambda alert: event_queue.put(radar_alert_to_event(alert)),
                 )
+                radars.append(worker)
+                radar_restart_count[radar_config.name] = 0
+                radar_next_restart_at[radar_config.name] = 0.0
                 try:
                     worker.start()
-                    radars.append(worker)
                     module_states[f"radar:{radar_config.name}"] = "online"
                 except Exception as exc:
                     required, failure_policy = module_failure_policy(radar_hardware)
@@ -1410,12 +1659,20 @@ def run_controller(args: argparse.Namespace) -> int:
             if not command:
                 module_states[namespace.lower()] = "disabled"
                 continue
-            module = RoutedModuleProcess(namespace, command, response_queue, cwd=detector_cwd)
-            module.start()
+            module = RoutedModuleProcess(
+                namespace,
+                command,
+                response_queue,
+                cwd=detector_cwd,
+                restart_limit=restart_limit,
+                restart_backoff_s=restart_backoff_s,
+            )
+            started = module.start()
             modules[namespace] = module
-            module_states[namespace.lower()] = "online"
+            module_states[namespace.lower()] = "online" if started else "degraded"
 
         if not args.no_ble and not args.disable_ble:
+            last_ble_start_attempt_s = time.monotonic()
             try:
                 ble = BleNusServer(ble_name, command_queue.put)
                 ble.start()
@@ -1469,6 +1726,8 @@ def run_controller(args: argparse.Namespace) -> int:
                     event_log_jsonl,
                     event,
                     effective_level=(output.levels or {})[event.side],
+                    decision=decision,
+                    audio_enabled=audio.enabled,
                 )
                 ble_transmit_mono_s = None
                 if ble is not None and should_publish_alert_history(event):
@@ -1476,6 +1735,8 @@ def run_controller(args: argparse.Namespace) -> int:
                         alert_event_ble_payload(
                             event,
                             effective_level=(output.levels or {})[event.side],
+                            decision=decision,
+                            audio_enabled=audio.enabled,
                         )
                     )
                     ble_transmit_mono_s = time.monotonic()
@@ -1499,29 +1760,49 @@ def run_controller(args: argparse.Namespace) -> int:
                         if command.kind == "clear":
                             audio.clear()
                         output = state.apply_command(command)
-                        apply_effective_output(output, haptics, lights, audio, output_policy)
+                        command_decision = apply_effective_output(
+                            output, haptics, lights, audio, output_policy
+                        )
                         if command.kind == "clear":
                             for side in ("left", "right"):
+                                clear_event = AlertEvent(
+                                    side=side,
+                                    level=0,
+                                    source="manual",
+                                    clear_reason="manual_clear_all",
+                                )
                                 append_alert_event_jsonl(
                                     event_log_jsonl,
-                                    AlertEvent(
-                                        side=side,
-                                        level=0,
-                                        source="manual",
-                                        clear_reason="manual_clear_all",
-                                    ),
+                                    clear_event,
                                     effective_level=0,
+                                    decision=command_decision,
+                                    audio_enabled=audio.enabled,
                                 )
+                                if ble is not None:
+                                    ble.send_line(alert_event_ble_payload(
+                                        clear_event,
+                                        decision=command_decision,
+                                        audio_enabled=audio.enabled,
+                                    ))
                         elif command.side is not None:
+                            command_event = AlertEvent(
+                                side=command.side,
+                                level=command.level,
+                                source="manual",
+                            )
                             append_alert_event_jsonl(
                                 event_log_jsonl,
-                                AlertEvent(
-                                    side=command.side,
-                                    level=command.level,
-                                    source="manual",
-                                ),
+                                command_event,
                                 effective_level=(output.levels or {})[command.side],
+                                decision=command_decision,
+                                audio_enabled=audio.enabled,
                             )
+                            if ble is not None:
+                                ble.send_line(alert_event_ble_payload(
+                                    command_event,
+                                    decision=command_decision,
+                                    audio_enabled=audio.enabled,
+                                ))
                         if ble is not None:
                             ble.send_line("OK AL " + route.command)
                     elif route.namespace in ("GNSS", "IMU"):
@@ -1553,9 +1834,15 @@ def run_controller(args: argparse.Namespace) -> int:
                     ble.send_line(response)
                 eprint(f"{namespace} response: {response[:200]}")
 
+            for namespace, module in modules.items():
+                running = module.maybe_restart()
+                module_states[namespace.lower()] = "online" if running else "degraded"
+
             expired = state.expire()
             if expired.expired_source_sides:
-                apply_effective_output(expired, haptics, lights, audio, output_policy)
+                expired_decision = apply_effective_output(
+                    expired, haptics, lights, audio, output_policy
+                )
                 for source, side in expired.expired_source_sides:
                     timeout_event = AlertEvent(
                         side=side,
@@ -1568,20 +1855,54 @@ def run_controller(args: argparse.Namespace) -> int:
                         event_log_jsonl,
                         timeout_event,
                         effective_level=(expired.levels or {})[side],
+                        decision=expired_decision,
+                        audio_enabled=audio.enabled,
                     )
                     if ble is not None:
                         ble.send_line(
                             alert_event_ble_payload(
                                 timeout_event,
                                 effective_level=(expired.levels or {})[side],
+                                decision=expired_decision,
+                                audio_enabled=audio.enabled,
                             )
                         )
             now_s = time.monotonic()
+            if (
+                ble is None
+                and not args.no_ble
+                and not args.disable_ble
+                and now_s - last_ble_start_attempt_s >= 10.0
+            ):
+                last_ble_start_attempt_s = now_s
+                try:
+                    candidate = BleNusServer(ble_name, command_queue.put)
+                    candidate.start()
+                    ble = candidate
+                    module_states["ble"] = "online"
+                    eprint(f"BLE recovered and advertising as {ble_name}")
+                except Exception as exc:
+                    module_states["ble"] = "degraded"
+                    eprint(f"WARN BLE retry failed: {exc}")
+            if audio_recovery_needed and now_s - last_audio_start_attempt_s >= 30.0:
+                last_audio_start_attempt_s = now_s
+                audio.enabled = True
+                try:
+                    audio.setup()
+                    audio.start()
+                    audio_recovery_needed = False
+                    module_states["audio"] = "online"
+                    eprint("optional audio backend recovered")
+                except Exception as exc:
+                    audio.enabled = False
+                    module_states["audio"] = "degraded"
+                    eprint(f"WARN optional audio retry failed: {exc}")
+            lights.retry_if_degraded(now_s)
             haptics.tick(now_s)
             lights.tick(now_s)
             module_states["haptics"] = haptics.state
             module_states["lights"] = lights.state
-            for radar in radars:
+            for radar_index, radar in enumerate(list(radars)):
                 radar_status = radar.status()
                 radar_name = f"radar:{radar.config.name}"
                 if not radar_status["running"] and radar_status["last_error"]:
@@ -1592,6 +1913,28 @@ def run_controller(args: argparse.Namespace) -> int:
                         raise RuntimeError(
                             f"required radar {radar.config.name} stopped: {radar_status['last_error']}"
                         )
+                    if now_s >= radar_next_restart_at.get(radar.config.name, 0.0):
+                        radar_restart_count[radar.config.name] = radar_restart_count.get(radar.config.name, 0) + 1
+                        radar_next_restart_at[radar.config.name] = now_s + 30.0
+                        assert radar_risk is not None
+                        replacement = MR20RadarWorker(
+                            radar.config,
+                            radar_risk,
+                            lambda alert: event_queue.put(radar_alert_to_event(alert)),
+                        )
+                        try:
+                            replacement.start()
+                            radars[radar_index] = replacement
+                            module_states[radar_name] = "online"
+                            module_states["radar"] = "online"
+                            eprint(
+                                f"MR20 {radar.config.name} recovered attempt="
+                                f"{radar_restart_count[radar.config.name]}"
+                            )
+                        except Exception as exc:
+                            module_states[radar_name] = "degraded"
+                            module_states["radar"] = "degraded"
+                            eprint(f"WARN optional MR20 retry failed: {exc}")
             if status_file and now_s - last_status_write_s >= 1.0:
                 try:
                     atomic_write_json(

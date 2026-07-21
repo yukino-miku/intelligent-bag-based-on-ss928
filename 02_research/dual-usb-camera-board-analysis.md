@@ -39,7 +39,7 @@
 2. **UVC/V4L2**：资料和实板都确认 USB UVC 枚举与采集能力。四个物理 USB 口不代表独立根控制器；当前同一 USB 2.0 hub 插法已经实测出现双路 `ENOSPC`。
 3. **运行依赖**：归档给出了 Python、OpenCV、Wi-Fi、BlueZ 的安装或移植入口，但当前实板缺少视觉运行所需的 OpenCV、torch、Ultralytics 和 lap。部署脚本只检查或安装系统包，不自动假设 ARM wheel 可用。
 4. **视频编码**：芯片和 MPP sample 有 H.264/H.265/MJPEG/RTSP 能力，但没有找到可直接接入现有 Python UVC detector 帧并供微信小程序播放的已验证接口。因此本轮先实现 JPEG snapshot 和 MJPEG HTTP 基线，不宣称硬件 VENC 已接入。
-5. **NPU**：归档存在 ATC、`.om`、NPU 动态库和 C/C++ sample，证明平台有部署路径；没有找到与当前 `DetectorBackend`、Ultralytics `Results`、BoT-SORT 和风险链直接兼容的 Python API。`Ss928OmBackend` 继续明确报未实现，OpenVINO 也不等于 SS928 NPU。
+5. **NPU**：归档存在 ATC、`.om`、NPU 动态库和 C/C++ sample。2026-07-21 已据此实现窄 ACL C ABI 和 `Ss928OmBackend`，把内存帧检测结果接入原风险链；NPU 路径使用轻量 IoU tracker，不依赖或伪装成 BoT-SORT。OpenVINO 仍不等于 SS928 NPU，真实双摄连续目标检测仍需板端验收。
 6. **网络**：资料包含 Wi-Fi STA/AP 和双千兆网口。当前实现使用手机与板端可互访的 Wi-Fi/LAN，BLE 只传控制、状态和告警。
 
 ## 微信小程序网络限制

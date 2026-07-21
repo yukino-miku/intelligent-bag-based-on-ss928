@@ -19,6 +19,8 @@ values = {
     "LEFT_CAL": cams.get("left", {}).get("calibration_file", ""),
     "RIGHT_CAL": cams.get("right", {}).get("calibration_file", ""),
     "MODEL": p.get("model", ""),
+    "DETECTOR_BACKEND": a.get("detector_backend", "ultralytics"),
+    "SS928_ADAPTER": a.get("ss928_runtime_library", ""),
     "VISION": p.get("vision", "/root/smartbag/vision"),
     "PORT": a.get("serve_port", 8080),
     "CAL_MODE": a.get("calibration_mode", "diagnostic"),
@@ -71,12 +73,25 @@ if [ -f "$CAL_CHECKER" ]; then
 fi
 [ "$CAL_MODE" = production ] || echo "WARN calibration_mode=diagnostic; placeholder extrinsics are allowed" >&2
 
-python3 - <<'PY' || fail=1
+python3 - "$DETECTOR_BACKEND" <<'PY' || fail=1
 import importlib
-for name in ("cv2", "numpy", "torch", "ultralytics", "lap"):
+import sys
+names = ["cv2", "numpy"]
+if sys.argv[1] == "ultralytics":
+    names.extend(["torch", "ultralytics", "lap"])
+for name in names:
     module = importlib.import_module(name)
     print("OK   python:%s %s" % (name, getattr(module, "__version__", "present")))
 PY
+
+if [ "$DETECTOR_BACKEND" = ss928_om ]; then
+    [ -f "$SS928_ADAPTER" ] \
+        && echo "OK   SS928 adapter $SS928_ADAPTER" \
+        || { echo "FAIL SS928 adapter missing: $SS928_ADAPTER" >&2; fail=1; }
+    [ -f /opt/lib/npu/libascendcl.so ] \
+        && echo "OK   SS928 ACL runtime" \
+        || { echo "FAIL /opt/lib/npu/libascendcl.so missing" >&2; fail=1; }
+fi
 
 [ -r /sys/class/pwm/pwmchip0/npwm ] || { echo "FAIL pwmchip0 unavailable" >&2; fail=1; }
 [ "$fail" -eq 0 ] || exit 1

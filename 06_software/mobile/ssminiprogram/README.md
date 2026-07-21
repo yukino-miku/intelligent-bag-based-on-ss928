@@ -18,7 +18,7 @@ CloudBase 是可选历史数据源，不替代 BLE。复制 `miniprogram/config/
 
 ## 自动告警
 
-Controller 通过 BLE TX 推送 `typ=alert`。monitor 分别维护左右当前状态，并把最多 40 条历史保存到本地 storage；`level=0` 只清对应侧，手动清除会同步删除本地历史。BLE 行缓存会跨 notification 拼接 JSON，避免分包导致半行解析。首页的设备、系统和电量来自最近 `typ=sys` 状态；没有电池传感器时显示“未接入”，不显示虚构百分比。
+Controller 通过 BLE TX 推送 `typ=alert`。monitor 分别维护左右当前状态，并把最多 100 条历史保存到本地 `wx.setStorageSync`；重启或 BLE 暂时断开后仍可查看。记录包括左右方向、中文等级、effective/haptic level、light mode、audio clip/enabled、source/source ID、track/class/distance/TTC/score、source/receive 时间和 BLE/Cloud 来源。有 `clear_reason` 的 0 级解除事件会显示“左/右侧预警已解除”；heartbeat、非 alert JSON 和两秒内完全重复事件不进入历史。手动清除会同步删除本地历史。
 
 命令命名空间：
 

@@ -1,12 +1,43 @@
 # 更新记录
 
+## 2026-07-21
+
+- 将官方 YOLO11n 同一权重正确重导出为 FP32 `1x3x640x640 -> 1x84x8400` ONNX，并使用官方 `SVP_NNN_PC_V1.0.6.0`、`SS928V100`、`compile_mode=6` 和 RGB_PLANAR 静态 AIPP 成功生成 3,426,459-byte OM；新增可复现转换脚本、ONNX 契约检查、校准列表工具和中文说明。OM SHA256 为 `9e3c448ab7309428ea78cfdc509926404220fa74dd56c89e4995366f5f16af95`；本地 301 项 Python 测试通过（1 项 Linux-only 跳过）。当前以太网未连接，实板 ACL/目标命中仍待验证，未替换默认 `yolov8n.om`。
+- 修复单画面双摄预览被实现成每秒单张快照的问题：主页恢复为连续交替 MJPEG；新增 `--continuous-slice-inference`，活动摄像头在完整时间片内逐帧执行 SS928 NPU、跟踪、风险和 overlay，再 STREAMOFF 切换另一侧。实板流约 6.93 FPS，活动侧约 8 到 9 FPS、左右时间平均每侧约 3.3 FPS，CPU 平均约 55.7%，RSS 约 116 MiB。
+- 双摄调试主页曾先改为单一主画面并每秒切换左右缓存快照；该静态快照方案随后被本次连续交替 MJPEG 和时间片内逐帧推理取代，原诊断 API 继续保留。
+- 修正 SS928 板载模型输入格式：ACL 元数据的逻辑维度虽然为 `1x640x640x3 UINT8`，实际静态 AIPP 输入仅 614400 bytes，必须提交 NV12。后端现按 tensor byte size 自动识别 NV12，完成 BGR letterbox、I420 到 NV12 UV 交错转换，并保留普通 RGB CHW/HWC 路径。
+- 新增静态 AIPP NV12 元数据、Y/UV 排列、字节数和 fake NPU 端到端测试；仓库级回归为 296 项 Python 测试（295 通过、1 项 Linux-only 跳过）。
+- SS928 短测完成 99/99 次双摄交替和 99 帧完整 NPU/tracking/risk/overlay：NPU execute 约 25.66 ms，detector 总耗时约 81.1 ms，CPU 平均 14.403%，RSS 平均 115.916 MiB。完整 E2E max 1272.578 ms，略高于 1200 ms 门限，仍需调参和长测。
+- 当前两路 UVC 原始 JPEG 连续采样仍近乎全黑；HTTP raw/overlay 和 NPU 链正常，但没有实景目标命中证据。验收状态明确拆为 `BOARD FUNCTIONAL PASS` 与 `CAMERA IMAGE BLOCKED`，不把黑帧推理记为检测准确性通过。
+- 已测试代码提交 `65364a5b3bd6a06e9ad53687d1942b2ec90bb391` 已安装到板端 `/root/smartbag/releases/65364a5`，统一运行路径和模型链接校验通过。未启用新的硬件服务；残留且反复访问未连接 I²C 模块的旧 alert unit 已停止并禁用。
+- 实现正式 `Ss928OmBackend`：新增常驻 `.om` 模型的 SS928 ACL C ABI，USB BGR 帧直接在内存中完成 letterbox，并按模型契约转换为 RGB tensor 或静态 AIPP NV12，再执行 NPU、`1x84x8400 FP32` 解码、类别过滤、class-aware NMS 和原图坐标恢复，不再逐帧写临时图片。
+- NPU 检测结果接入现有稳定 ID、距离/速度估计、Future Conflict Gate、多帧风险稳定、visual/haptic 输出、risk CSV 和 overlay；单摄使用轻量 IoU tracker，交替双摄保持左右 tracker/risk/标定完全独立且只加载一个模型。
+- 双摄 performance CSV 新增 preprocess、NPU execute 和 postprocess 分项；部署配置默认选择 `yolov8n.om` 和 `ss928_om`，preflight 根据后端检查依赖，NPU 路径不要求 torch/Ultralytics/lap。
+- 新增 ARM64 adapter 构建脚本、模型 tensor 契约检查、无 Ultralytics 单元测试和部署说明。代码与交叉编译通过不等同于实板连续目标检测通过，真实 overlay、目标命中、30 分钟稳定性和温度仍需板端验收。
+- 最终本地回归为 296 项 Python 测试（295 通过、1 项 Linux-only 跳过），并通过 6 个小程序测试文件、24 个 JS 语法、22 个 tracked JSON、39 个 shell 语法、compileall、仓库策略和 whitespace 检查。
+
 ## 2026-07-20
 
+- 优化 SS928 交替预览稳定性：网页默认从三条重复 MJPEG 改为一条顶部实时交替流加每秒左右缓存快照；实板验证 `640x480@30`、300 ms 时间片、0 预热丢帧、每片 4 帧时，80 帧解码无黑帧或损坏，左右各约 4.85 FPS，交替总流约 8.52 FPS，最大帧间隔约 340 ms。
+- 增加 `/api/v1/alternating/mjpeg` 低延迟交替流和网页主画面，直接转发左右最新帧且不回放旧帧；保留左右缓存窗口。实板发现现场千兆协商伴随大量 TCP 重传，临时限制为 100M 全双工后 JPEG 吞吐由约 0.7 Mbps 升至 27.3 Mbps，交替流达到约 7.63 FPS、最长帧间隔约 400 ms；剩余抖动来自共享 USB 2.0 下每次约 240–300 ms 的 STREAMOFF/STREAMON 切换。
+- 增加 SS928 720p 交替预览实测配置：1280x720、30 FPS 请求、400 ms 时间片、1 帧预热、每片 6 帧，左右 capture FPS 约 5.8–6.0；明确网页是并排 live/cached 更新而非整页左右闪切。
+- 纯摄像头页面在 overlay 不可用时禁用“检测画面”切换，并为左右 MJPEG 增加 1 秒断线重连，避免误入空 overlay 或网关重启后保持黑屏。
+- 修复 SS928 纯摄像头交替预览黑屏：`stream_only` 首页在没有左右 overlay 时自动使用 raw；MJPEG 去重不再仅依赖会在每次 STREAMON 后重复的 V4L2 sequence，而是同时比较采集和发布时间。
+- 实板回归确认左右 raw 流均可被浏览器解码为 1920x1080，3 秒测试收到 3 个连续 MJPEG 分段，左右在线且 STREAMON/STREAMOFF 失败均为 0；新增 3 项网关测试，交替采集测试文件共 22 项通过。
+- 新建 `agent/rev2-autonomous-board-runtime`：默认运行改为 `smartbag.target -> smartbag-controller.service`，controller 内部监督单模型双 UVC 交替采集、GNSS、BMI270、MR20、BLE 和本地视频；固定双 detector 仅保留诊断兼容入口。
+- Rev2 TM6605 改为左右独立有界持续状态机，0–4 震动等级一一映射；灯光 3/4 改为持续慢闪/快闪；音频改为每侧一个待播项、去重、四级抢占三级和 clear/stop 终止。未找到可确认的 TM6605 线性增益寄存器，不声称线性振幅。
+- 增加固定 `/root/smartbag/venv`、模型安装门禁、设备节点有界等待 JSON、`smartbag-safe-off.service`、boot self-test、`rev2-board-validation.py` 和本地/板端 session 目录。
+- BLE alert 增加 effective/haptic/light/audio/接收时间字段；小程序历史改为 100 条，记录 BLE/Cloud 来源、执行器输出和有原因的解除事件，过滤 heartbeat 与短时完全重复事件。
+- 后续按用户授权仅做 USB-UART 非生产暂存和摄像头隔离验证：代码暂存到 `/root/smartbag-staging/a660901`，未执行生产安装、systemd enable、执行器通电或 power-only 验收。
+- 双 UVC 请求 `1680x1050 MJPEG @10` 实际输出 1920x1080；10/10 次交替、左右各 20 帧通过，无流错误，最大 capture-only 盲区 545.945 ms。重启后数字 video 节点发生互换，进一步确认必须使用稳定物理路径映射。
+- 两张快照完成板上 `yolov8n.om` NPU 推理并生成输出，纯模型执行约 25.44 ms；现场无项目目标类别。临时 ACL harness 的 `EnvDeinit()` 仍异常，正式 OM 后端和实时视觉链继续标记 BLOCKED。
+- 新增 `serial_binary_transfer.py`，在仅有已登录 USB-UART console 时支持双向单文件传输、临时文件替换和三方 SHA-256 校验，并补充单元测试和使用说明。
+- 本地最终验证运行 280 项 Python 测试（279 通过、1 项 Linux-only `fcntl` 跳过），并通过 6 个小程序测试文件、24 个 JS 语法、38 个 shell 语法、22 个跟踪 JSON、compileall、安全关断 dry-run 和仓库策略检查。
 - 固定审计 `sanda-tt/ss928@970351c84a12f3219e7910ee488ac5ff579d6f98` 相对上次 `d7e10fd06dc553f94d2db3a3d19987ec8648f7dc` 的 19 个提交；没有合并上游历史或复制许可不明厂商资料。
 - 新增 `rev2_tm6605_mr20` 和 `legacy_pwm_haptics` profile、配置迁移/回滚、唯一引脚表与 profile-aware pinmux；Rev2 的 Pin7/Pin32 只用于左右灯光。
 - 新增统一 TCA9548A 原子事务与跨进程锁，BMI270 每笔访问重选 CH0，左右 TM6605 分别重选 CH1/CH2；新增 TM6605 和 PWM 灯光 backend、调度、状态和错误计数。
 - 新增 MR20 14 字节帧、0x60A/0x60B、来源 IP/端口、scan 聚合、多帧确认、replay 和 `eth1` `/32` host route 工具。
-- Controller 改为按 `(source, side)` 融合 vision/radar/manual；来源 timeout/clear 相互隔离，heartbeat 不入历史，Rev2 Level 1/2 不驱动执行器。
+- Controller 改为按 `(source, side)` 融合 vision/radar/manual；来源 timeout/clear 相互隔离，heartbeat 不入历史。后续 autonomous 更新将 Rev2 Level 1/2 恢复为触觉一级/二级，但灯光和音频仍关闭。
 - 新增可选 Cloud uploader、HMAC/nonce/有界离线队列、CloudBase 用户绑定查询与小程序 BLE/Cloud 统一数据源。真实 CloudBase 未部署。
 - 新增硬件 preflight、I2C/TM6605/灯光/MR20 工具、session 记录、可选 cloud systemd unit 和 CI 策略检查。实物输出和 MR20 目标帧仍按 BLOCKED 记录。
 

@@ -1,5 +1,5 @@
 const SMARTBAG_DEVICE_NAME = "SS928-SmartBag";
-const { createAlertState, applyAlertFrame } = require("../../utils/alert-state");
+const { createAlertState, applyAlertFrame, DEFAULT_HISTORY_LIMIT } = require("../../utils/alert-state");
 const { createDeviceDataService } = require("../../services/device-data-service");
 const deviceDataService = createDeviceDataService();
 const ALERT_HISTORY_STORAGE_KEY = "smartbagAlertHistory";
@@ -94,14 +94,16 @@ Page({
     this.alertState = createAlertState();
     const savedHistory = wx.getStorageSync(ALERT_HISTORY_STORAGE_KEY);
     if (Array.isArray(savedHistory)) {
-      this.alertState.history = savedHistory.slice(0, 40);
+      this.alertState.history = savedHistory.slice(0, DEFAULT_HISTORY_LIMIT);
       this.setData({ alertHistory: this.alertState.history });
     }
-    deviceDataService.getAlarmHistory(null, 40).then((result) => {
+    deviceDataService.getAlarmHistory(null, DEFAULT_HISTORY_LIMIT).then((result) => {
       const items = Array.isArray(result.items) ? result.items : [];
       for (let index = items.length - 1; index >= 0; index -= 1) {
         const record = items[index] && items[index].payload ? items[index].payload : items[index];
-        if (record && record.typ === "alert") this.alertState = applyAlertFrame(this.alertState, record, 40);
+        if (record && record.typ === "alert") {
+          this.alertState = applyAlertFrame(this.alertState, record, DEFAULT_HISTORY_LIMIT, "Cloud");
+        }
       }
       this.setData({
         leftRisk: this.alertState.current.left,
@@ -109,6 +111,7 @@ Page({
         alertHistory: this.alertState.history,
         alertSourceText: String(result.source || "unknown").toUpperCase() + (result.cloudError ? " 回退" : " 告警")
       });
+      wx.setStorageSync(ALERT_HISTORY_STORAGE_KEY, this.alertState.history);
     }).catch(() => {});
 
     wx.onBluetoothDeviceFound((res) => this.handleDeviceFound(res));
@@ -352,7 +355,7 @@ Page({
   },
 
   applyAutomaticAlert(frame) {
-    this.alertState = applyAlertFrame(this.alertState, frame, 40);
+    this.alertState = applyAlertFrame(this.alertState, frame, DEFAULT_HISTORY_LIMIT, "BLE");
     this.setData({
       leftRisk: this.alertState.current.left,
       rightRisk: this.alertState.current.right,

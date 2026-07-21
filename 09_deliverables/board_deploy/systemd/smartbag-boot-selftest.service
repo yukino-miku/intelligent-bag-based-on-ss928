@@ -1,0 +1,17 @@
+[Unit]
+Description=SS928 SmartBag boot self-test report
+After=smartbag-controller.service
+Wants=smartbag-controller.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/smartbag/board-deploy
+EnvironmentFile=-/etc/smartbag/smartbag.env
+ExecStart=/root/smartbag/venv/bin/python /root/smartbag/board-deploy/boot_selftest.py --config /etc/smartbag/config.json --hardware /etc/smartbag/hardware.json
+TimeoutStartSec=90
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=smartbag.target

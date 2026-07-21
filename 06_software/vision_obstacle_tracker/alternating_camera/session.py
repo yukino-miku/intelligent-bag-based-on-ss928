@@ -115,6 +115,9 @@ PERFORMANCE_FIELDS = (
     "p95_switch_latency_ms",
     "inference_fps",
     "inference_ms",
+    "detector_preprocess_ms",
+    "npu_inference_ms",
+    "detector_postprocess_ms",
     "tracking_ms",
     "risk_ms",
     "draw_ms",
@@ -444,6 +447,13 @@ class AlternatingSessionRecorder:
             "p95_switch_latency_ms": status.get("p95_switch_latency_ms"),
             "inference_fps": round(float(stage_metrics.get("inference_fps", 0.0)), 3),
             "inference_ms": round(float(stage_metrics.get("inference_ms", 0.0)), 3),
+            "detector_preprocess_ms": round(
+                float(stage_metrics.get("detector_preprocess_ms", 0.0)), 3
+            ),
+            "npu_inference_ms": round(float(stage_metrics.get("npu_inference_ms", 0.0)), 3),
+            "detector_postprocess_ms": round(
+                float(stage_metrics.get("detector_postprocess_ms", 0.0)), 3
+            ),
             "tracking_ms": round(float(stage_metrics.get("tracking_ms", 0.0)), 3),
             "risk_ms": round(float(stage_metrics.get("risk_ms", 0.0)), 3),
             "draw_ms": round(float(stage_metrics.get("draw_ms", 0.0)), 3),

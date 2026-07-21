@@ -107,11 +107,12 @@ class OutputPolicyTest(unittest.TestCase):
         self.assertEqual("dry_run", haptics.status()["detail"]["backend"])
         self.assertEqual("pwm_lights", lights.status()["detail"]["backend"])
 
-    def test_rev2_levels_one_and_two_do_not_drive_actuators(self) -> None:
+    def test_rev2_levels_one_and_two_drive_haptics_but_not_lights_or_audio(self) -> None:
         policy = OutputPolicy.for_profile("rev2_tm6605_mr20")
         decision = policy.decide({"left": 1, "right": 2}, audio_clip="R2")
-        self.assertEqual({"left": 0, "right": 0}, decision.haptic_levels)
+        self.assertEqual({"left": 1, "right": 2}, decision.haptic_levels)
         self.assertEqual({"left": 0, "right": 0}, decision.light_levels)
+        self.assertEqual({"left": "off", "right": "off"}, decision.light_modes)
         self.assertIsNone(decision.audio_clip)
 
     def test_rev2_levels_three_and_four_drive_matching_sides(self) -> None:
