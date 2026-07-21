@@ -2,6 +2,7 @@
 
 ## 2026-07-21
 
+- 完成 YOLO11n ONNX 到 SS928 OM 的可复现转换。原 1024 ONNX 不能靠改元数据缩成 640，因此从相同 PT 权重重新导出 opset 13 的 `1x3x640x640 -> 1x84x8400` ONNX，并确认 175/175 initializer 与原 ONNX 按字节一致。官方 `SVP_NNN_PC_V1.0.6.0` ATC 在 `SS928V100`、`compile_mode=6`、20 张校准图和 RGB_PLANAR 1/255 AIPP 下完成量化、tiling 与 PICO 指令生成；OM SHA256 为 `9e3c448ab7309428ea78cfdc509926404220fa74dd56c89e4995366f5f16af95`，本地 301 项 Python 测试通过（1 项 Linux-only 跳过）。产物留在 Git 忽略目录，当前以太网断开，未冒充实板验证通过，也未替换默认模型。
 - 纠正“一个画面每秒换边”首版只刷新静态 snapshot、且正式进程每片只推理 1 帧的问题。新增时间片内同步逐帧推理路径，主页改为连续交替 overlay MJPEG；实板 30 秒有效阶段处理 198 帧，流约 6.93 FPS，活动侧约 8 到 9 FPS、左右平均每侧约 3.3 FPS，CPU/RSS 平均约 55.7%/116 MiB，同侧最大观测间隔约 1.95 秒。正式配置固定每侧约 1 秒并把 stale timeout 调整为 2.5 秒，多帧和跨 slice 风险确认未取消。
 - 首版按现场观察需求把网页改为一个主画面、每秒轮换左右缓存快照，但现场确认它仍是幻灯片且每侧检测约 1 FPS；该首版已由上面的连续推理方案取代。
 - 恢复板端以太网 SSH 后完成正式 NPU 短测。ACL 元数据确认板载 `yolov8n.om` 为逻辑 `1x640x640x3 UINT8`、物理 614400-byte 静态 AIPP NV12 输入；修正此前错误的 RGB byte-size 假设，并保留普通 RGB CHW/HWC 模型兼容。

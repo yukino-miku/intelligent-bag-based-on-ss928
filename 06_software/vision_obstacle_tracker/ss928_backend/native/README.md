@@ -22,3 +22,7 @@ cmake --build build --config Release
 Do not use an OpenVINO export here. The runtime requires an SS928-compatible
 `.om` model whose verified contract is one image input and one FP32
 `1x84x8400` YOLO output.
+
+The reproducible YOLO11 ONNX-to-OM procedure and SS928V100 AIPP configuration
+are in `../model_conversion/README.md`. Generated model files are intentionally
+excluded from Git.

@@ -708,6 +708,8 @@ sudo sh /root/smartbag/board-deploy/install-board-deps-offline.sh /path/to/wheel
 
 NPU 路径只要求 Python OpenCV/NumPy，不要求 torch、torchvision、Ultralytics 或 lap；这些重依赖只属于 `ultralytics` 后端。原生适配器源码和构建说明在 `ss928_backend/native/`，交叉编译后把 `libsmartbag_ss928_acl.so` 放到 `ss928_backend/lib/`。运行环境必须包含 `LD_LIBRARY_PATH=/opt/lib/npu:/opt/lib`。模型必须是与当前 SS928 镜像配套、输入布局可由 ACL tensor 描述识别、输出为 FP32 `84x8400` 的 `.om`，不满足契约会在启动时明确失败。
 
+YOLO11 的可复现转换脚本、`RGB_PLANAR` 静态 AIPP 配置、ONNX 契约检查和校准图片列表工具位于 [`ss928_backend/model_conversion/`](ss928_backend/model_conversion/README.md)。必须把模型按 640 正确重新导出，不能只修改 1024 ONNX 的 shape 元数据。本次已生成 SHA256 为 `9e3c448ab7309428ea78cfdc509926404220fa74dd56c89e4995366f5f16af95` 的 `yolo11n_ss928.om` 候选产物；它尚未完成实板 ACL/目标命中验收，因此当前部署默认仍保留已验证的 `yolov8n.om`。
+
 `performance.csv` 对 NPU 后端额外记录 `detector_preprocess_ms`、`npu_inference_ms` 和 `detector_postprocess_ms`，用于区分 letterbox、NPU 执行和 NMS 开销。
 
 ### 微信小程序和 session

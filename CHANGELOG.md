@@ -2,6 +2,7 @@
 
 ## 2026-07-21
 
+- 将官方 YOLO11n 同一权重正确重导出为 FP32 `1x3x640x640 -> 1x84x8400` ONNX，并使用官方 `SVP_NNN_PC_V1.0.6.0`、`SS928V100`、`compile_mode=6` 和 RGB_PLANAR 静态 AIPP 成功生成 3,426,459-byte OM；新增可复现转换脚本、ONNX 契约检查、校准列表工具和中文说明。OM SHA256 为 `9e3c448ab7309428ea78cfdc509926404220fa74dd56c89e4995366f5f16af95`；本地 301 项 Python 测试通过（1 项 Linux-only 跳过）。当前以太网未连接，实板 ACL/目标命中仍待验证，未替换默认 `yolov8n.om`。
 - 修复单画面双摄预览被实现成每秒单张快照的问题：主页恢复为连续交替 MJPEG；新增 `--continuous-slice-inference`，活动摄像头在完整时间片内逐帧执行 SS928 NPU、跟踪、风险和 overlay，再 STREAMOFF 切换另一侧。实板流约 6.93 FPS，活动侧约 8 到 9 FPS、左右时间平均每侧约 3.3 FPS，CPU 平均约 55.7%，RSS 约 116 MiB。
 - 双摄调试主页曾先改为单一主画面并每秒切换左右缓存快照；该静态快照方案随后被本次连续交替 MJPEG 和时间片内逐帧推理取代，原诊断 API 继续保留。
 - 修正 SS928 板载模型输入格式：ACL 元数据的逻辑维度虽然为 `1x640x640x3 UINT8`，实际静态 AIPP 输入仅 614400 bytes，必须提交 NV12。后端现按 tensor byte size 自动识别 NV12，完成 BGR letterbox、I420 到 NV12 UV 交错转换，并保留普通 RGB CHW/HWC 路径。
