@@ -2,6 +2,7 @@
 set -eu
 
 CONFIG=${1:-/etc/smartbag/config.json}
+RUNTIME_PROFILE=${2:-standard}
 fail=0
 [ -f "$CONFIG" ] || { echo "FAIL config missing: $CONFIG" >&2; exit 1; }
 
@@ -24,6 +25,10 @@ values = {
     "VISION": p.get("vision", "/root/smartbag/vision"),
     "PORT": a.get("serve_port", 8080),
     "CAL_MODE": a.get("calibration_mode", "diagnostic"),
+    "WIDTH": int(a.get("width", 640)),
+    "HEIGHT": int(a.get("height", 480)),
+    "LEFT_ROTATION": int(cams.get("left", {}).get("rotation_deg", 0)),
+    "RIGHT_ROTATION": int(cams.get("right", {}).get("rotation_deg", 0)),
 }
 for key, value in values.items():
     print(f"{key}={shlex.quote(str(value))}")
@@ -35,6 +40,13 @@ PY
 
 for path in "$LEFT" "$RIGHT" "$LEFT_CAL" "$RIGHT_CAL" "$MODEL"; do
     [ -e "$path" ] && echo "OK   $path" || { echo "FAIL missing: $path" >&2; fail=1; }
+done
+
+for camera_path in "$LEFT" "$RIGHT"; do
+    case "$camera_path" in
+        /dev/v4l/by-path/*video-index0) echo "OK   stable camera path: $camera_path" ;;
+        *) echo "FAIL production camera path must be /dev/v4l/by-path/*video-index0: $camera_path" >&2; fail=1 ;;
+    esac
 done
 
 LEFT_REAL=$(readlink -f "$LEFT" 2>/dev/null || printf '%s' "$LEFT")
@@ -66,10 +78,24 @@ else
 fi
 
 CAL_CHECKER="$VISION/tools/check_camera_calibration.py"
+CAL_VALIDATOR="$VISION/tools/validate_calibration.py"
 [ -f "$CAL_CHECKER" ] || { echo "FAIL calibration checker missing: $CAL_CHECKER" >&2; fail=1; }
 if [ -f "$CAL_CHECKER" ]; then
-    python3 "$CAL_CHECKER" "$LEFT_CAL" --side left --mode "$CAL_MODE" || fail=1
-    python3 "$CAL_CHECKER" "$RIGHT_CAL" --side right --mode "$CAL_MODE" || fail=1
+    if [ "$CAL_MODE" = production ] && [ -f "$CAL_VALIDATOR" ]; then
+        LEFT_W=$WIDTH; LEFT_H=$HEIGHT
+        RIGHT_W=$WIDTH; RIGHT_H=$HEIGHT
+        case "$LEFT_ROTATION" in 90|270) LEFT_W=$HEIGHT; LEFT_H=$WIDTH ;; esac
+        case "$RIGHT_ROTATION" in 90|270) RIGHT_W=$HEIGHT; RIGHT_H=$WIDTH ;; esac
+        python3 "$CAL_VALIDATOR" "$LEFT_CAL" --side left --mode production \
+            --expected-width "$LEFT_W" --expected-height "$LEFT_H" \
+            --expected-rotation-deg "$LEFT_ROTATION" || fail=1
+        python3 "$CAL_VALIDATOR" "$RIGHT_CAL" --side right --mode production \
+            --expected-width "$RIGHT_W" --expected-height "$RIGHT_H" \
+            --expected-rotation-deg "$RIGHT_ROTATION" || fail=1
+    else
+        python3 "$CAL_CHECKER" "$LEFT_CAL" --side left --mode "$CAL_MODE" || fail=1
+        python3 "$CAL_CHECKER" "$RIGHT_CAL" --side right --mode "$CAL_MODE" || fail=1
+    fi
 fi
 [ "$CAL_MODE" = production ] || echo "WARN calibration_mode=diagnostic; placeholder extrinsics are allowed" >&2
 
@@ -93,6 +119,10 @@ if [ "$DETECTOR_BACKEND" = ss928_om ]; then
         || { echo "FAIL /opt/lib/npu/libascendcl.so missing" >&2; fail=1; }
 fi
 
-[ -r /sys/class/pwm/pwmchip0/npwm ] || { echo "FAIL pwmchip0 unavailable" >&2; fail=1; }
+if [ "$RUNTIME_PROFILE" != vision_only_validation ]; then
+    [ -r /sys/class/pwm/pwmchip0/npwm ] || { echo "FAIL pwmchip0 unavailable" >&2; fail=1; }
+else
+    echo "OK   vision_only_validation: haptics/lights/audio/radar/BLE are not preflighted"
+fi
 [ "$fail" -eq 0 ] || exit 1
 echo "Alternating preflight passed; this does not replace the 30-minute hardware test."

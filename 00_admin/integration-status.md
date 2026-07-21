@@ -75,3 +75,11 @@
 - 当前 adapter 使用受控 CPU 预处理和 ACL 内存拷贝，尚未接入 MPP/VPSS 零拷贝；零拷贝属于性能优化待办，不影响当前接口正确性验收。
 - MPP VENC/RTSP 尚未接入当前 UVC detector 帧。当前交付是 CPU JPEG snapshot/MJPEG 基线，不宣称硬件 H.264/H.265 已完成。
 - 微信小程序真机和正式 AppID/HTTPS/合法域名尚未验证；浏览器页是当前独立板端视频验收入口。
+# 2026-07-22 完整视觉分支状态
+
+- 工作分支：`agent/complete-ss928-vision-runtime`
+- 基线：`agent/rev2-autonomous-board-runtime@c7991cfd62411bb7c99fa4a94b7397769404394a`
+- 软件整合：公共风险链、稳定相机身份、图像方向、时间感知跟踪、完整 session、标定工具和视觉专用安全 profile 已接入。
+- 板端状态：`BOARD_CONNECTION_BLOCKED`。`192.168.1.102`、`192.168.1.168` 和 22/8080/8081 不可达，未发现其他 SSH 主机或 SS928 USB 串口。
+- 安全状态：没有运行 TM6605、灯光、音频或雷达输出；没有把旧板测证据作为本轮通过。
+- 最终状态：`VISION_POWER_ONLY_NOT_READY`。

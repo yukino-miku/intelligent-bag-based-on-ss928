@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+from pathlib import Path
 import time
 from collections import deque
 from dataclasses import asdict, dataclass, field
@@ -57,6 +58,7 @@ class AlternatingCaptureConfig:
     camera_reconnect_initial_backoff_s: float = 0.5
     camera_reconnect_max_backoff_s: float = 8.0
     tracker_reset_after_disconnect_s: float = 3.0
+    require_stable_camera_paths: bool = False
 
     def __post_init__(self) -> None:
         if self.width <= 0 or self.height <= 0:
@@ -264,6 +266,7 @@ class AlternatingV4l2Capture:
         self.warmup_discarded_frames = 0
         self._closed = False
         self._opened = False
+        self._expected_identity: dict[str, dict[str, object]] = {}
 
     @property
     def backend(self) -> str:
@@ -275,6 +278,7 @@ class AlternatingV4l2Capture:
             for side in VALID_SIDES:
                 negotiated[side] = self.devices[side].open()
                 self.side_state[side].connection_state = "ONLINE"
+            self._validate_camera_identities(initial=True)
         except Exception:
             self.close()
             raise
@@ -504,6 +508,7 @@ class AlternatingV4l2Capture:
             state.reconnect_started_at_s = now_s
         try:
             self.devices[side].open()
+            self._validate_camera_identities(initial=False, reopened_side=side)
         except Exception as exc:
             self.camera_reopen_failures += 1
             state.last_error = str(exc)
@@ -565,6 +570,70 @@ class AlternatingV4l2Capture:
             ) * 1000.0
             state.recovery_event_pending = False
             state.connection_state = "ONLINE"
+
+    @staticmethod
+    def _identity_key(identity: dict[str, object]) -> tuple[str, str]:
+        physical = str(identity.get("usb_device") or identity.get("bus_info") or "").strip()
+        resolved = str(identity.get("resolved_path") or "").strip()
+        return physical, resolved
+
+    def _validate_camera_identities(
+        self,
+        *,
+        initial: bool,
+        reopened_side: str | None = None,
+    ) -> None:
+        if not self.config.require_stable_camera_paths:
+            return
+        sides = VALID_SIDES if initial else (reopened_side,)
+        for side in sides:
+            assert side is not None
+            requested = self._device_paths[side]
+            normalized = requested.replace("\\", "/")
+            if not normalized.startswith("/dev/v4l/by-path/") or not normalized.endswith(
+                "video-index0"
+            ):
+                raise ValueError(
+                    f"{side} camera must use a stable /dev/v4l/by-path/*video-index0 path: "
+                    f"{requested}"
+                )
+            identity = self.devices[side].identity()
+            physical, resolved = self._identity_key(identity)
+            if not resolved:
+                try:
+                    resolved = str(Path(requested).resolve(strict=True))
+                    identity["resolved_path"] = resolved
+                except OSError as exc:
+                    raise ValueError(f"cannot resolve {side} camera path {requested}: {exc}") from exc
+            if not physical:
+                raise ValueError(
+                    f"cannot prove {side} camera physical identity; bus_info/usb_device missing"
+                )
+            if initial:
+                self._expected_identity[side] = dict(identity)
+            else:
+                expected = self._expected_identity.get(side, {})
+                expected_physical, _expected_resolved = self._identity_key(expected)
+                if physical != expected_physical:
+                    raise ValueError(
+                        f"{side} camera identity changed after reopen: "
+                        f"expected {expected_physical}, got {physical}"
+                    )
+        if not initial:
+            return
+        left_identity = self._expected_identity["left"]
+        right_identity = self._expected_identity["right"]
+        left_physical, left_resolved = self._identity_key(left_identity)
+        right_physical, right_resolved = self._identity_key(right_identity)
+        if left_resolved == right_resolved:
+            raise ValueError("left and right camera paths resolve to the same video node")
+        if left_physical == right_physical:
+            raise ValueError("left and right camera paths belong to the same physical USB device")
+
+    def camera_identities(self) -> dict[str, dict[str, object]]:
+        if self._expected_identity:
+            return {side: dict(identity) for side, identity in self._expected_identity.items()}
+        return {side: self.devices[side].identity() for side in VALID_SIDES}
 
     def consume_tracker_reset_required(self, side: str) -> bool:
         self._require_side(side)

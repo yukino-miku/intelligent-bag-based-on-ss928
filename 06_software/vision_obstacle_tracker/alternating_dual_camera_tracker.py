@@ -25,6 +25,7 @@ from alternating_camera.pipeline import (
     select_latest_inference_frames,
 )
 from alternating_camera.gateway import AlternatingCameraGateway
+from alternating_camera.image_transform import CameraImageTransform
 from alternating_camera.session import AlternatingSessionRecorder
 from alternating_camera.vision_runtime import (
     IndependentUltralyticsTracker,
@@ -74,8 +75,10 @@ class SideFrameResult:
     alerts: list[dict[str, object]]
     haptic_level: int
     tracking_ms: float
+    distance_ms: float
     risk_ms: float
     single_frame_jump_suppressed_count: int
+    stabilizer_debug: dict[int, object]
 
 
 class RealSideVisionContext:
@@ -90,6 +93,11 @@ class RealSideVisionContext:
             args.left_calibration_file if side == "left" else args.right_calibration_file
         )
         side_args.calibration_file = side_calibration_file or args.calibration_file
+        calibration_mapping = (
+            load_calibration_file(side_args.calibration_file)
+            if side_args.calibration_file
+            else {}
+        )
         self.calibration = create_camera_calibration(side_args, frame_width, frame_height)
         fallback_extrinsics = CameraExtrinsics(
             yaw_deg=float(getattr(args, f"{side}_yaw_deg")),
@@ -98,14 +106,9 @@ class RealSideVisionContext:
             mount_z_m=float(getattr(args, f"{side}_mount_z_m")),
             calibrated=bool(getattr(args, f"{side}_extrinsics_calibrated")),
         )
-        calibration_mapping = (
-            load_calibration_file(side_args.calibration_file)
-            if side_args.calibration_file
-            else {}
-        )
         self.extrinsics = extrinsics_from_mapping(calibration_mapping, fallback_extrinsics)
-        if args.calibration_mode == "production" and not self.extrinsics.calibrated:
-            raise ValueError(f"{side} camera extrinsics are not calibrated")
+        if args.calibration_mode == "production":
+            self._validate_production_calibration(calibration_mapping)
         if not self.extrinsics.calibrated:
             eprint(f"WARNING: {side} camera uses uncalibrated placeholder extrinsics")
         self.stable_track_ids = StableTrackIdManager()
@@ -131,6 +134,42 @@ class RealSideVisionContext:
         )
         self.target_classes = parse_target_classes(args.target_classes)
         self.frame_index = 0
+
+    def _validate_production_calibration(self, mapping: dict[str, object]) -> None:
+        if not self.args.left_calibration_file and not self.args.right_calibration_file:
+            raise ValueError("production calibration requires explicit left and right files")
+        if not self.calibration.has_intrinsics:
+            raise ValueError(f"{self.side} camera production calibration has no camera_matrix")
+        configured_size = (
+            int(mapping.get("image_width", 0) or 0),
+            int(mapping.get("image_height", 0) or 0),
+        )
+        runtime_size = (self.frame_width, self.frame_height)
+        if configured_size != runtime_size:
+            raise ValueError(
+                f"{self.side} calibration resolution {configured_size} does not match "
+                f"processed frame {runtime_size}"
+            )
+        transform = mapping.get("image_transform")
+        if not isinstance(transform, dict):
+            raise ValueError(f"{self.side} production calibration is missing image_transform")
+        expected_transform = {
+            "rotation_deg": int(getattr(self.args, f"{self.side}_rotation_deg")),
+            "flip_horizontal": bool(getattr(self.args, f"{self.side}_flip_horizontal")),
+            "flip_vertical": bool(getattr(self.args, f"{self.side}_flip_vertical")),
+        }
+        actual_transform = {
+            "rotation_deg": int(transform.get("rotation_deg", -1)),
+            "flip_horizontal": bool(transform.get("flip_horizontal", False)),
+            "flip_vertical": bool(transform.get("flip_vertical", False)),
+        }
+        if actual_transform != expected_transform:
+            raise ValueError(
+                f"{self.side} calibration image_transform {actual_transform} does not match "
+                f"runtime {expected_transform}"
+            )
+        if not self.extrinsics.calibrated:
+            raise ValueError(f"{self.side} camera extrinsics are not calibrated")
 
     def _create_tracker(self) -> object:
         args = self.args
@@ -198,8 +237,10 @@ class RealSideVisionContext:
         tracking_started_s = time.perf_counter()
         if timeline is not None:
             timeline.tracking_start_s = time.monotonic()
-        tracked_result = self.tracker.update(result, image)
+        tracked_result = self.tracker.update(result, image, timestamp_s=timestamp_s)
         tracked_result = restore_result_boxes_to_full_frame(tracked_result, y_offset_px)
+        tracking_ms = (time.perf_counter() - tracking_started_s) * 1000.0
+        distance_started_s = time.perf_counter()
         observations = result_to_observations(
             tracked_result,
             timestamp_s,
@@ -212,7 +253,7 @@ class RealSideVisionContext:
         observations = self.stable_track_ids.assign(observations)
         targets = [self.track_state.update(observation) for observation in observations]
         targets = self.self_object_filter.apply(targets, full_frame.shape)
-        tracking_ms = (time.perf_counter() - tracking_started_s) * 1000.0
+        distance_ms = (time.perf_counter() - distance_started_s) * 1000.0
         if timeline is not None:
             timeline.tracking_end_s = time.monotonic()
         risk_started_s = time.perf_counter()
@@ -312,8 +353,10 @@ class RealSideVisionContext:
             alerts,
             haptic_level,
             tracking_ms,
+            distance_ms,
             risk_ms,
             single_frame_jump_suppressed_count,
+            stabilizer_debug,
         )
 
     def heartbeat(self, stale_timeout_s: float) -> list[dict[str, object]]:
@@ -383,7 +426,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--prefer-openvino", action="store_true")
     parser.add_argument("--export-openvino", action="store_true")
-    parser.add_argument("--target-classes", default="car,bicycle,motorcycle,bus,truck")
+    parser.add_argument(
+        "--target-classes",
+        default="person,bicycle,car,motorcycle,bus,truck",
+    )
     parser.add_argument("--roi-top-ratio", type=float, default=0.0)
     parser.add_argument("--enhance", choices=("off", "auto", "clahe"), default="off")
     parser.add_argument("--self-mask-bottom-ratio", type=float, default=0.92)
@@ -395,6 +441,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--right-calibration-file", default="")
     parser.add_argument("--calibration-mode", choices=("diagnostic", "production"), default="diagnostic")
     for side in ("left", "right"):
+        parser.add_argument(
+            f"--{side}-rotation-deg",
+            type=int,
+            choices=(0, 90, 180, 270),
+            default=0,
+        )
+        parser.add_argument(f"--{side}-flip-horizontal", action="store_true")
+        parser.add_argument(f"--{side}-flip-vertical", action="store_true")
         parser.add_argument(f"--{side}-yaw-deg", type=float, default=0.0)
         parser.add_argument(f"--{side}-roll-deg", type=float, default=0.0)
         parser.add_argument(f"--{side}-mount-x-m", type=float, default=0.0)
@@ -429,6 +483,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--overlay-height", type=int, default=0)
     parser.add_argument("--stream-fps-limit", type=float, default=5.0)
     parser.add_argument("--disable-video-gateway", action="store_true")
+    parser.add_argument(
+        "--allow-unstable-camera-paths",
+        action="store_true",
+        help="Diagnostic only: allow paths other than /dev/v4l/by-path/*video-index0.",
+    )
     args = parser.parse_args(argv)
     if args.duration_s <= 0.0 and args.switch_count <= 0:
         parser.error("one of --duration-s or --switch-count must be positive")
@@ -459,6 +518,30 @@ def _sha256(path: str) -> str:
         for chunk in iter(lambda: file.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _configuration_sha256(args: argparse.Namespace) -> str:
+    values = {
+        key: ("<redacted>" if key == "access_token" and value else value)
+        for key, value in vars(args).items()
+    }
+    encoded = json.dumps(values, ensure_ascii=True, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _model_contract(model: object) -> dict[str, object]:
+    runtime = getattr(model, "runtime", None)
+    input_info = getattr(runtime, "input_info", None)
+    output_info = getattr(runtime, "output_info", None)
+    return {
+        "input_layout": getattr(model, "input_layout", "unknown"),
+        "input_width": getattr(model, "input_width", None),
+        "input_height": getattr(model, "input_height", None),
+        "input_dtype": str(getattr(model, "input_dtype", "unknown")),
+        "input_byte_size": getattr(input_info, "byte_size", None),
+        "output_byte_size": getattr(output_info, "byte_size", None),
+        "output_contract": "FP32 1x84x8400" if runtime is not None else "backend-defined",
+    }
 
 
 def _session_id(args: argparse.Namespace) -> str:
@@ -514,19 +597,41 @@ def _result_metadata(result: SideFrameResult, slice_id: int) -> dict[str, object
             "track_id": None,
             "class": "",
             "distance_m": None,
+            "confidence": None,
+            "speed_mps": None,
+            "closing_speed_mps": None,
+            "raw_level": 0,
+            "visual_level": 0,
+            "haptic_level": 0,
+            "path_conflict": False,
+            "moving_away": False,
+            "cpa_time_s": None,
+            "cpa_distance_m": None,
         }
     track_id, display = max(
         result.display_risks.items(),
         key=lambda item: (int(item[1].haptic_level), int(item[1].visual_level), item[1].score),
     )
     target = next((target for target in result.targets if target.track_id == track_id), None)
+    raw = result.raw_risks.get(track_id)
     return {
         "slice_id": slice_id,
         "risk_level": int(display.haptic_level),
         "risk_name": risk_level_name(display.haptic_level),
         "track_id": track_id,
         "class": getattr(target, "class_name", ""),
+        "confidence": getattr(target, "confidence", None),
         "distance_m": getattr(target, "distance_m", None),
+        "speed_mps": getattr(target, "speed_mps", None),
+        "closing_speed_mps": getattr(raw, "closing_speed_mps", None),
+        "raw_level": int(raw.level) if raw is not None else 0,
+        "visual_level": int(display.visual_level),
+        "haptic_level": int(display.haptic_level),
+        "path_conflict": bool(getattr(raw, "path_conflict", False)),
+        "moving_away": bool(getattr(raw, "moving_away", False)),
+        "cpa_time_s": getattr(raw, "cpa_time_s", None),
+        "cpa_distance_m": getattr(raw, "cpa_distance_m", None),
+        "corridor_entry_time_s": getattr(raw, "corridor_entry_time_s", None),
     }
 
 
@@ -617,6 +722,7 @@ def run(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
         camera_reconnect_initial_backoff_s=args.camera_reconnect_initial_backoff_s,
         camera_reconnect_max_backoff_s=args.camera_reconnect_max_backoff_s,
         tracker_reset_after_disconnect_s=args.tracker_reset_after_disconnect_s,
+        require_stable_camera_paths=not args.allow_unstable_camera_paths,
     )
     schedule = RiskPrioritySlicePolicy(
         AlternatingRiskScheduleConfig(
@@ -635,10 +741,12 @@ def run(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
     )
     contexts: dict[str, RealSideVisionContext] = {}
     inference_durations_ms: deque[float] = deque(maxlen=120)
+    decode_durations_ms: deque[float] = deque(maxlen=120)
     detector_preprocess_durations_ms: deque[float] = deque(maxlen=120)
     npu_inference_durations_ms: deque[float] = deque(maxlen=120)
     detector_postprocess_durations_ms: deque[float] = deque(maxlen=120)
     tracking_durations_ms: deque[float] = deque(maxlen=120)
+    distance_durations_ms: deque[float] = deque(maxlen=120)
     risk_durations_ms: deque[float] = deque(maxlen=120)
     draw_durations_ms: deque[float] = deque(maxlen=120)
     jpeg_durations_ms: deque[float] = deque(maxlen=120)
@@ -662,6 +770,14 @@ def run(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
     summary: dict[str, object] = {}
     try:
         negotiated = capture.open()
+        image_transforms = {
+            side_name: CameraImageTransform(
+                rotation_deg=int(getattr(args, f"{side_name}_rotation_deg")),
+                flip_horizontal=bool(getattr(args, f"{side_name}_flip_horizontal")),
+                flip_vertical=bool(getattr(args, f"{side_name}_flip_vertical")),
+            )
+            for side_name in ("left", "right")
+        }
         engine = SharedModelAlternatingEngine(
             args.model,
             lambda camera_side: contexts.setdefault(
@@ -669,8 +785,10 @@ def run(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
                 RealSideVisionContext(
                     camera_side,
                     args,
-                    negotiated[camera_side].width,
-                    negotiated[camera_side].height,
+                    *image_transforms[camera_side].output_size(
+                        negotiated[camera_side].width,
+                        negotiated[camera_side].height,
+                    ),
                 ),
             ),
             model_factory=lambda _path: _create_model_with_jsonl_safe_stdout(args),
@@ -684,10 +802,18 @@ def run(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
             predict_stdout=sys.stderr,
         )
         class_ids = target_class_ids_from_model_names(engine.names, parse_target_classes(args.target_classes))
+        if isinstance(engine.names, dict):
+            class_ids_by_name = {str(name): int(class_id) for class_id, name in engine.names.items()}
+        else:
+            class_ids_by_name = {str(name): class_id for class_id, name in enumerate(engine.names)}
         if class_ids is not None:
             engine.predict_kwargs["classes"] = class_ids
         for camera_side in ("left", "right"):
             fmt = negotiated[camera_side]
+            transformed_width, transformed_height = image_transforms[camera_side].output_size(
+                fmt.width,
+                fmt.height,
+            )
             runtime_status["sides"][camera_side] = {
                 "device": args.left_device if camera_side == "left" else args.right_device,
                 "requested_width": args.width,
@@ -696,6 +822,9 @@ def run(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
                 "actual_height": fmt.height,
                 "requested_fps": args.fps,
                 "actual_fps": fmt.actual_fps,
+                "processed_width": transformed_width,
+                "processed_height": transformed_height,
+                "image_transform": image_transforms[camera_side].as_dict(),
             }
         runtime_status.update(
             {
@@ -723,21 +852,31 @@ def run(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
                 "right_by_path": args.right_device,
                 "cameras": {side_name: asdict(fmt) for side_name, fmt in negotiated.items()},
                 "camera_identity": {
-                    side_name: capture.devices[side_name].identity()
-                    for side_name in ("left", "right")
+                    side_name: identity
+                    for side_name, identity in capture.camera_identities().items()
                 },
                 "camera_format_tables": {
                     side_name: capture.devices[side_name].enumerate_formats()
                     for side_name in ("left", "right")
                 },
                 "alternating_backend": capture.backend,
-                "configuration": vars(args),
+                "configuration": {
+                    key: ("<redacted>" if key == "access_token" and value else value)
+                    for key, value in vars(args).items()
+                },
+                "configuration_sha256": _configuration_sha256(args),
                 "runtime_mode": "alternating_single_model",
                 "model_path": args.model,
                 "model_sha256": _sha256(args.model),
+                "adapter_sha256": _sha256(args.ss928_runtime_library or ""),
+                "model_contract": _model_contract(engine.model),
                 "calibration_sha256": {
                     "left": _sha256(args.left_calibration_file or args.calibration_file),
                     "right": _sha256(args.right_calibration_file or args.calibration_file),
+                },
+                "image_transforms": {
+                    side_name: transform.as_dict()
+                    for side_name, transform in image_transforms.items()
                 },
                 "yolo_enabled": True,
                 "pwm_enabled": False,
@@ -770,6 +909,7 @@ def run(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
                 cv2.IMREAD_COLOR,
             )
             decode_ms = (time.perf_counter() - decode_started_s) * 1000.0
+            decode_durations_ms.append(decode_ms)
             timeline.decode_end_s = time.monotonic()
             if full_frame is None:
                 recorder.error(f"decode failed side={frame.side} sequence={frame.sequence}")
@@ -787,6 +927,8 @@ def run(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
                 )
                 return
 
+            full_frame = image_transforms[frame.side].apply(full_frame)
+
             gap_metrics = observation_gaps.observe(frame.side, frame.captured_at_s)
             oldest_pending_ages_ms.append(
                 max(0.0, timeline.decode_start_s - frame.captured_at_s) * 1000.0
@@ -803,6 +945,14 @@ def run(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
                 slice_id=event.slice_id,
                 timeline=timeline,
             )
+            recorder.record_vision_result(
+                result,
+                timestamp_s=frame.captured_at_s,
+                side=frame.side,
+                slice_id=event.slice_id,
+                frame_id=selected_inference_frames,
+                class_ids_by_name=class_ids_by_name,
+            )
             inference_durations_ms.append(engine.last_inference_ms)
             detector_model = engine.model
             if hasattr(detector_model, "last_preprocess_ms"):
@@ -816,6 +966,7 @@ def run(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
                     float(detector_model.last_postprocess_ms)
                 )
             tracking_durations_ms.append(result.tracking_ms)
+            distance_durations_ms.append(result.distance_ms)
             risk_durations_ms.append(result.risk_ms)
             recorder.record_single_frame_jump_suppressed(
                 result.single_frame_jump_suppressed_count
@@ -867,6 +1018,7 @@ def run(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
                         getattr(engine.model, "last_postprocess_ms", 0.0)
                     ),
                     "tracking_ms": result.tracking_ms,
+                    "distance_ms": result.distance_ms,
                     "risk_ms": result.risk_ms,
                     "overlay_ms": draw_ms,
                     "jpeg_encode_ms": jpeg_ms,
@@ -1002,6 +1154,11 @@ def run(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
                     camera_errors=capture.streamon_failures + capture.streamoff_failures,
                     stage_metrics={
                         "inference_fps": inference_fps,
+                        "decode_ms": (
+                            sum(decode_durations_ms) / len(decode_durations_ms)
+                            if decode_durations_ms
+                            else 0.0
+                        ),
                         "inference_ms": (
                             sum(inference_durations_ms) / len(inference_durations_ms)
                             if inference_durations_ms
@@ -1027,6 +1184,11 @@ def run(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
                         "tracking_ms": (
                             sum(tracking_durations_ms) / len(tracking_durations_ms)
                             if tracking_durations_ms
+                            else 0.0
+                        ),
+                        "distance_ms": (
+                            sum(distance_durations_ms) / len(distance_durations_ms)
+                            if distance_durations_ms
                             else 0.0
                         ),
                         "risk_ms": (

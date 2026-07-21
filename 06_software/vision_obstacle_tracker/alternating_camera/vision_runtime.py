@@ -187,7 +187,14 @@ class IndependentUltralyticsTracker:
                 minimum_frames=self.config.minimum_buffer_frames,
             )
 
-    def update(self, result: Any, image: object) -> Any:
+    def update(
+        self,
+        result: Any,
+        image: object,
+        *,
+        timestamp_s: float | None = None,
+    ) -> Any:
+        del timestamp_s
         boxes = getattr(result, "boxes", None)
         if boxes is None or len(boxes) == 0:
             return result

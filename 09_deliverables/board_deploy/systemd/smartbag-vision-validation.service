@@ -1,0 +1,24 @@
+[Unit]
+Description=SS928 SmartBag vision-only validation without physical outputs
+After=local-fs.target
+Conflicts=smartbag-controller.service smartbag-alert.service smartbag-video.service smartbag-alternating-vision.service
+
+[Service]
+Type=simple
+WorkingDirectory=/root/smartbag/vision
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/etc/smartbag/smartbag.env
+ExecStartPre=/root/smartbag/board-deploy/alternating-preflight.sh /etc/smartbag/config.json vision_only_validation
+ExecStart=/root/smartbag/venv/bin/python /root/smartbag/controller/smartbag_alert_controller.py --runtime-profile vision_only_validation --config /etc/smartbag/config.json --detector-cwd /root/smartbag/vision
+Restart=always
+RestartSec=2
+TimeoutStopSec=8
+KillMode=control-group
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=200
+
+[Install]
+WantedBy=multi-user.target

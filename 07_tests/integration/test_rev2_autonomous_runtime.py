@@ -38,6 +38,13 @@ class Rev2AutonomousConfigTest(unittest.TestCase):
         self.assertEqual(1000, config["alternating_camera"]["normal_slice_ms"])
         self.assertFalse(config["alternating_camera"]["risk_priority_enabled"])
         self.assertEqual(15, config["alternating_camera"]["stream_fps_limit"])
+        self.assertEqual(
+            "person,bicycle,car,motorcycle,bus,truck",
+            config["alternating_camera"]["target_classes"],
+        )
+        self.assertEqual("production", config["alternating_camera"]["calibration_mode"])
+        self.assertEqual(0, config["cameras"]["left"]["rotation_deg"])
+        self.assertEqual(90, config["cameras"]["right"]["rotation_deg"])
         self.assertTrue(config["audio"]["enabled"])
 
     def test_installer_selects_npu_dependencies_and_requires_native_adapter(self) -> None:
@@ -56,6 +63,26 @@ class Rev2AutonomousConfigTest(unittest.TestCase):
         self.assertIn("Restart=always", controller)
         self.assertIn("KillMode=control-group", controller)
         self.assertIn("StandardInput=null", controller)
+
+    def test_vision_validation_service_has_no_actuator_or_network_dependency(self) -> None:
+        service = (DEPLOY / "systemd" / "smartbag-vision-validation.service").read_text(
+            encoding="utf-8"
+        )
+        profile = json.loads(
+            (DEPLOY / "runtime-profiles" / "vision_only_validation.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        self.assertIn("--runtime-profile vision_only_validation", service)
+        self.assertNotIn("network-online.target", service)
+        self.assertNotIn("ExecStopPost", service)
+        self.assertTrue(profile["camera"])
+        self.assertTrue(profile["risk"])
+        self.assertFalse(profile["tm6605"])
+        self.assertFalse(profile["lights"])
+        self.assertFalse(profile["audio"])
+        self.assertFalse(profile["radar"])
 
     def test_wait_for_hardware_writes_bounded_report(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
