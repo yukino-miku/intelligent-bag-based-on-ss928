@@ -32,6 +32,7 @@ from alternating_camera.vision_runtime import (
     TrackerRuntimeConfig,
 )
 from calibration import CameraExtrinsics, extrinsics_from_mapping, load_calibration_file
+from detector_backend import IndependentIouTracker
 from risk_model import RiskModel
 from vision_core import StableTrackIdManager, TrackState, parse_target_classes
 from vision_obstacle_tracker import (
@@ -40,7 +41,7 @@ from vision_obstacle_tracker import (
     RiskWarningStabilizerConfig,
     SelfObjectFilter,
     create_camera_calibration,
-    create_yolo_model,
+    create_detector_backend,
     crop_frame_for_inference,
     enhance_frame_for_detection,
     ignored_target_assessment,
@@ -131,8 +132,10 @@ class RealSideVisionContext:
         self.target_classes = parse_target_classes(args.target_classes)
         self.frame_index = 0
 
-    def _create_tracker(self) -> IndependentUltralyticsTracker:
+    def _create_tracker(self) -> object:
         args = self.args
+        if args.detector_backend == "ss928_om":
+            return IndependentIouTracker()
         return IndependentUltralyticsTracker(
             TrackerRuntimeConfig(
                 args.tracker,
@@ -352,6 +355,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--risk-log-dir", default="")
     parser.add_argument("--latest-summary-path", default="")
     parser.add_argument("--model", default="yolo11n.pt")
+    parser.add_argument(
+        "--detector-backend",
+        choices=("ultralytics", "ss928_om"),
+        default="ultralytics",
+    )
+    parser.add_argument("--ss928-runtime-library", default=None)
+    parser.add_argument("--ss928-acl-config", default=None)
     parser.add_argument("--tracker", default="vehicle_botsort.yaml")
     parser.add_argument("--tracker-nominal-fps", type=float, default=0.0)
     parser.add_argument(
@@ -450,7 +460,7 @@ def _session_id(args: argparse.Namespace) -> str:
 
 def _create_model_with_jsonl_safe_stdout(args: argparse.Namespace) -> object:
     with redirect_stdout(sys.stderr):
-        return create_yolo_model(args)
+        return create_detector_backend(args)
 
 
 def _record_alert(recorder: AlternatingSessionRecorder, payload: dict[str, object]) -> None:
@@ -617,6 +627,9 @@ def run(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
     )
     contexts: dict[str, RealSideVisionContext] = {}
     inference_durations_ms: deque[float] = deque(maxlen=120)
+    detector_preprocess_durations_ms: deque[float] = deque(maxlen=120)
+    npu_inference_durations_ms: deque[float] = deque(maxlen=120)
+    detector_postprocess_durations_ms: deque[float] = deque(maxlen=120)
     tracking_durations_ms: deque[float] = deque(maxlen=120)
     risk_durations_ms: deque[float] = deque(maxlen=120)
     draw_durations_ms: deque[float] = deque(maxlen=120)
@@ -679,7 +692,7 @@ def run(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
         runtime_status.update(
             {
                 "model": args.model,
-                "model_backend": "ultralytics",
+                "model_backend": args.detector_backend,
                 "jpeg_quality": args.jpeg_quality,
             }
         )
@@ -825,6 +838,17 @@ def run(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
                     timeline=timeline,
                 )
                 inference_durations_ms.append(engine.last_inference_ms)
+                detector_model = engine.model
+                if hasattr(detector_model, "last_preprocess_ms"):
+                    detector_preprocess_durations_ms.append(
+                        float(detector_model.last_preprocess_ms)
+                    )
+                if hasattr(detector_model, "last_npu_ms"):
+                    npu_inference_durations_ms.append(float(detector_model.last_npu_ms))
+                if hasattr(detector_model, "last_postprocess_ms"):
+                    detector_postprocess_durations_ms.append(
+                        float(detector_model.last_postprocess_ms)
+                    )
                 tracking_durations_ms.append(result.tracking_ms)
                 risk_durations_ms.append(result.risk_ms)
                 recorder.record_single_frame_jump_suppressed(
@@ -868,6 +892,13 @@ def run(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
                         "slice_id": pending_slice.event.slice_id,
                         "inference_fps": side_inference_fps,
                         "inference_ms": engine.last_inference_ms,
+                        "detector_preprocess_ms": float(
+                            getattr(engine.model, "last_preprocess_ms", 0.0)
+                        ),
+                        "npu_inference_ms": float(getattr(engine.model, "last_npu_ms", 0.0)),
+                        "detector_postprocess_ms": float(
+                            getattr(engine.model, "last_postprocess_ms", 0.0)
+                        ),
                         "tracking_ms": result.tracking_ms,
                         "risk_ms": result.risk_ms,
                         "overlay_ms": draw_ms,
@@ -919,6 +950,23 @@ def run(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
                         "inference_ms": (
                             sum(inference_durations_ms) / len(inference_durations_ms)
                             if inference_durations_ms
+                            else 0.0
+                        ),
+                        "detector_preprocess_ms": (
+                            sum(detector_preprocess_durations_ms)
+                            / len(detector_preprocess_durations_ms)
+                            if detector_preprocess_durations_ms
+                            else 0.0
+                        ),
+                        "npu_inference_ms": (
+                            sum(npu_inference_durations_ms) / len(npu_inference_durations_ms)
+                            if npu_inference_durations_ms
+                            else 0.0
+                        ),
+                        "detector_postprocess_ms": (
+                            sum(detector_postprocess_durations_ms)
+                            / len(detector_postprocess_durations_ms)
+                            if detector_postprocess_durations_ms
                             else 0.0
                         ),
                         "tracking_ms": (
@@ -984,6 +1032,8 @@ def run(args: argparse.Namespace) -> tuple[Path, dict[str, object]]:
                 _record_alert(recorder, payload)
         if gateway is not None:
             gateway.stop()
+        if engine is not None:
+            engine.close()
         capture.close()
         recorder.camera_reconnects = sum(
             state.reconnect_count for state in capture.side_state.values()

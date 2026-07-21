@@ -504,10 +504,17 @@ class SharedModelRuntimeTest(unittest.TestCase):
 
     def test_shared_mutable_side_state_is_rejected(self) -> None:
         shared_tracker = object()
+        models = []
 
         class FakeModel:
+            def __init__(self):
+                self.closed = False
+
             def predict(self, image, **_kwargs):
                 return [image]
+
+            def close(self):
+                self.closed = True
 
         class BadContext:
             def __init__(self, side):
@@ -517,12 +524,18 @@ class SharedModelRuntimeTest(unittest.TestCase):
             def process_detection(self, result, _image, _timestamp_s, **_context):
                 return result
 
+        def load_model(_path):
+            model = FakeModel()
+            models.append(model)
+            return model
+
         with self.assertRaisesRegex(ValueError, "share mutable state: tracker"):
             SharedModelAlternatingEngine(
                 "fixture.pt",
                 BadContext,
-                model_factory=lambda _path: FakeModel(),
+                model_factory=load_model,
             )
+        self.assertTrue(models[0].closed)
 
 
 class GatewayTest(unittest.TestCase):

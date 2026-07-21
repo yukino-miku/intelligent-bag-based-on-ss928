@@ -25,10 +25,12 @@ v4l2-ctl --device /dev/video2 --list-formats-ext
 cd /path/to/intelligent-bag-based-on-ss928/09_deliverables/board_deploy
 sudo sh install-deps.sh                 # 只检查，不安装
 sudo sh install-deps.sh --install-system # 可选：安装 apt 中的系统包
-sudo sh install.sh /path/to/intelligent-bag-based-on-ss928 /合法来源/yolo11n.pt /可选/wheelhouse
+sudo sh install.sh /path/to/intelligent-bag-based-on-ss928 \
+  /合法来源/yolov8n.om /可选/wheelhouse \
+  /本机交叉编译/libsmartbag_ss928_acl.so
 ```
 
-安装器创建 `/root/smartbag/venv`（直接复用板端 system site packages），模型必须通过第二个参数提供或已存在于正式目录；可选第三个参数是离线 wheelhouse。脚本不会联网下载 `torch/ultralytics/lap`，因为 ARM wheel、Python ABI 和板端镜像必须匹配。归档 SDK、模型和 wheel 不进入 Git。
+安装器创建 `/root/smartbag/venv`（直接复用板端 system site packages）。第二个参数是 `.om` 模型，第三个参数是可选 NPU wheelhouse，第四个参数是交叉编译出的 ACL 适配器。NPU 路径只需要 NumPy/OpenCV，不需要 `torch/ultralytics/lap`。CPU 兼容模式仍可传 `.pt`，但必须把配置中的 `detector_backend` 改回 `ultralytics`。归档 SDK、模型、二进制适配器和 wheel 不进入 Git。
 
 ## 3. 配置左右相机和标定
 
@@ -58,7 +60,7 @@ sudo sh install.sh /path/to/intelligent-bag-based-on-ss928 /合法来源/yolo11n
 
 安装生成的两个 calibration 文件只是可编辑模板，不含伪造的内参。必须分别填写左右相机的 `camera_matrix`、畸变、实际安装高度和 pitch；两台相机的高度、朝向、FOV 和畸变不能默认相同。先修正标定，再调整风险阈值。
 
-默认 `board_dual_balanced` 请求摄像头已枚举支持的 640x480@30、YOLO `imgsz=512`、推理上限 8 FPS；手机预览在配置示例中独立缩放到 480x360、JPEG quality 70、每客户端最多 8 FPS。`board_cpu` 同样使用 640x480，YOLO `imgsz=416`。摄像头描述符中的 30 FPS 不是持续性能保证；当前同路 hub 的单摄底层短测仅约 7.5–8.4 FPS。
+正式 NPU 配置请求 640x480@30，固定模型输入为 640x640，`conf=0.08`、`max_det=30`；手机预览独立缩放，不改变模型输入。摄像头描述符中的 30 FPS 不是持续性能保证，实际帧率必须结合 `npu_inference_ms` 和端到端观测间隔判断。
 
 ## 4. 部署前检查
 

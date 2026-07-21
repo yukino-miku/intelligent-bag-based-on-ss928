@@ -54,7 +54,7 @@ fi
 # Alternating runtime owns one UVC stream at a time, so probe the two paths sequentially.
 "$SCRIPT_DIR/camera-test.sh" "$LEFT_DEVICE" || fail=1
 "$SCRIPT_DIR/camera-test.sh" "$RIGHT_DEVICE" || fail=1
-"$SCRIPT_DIR/check-runtime-deps.sh" || fail=1
+"$SCRIPT_DIR/check-runtime-deps.sh" "$CONFIG" || fail=1
 
 systemctl is-active --quiet bluetooth.service \
     && echo "OK   bluetooth.service active" \

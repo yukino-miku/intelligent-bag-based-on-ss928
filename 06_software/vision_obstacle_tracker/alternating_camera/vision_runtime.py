@@ -39,10 +39,16 @@ class SharedModelAlternatingEngine:
             model_factory = YOLO
         self.model_path = str(model_path)
         self.model = model_factory(self.model_path)
-        self.contexts = {side: context_factory(side) for side in ("left", "right")}
-        if self.contexts["left"] is self.contexts["right"]:
-            raise ValueError("left and right vision contexts must be different instances")
-        self._assert_independent_context_state()
+        try:
+            self.contexts = {side: context_factory(side) for side in ("left", "right")}
+            if self.contexts["left"] is self.contexts["right"]:
+                raise ValueError("left and right vision contexts must be different instances")
+            self._assert_independent_context_state()
+        except Exception:
+            close = getattr(self.model, "close", None)
+            if callable(close):
+                close()
+            raise
         self.predict_kwargs = dict(predict_kwargs or {})
         self.predict_stdout = predict_stdout
         self.inference_count = 0
@@ -100,6 +106,11 @@ class SharedModelAlternatingEngine:
         ]
         if shared:
             raise ValueError(f"left and right vision contexts share mutable state: {', '.join(shared)}")
+
+    def close(self) -> None:
+        close = getattr(self.model, "close", None)
+        if callable(close):
+            close()
 
 
 @dataclass(frozen=True)

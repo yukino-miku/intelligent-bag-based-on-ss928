@@ -11,7 +11,8 @@
 | `board_runtime/mr20_radar` | `/root/smartbag/mr20_radar` | controller 内 worker；独立 source/multi-frame 稳定 |
 | `board_runtime/cloud_uploader` | `/root/smartbag/cloud-uploader` | 可选独立 service，默认关闭 |
 | audio assets | `/root/smartbag/audio` | Rev2 默认启用、optional degrade；只播放 L3/R3/L4/R4 |
-| 模型 | `/root/smartbag/models/yolo11n.pt` | 安装时必须由合法本地文件提供，不进入 Git |
+| 模型 | `/root/smartbag/models/yolov8n.om` | 正式 NPU 默认；安装时由合法本地文件提供，不进入 Git |
+| SS928 ACL adapter | `/root/smartbag/vision/ss928_backend/lib/libsmartbag_ss928_acl.so` | 由仓库源码交叉编译，安装参数 4 提供 |
 | 固定 Python | `/root/smartbag/venv` | systemd 直接调用，不依赖 shell activate |
 | 双摄配置 | `/etc/smartbag/config.json` | 左右设备、profile、流、PWM、超时和 BLE |
 | 硬件 profile | `/etc/smartbag/hardware.json` | Rev2/Legacy 互斥、mux、TM6605、灯光、MR20、输出策略 |
@@ -32,4 +33,4 @@
 
 旧路径 `/root/dx_gp21_tracker`、`/root/vision_obstacle_tracker`、`/root/smartbag_alert`、`/opt/bmi270_backpack` 不再由脚本创建。升级时先停止旧服务，迁移持久数据并删除旧 unit，避免重复注册 BLE、重复打开相机或同时控制 PWM。
 
-不随部署包分发：`10_archive`、厂商 SDK、系统镜像、`.om`/PyTorch 模型、ARM wheels、原始视频、risk log、设备密码/IP、许可不明音频。`Ss928OmBackend` 在取得并验证真实 API 前保持显式未实现。
+不随部署包分发：`10_archive`、厂商 SDK、系统镜像、`.om`/PyTorch 模型、ARM wheels、原始视频、risk log、设备密码/IP、许可不明音频。仓库分发 ACL adapter 源码，不分发厂商 `libascendcl.so`；交叉编译产物由部署者按板端 SDK 生成并显式传给安装器。

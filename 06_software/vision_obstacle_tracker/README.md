@@ -574,7 +574,7 @@ python3 vision_obstacle_tracker.py \
 
 stdout 只输出 compact `vision_alert` JSONL，模型加载、profile 和普通日志写 stderr。事件等级来自多帧稳定后的 `haptic_level`；风险消失会立即发 level 0。同侧同等级受 rate limit 限制。`--side left|right` 用于双摄固定方向；单摄 `auto` 根据 `x_m` 和 `--side-dead-zone` 路由。
 
-`--detector-backend ultralytics` 是当前完整实现。`--detector-backend ss928_om` 只保留明确接口和未实现错误；OpenVINO 不等于 SS928 NPU，不能用它冒充 `.om` 后端。
+`--detector-backend ultralytics` 保留 PC/OpenVINO 路径。`--detector-backend ss928_om` 使用 `libsmartbag_ss928_acl.so` 调用板端 ACL，模型常驻内存，输入是 USB 帧经 RGB letterbox 后的内存 tensor，输出按 `1x84x8400 FP32` 做类别过滤和 NMS。OpenVINO 仍只属于 PC/通用 CPU 路径，不等于 SS928 NPU。
 
 ## SS928 双 USB 摄像头运行
 
@@ -610,11 +610,11 @@ python3 vision_obstacle_tracker.py --source camera \
 
 detector HTTP 提供 `/api/v1/camera/<side>/status`、`snapshot.jpg` 和 `mjpeg`。外部双路聚合 API 和浏览器页由 `dual_camera_gateway.py` 提供，部署方法见 `09_deliverables/board_deploy/README.md`。
 
-## SS928 实验性交替双摄（单模型）
+## SS928 交替双摄（单模型）
 
-`alternating_dual_camera_tracker.py` 是默认关闭的时间复用入口。它保持两个 UVC fd/mmap 缓冲，但严格按“左 STREAMON -> 预热/取帧 -> STREAMOFF -> 推理 -> 右 STREAMON”循环；任何时刻最多一路 streaming。它不是同步双摄，未激活侧没有新观测，也不会被当成 SAFE。
+`alternating_dual_camera_tracker.py` 是板端单模型时间复用入口。它保持两个 UVC fd/mmap 缓冲，但严格按“左 STREAMON -> 预热/取帧 -> STREAMOFF -> 推理 -> 右 STREAMON”循环；任何时刻最多一路 streaming。它不是同步双摄，未激活侧没有新观测，也不会被当成 SAFE。
 
-检测只加载一个 Ultralytics 模型并调用 `model.predict()`；左右各自持有独立 BoT-SORT、`StableTrackIdManager`、`TrackState`、`RiskModel`、`RiskWarningStabilizer`、`SelfObjectFilter`、标定和 risk CSV。禁止使用一个 `model.track(..., persist=True)` 交替喂左右画面。输出震动等级仍来自跨时间片稳定后的 `haptic_level`，raw/visual risk 不直接控制 PWM。
+检测只加载一个 detector。Ultralytics 路径左右各自使用独立 BoT-SORT；SS928 NPU 路径左右各自使用独立轻量 IoU tracker。两条路径都继续使用独立的 `StableTrackIdManager`、`TrackState`、`RiskModel`、`RiskWarningStabilizer`、`SelfObjectFilter`、标定和 risk CSV。输出震动等级仍来自跨时间片稳定后的 `haptic_level`，raw/visual risk 不直接控制 PWM。
 
 ### 调度、盲区和跟踪时间尺度
 
@@ -649,7 +649,7 @@ B 阶段页面为 `http://<板端地址>:8081/`。状态会标明当前 active s
 
 若状态显示两侧 online 但页面黑屏，依次检查 `api/v1/status`、`snapshot.jpg?view=raw` 和 `mjpeg?view=raw`。单帧正常但连续流不刷新时，需确认网关没有只按 V4L2 sequence 去重，因为每次 STREAMOFF/STREAMON 后该序号可能重复；当前实现还比较采集时间和发布时间。
 
-依赖齐全后才运行 C：
+SS928 NPU 正式链路命令：
 
 ```sh
 python3 alternating_dual_camera_tracker.py \
@@ -657,10 +657,12 @@ python3 alternating_dual_camera_tracker.py \
   --right-device /dev/v4l/by-path/RIGHT-video-index0 \
   --left-calibration-file /etc/smartbag/calibration-left.json \
   --right-calibration-file /etc/smartbag/calibration-right.json \
-  --model /root/smartbag/models/yolo11n.pt --tracker vehicle_botsort.yaml \
+  --detector-backend ss928_om \
+  --model /root/smartbag/models/yolov8n.om \
+  --ss928-runtime-library /root/smartbag/vision/ss928_backend/lib/libsmartbag_ss928_acl.so \
   --width 640 --height 480 --fps 30 --normal-slice-ms 500 \
   --warmup-frames 2 --frames-per-slice 4 --inference-frames-per-slice 1 \
-  --tracker-effective-fps-mode effective_side --imgsz 416 --conf 0.08 \
+  --tracker-effective-fps-mode effective_side --imgsz 640 --conf 0.08 \
   --min-confirm-slices-caution 2 --min-confirm-slices-danger 2 \
   --min-confirm-slices-emergency 2 --minimum-confirmation-interval-s 0.2 \
   --serve-bind 0.0.0.0 --serve-port 8080 --jpeg-quality 80 \
@@ -702,7 +704,9 @@ sh /root/smartbag/board-deploy/check-runtime-deps.sh
 sudo sh /root/smartbag/board-deploy/install-board-deps-offline.sh /path/to/wheelhouse
 ```
 
-不要直接在资源受限板上盲装最新版 Ultralytics。系统 APT 可提供 OpenCV/NumPy；torch、torchvision、Ultralytics 和 lap 必须以匹配 Python 3.10/aarch64 的离线 wheel 验证。`Ss928OmBackend` 仍因通用内存帧 ACL API、配套头文件和已核对的预处理/输出定义不足而 BLOCKED；OpenVINO 不是 SS928 NPU。
+NPU 路径只要求 Python OpenCV/NumPy，不要求 torch、torchvision、Ultralytics 或 lap；这些重依赖只属于 `ultralytics` 后端。原生适配器源码和构建说明在 `ss928_backend/native/`，交叉编译后把 `libsmartbag_ss928_acl.so` 放到 `ss928_backend/lib/`。运行环境必须包含 `LD_LIBRARY_PATH=/opt/lib/npu:/opt/lib`。模型必须是与当前 SS928 镜像配套、输入布局可由 ACL tensor 描述识别、输出为 FP32 `84x8400` 的 `.om`，不满足契约会在启动时明确失败。
+
+`performance.csv` 对 NPU 后端额外记录 `detector_preprocess_ms`、`npu_inference_ms` 和 `detector_postprocess_ms`，用于区分 letterbox、NPU 执行和 NMS 开销。
 
 ### 微信小程序和 session
 

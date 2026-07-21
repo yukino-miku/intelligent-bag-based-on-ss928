@@ -5,6 +5,7 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=${1:-$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)}
 MODEL_SOURCE=${2:-}
 WHEELHOUSE=${3:-}
+NPU_ADAPTER_SOURCE=${4:-}
 DEST=/root/smartbag
 
 [ "$(id -u)" -eq 0 ] || { echo "run as root" >&2; exit 1; }
@@ -50,22 +51,83 @@ find "$DEST" -type f \( -name '*.pyc' -o -name 'risk_log*.csv' \) -delete
 find "$DEST/vision" -type d \( -name build -o -name dist -o -name dist_onefile -o -name third_party -o -name '*_openvino_model' -o -name .venv \) -prune -exec rm -rf {} +
 find "$DEST/vision" -type f \( -name 'yolo*.pt' -o -name 'yolo*.onnx' -o -name '*.om' \) -delete
 
+MODEL_DEST=
 if [ -n "$MODEL_SOURCE" ]; then
     [ -f "$MODEL_SOURCE" ] || { echo "model source not found: $MODEL_SOURCE" >&2; exit 1; }
-    install -m 0644 "$MODEL_SOURCE" "$DEST/models/yolo11n.pt"
+    case "$MODEL_SOURCE" in
+        *.om) MODEL_DEST="$DEST/models/yolov8n.om" ;;
+        *) MODEL_DEST="$DEST/models/yolo11n.pt" ;;
+    esac
+    install -m 0644 "$MODEL_SOURCE" "$MODEL_DEST"
 fi
-[ -f "$DEST/models/yolo11n.pt" ] || {
-    echo "required model missing; pass it as install.sh REPO_ROOT MODEL_PATH [WHEELHOUSE]" >&2
+[ -f "$DEST/models/yolo11n.pt" ] || [ -f "$DEST/models/yolov8n.om" ] || {
+    echo "required model missing; pass it as install.sh REPO_ROOT MODEL_PATH [WHEELHOUSE] [NPU_ADAPTER]" >&2
     exit 1
 }
-if [ -n "$WHEELHOUSE" ]; then
-    "$SCRIPT_DIR/install-board-deps-offline.sh" "$WHEELHOUSE" "$DEST/vision/requirements-board-cpu.txt"
+if [ -n "$NPU_ADAPTER_SOURCE" ]; then
+    [ -f "$NPU_ADAPTER_SOURCE" ] || {
+        echo "SS928 NPU adapter not found: $NPU_ADAPTER_SOURCE" >&2
+        exit 1
+    }
+    install -d "$DEST/vision/ss928_backend/lib"
+    install -m 0755 "$NPU_ADAPTER_SOURCE" \
+        "$DEST/vision/ss928_backend/lib/libsmartbag_ss928_acl.so"
 fi
-
+CONFIG_CREATED=0
 if [ -f /etc/smartbag/config.json ]; then
     "$DEST/venv/bin/python" "$DEST/board-deploy/upgrade_rev2_runtime_config.py" /etc/smartbag/config.json
 else
     cp "$SCRIPT_DIR/config.example.json" /etc/smartbag/config.json
+    CONFIG_CREATED=1
+fi
+if [ "$CONFIG_CREATED" -eq 1 ]; then
+    if [ -z "$MODEL_DEST" ]; then
+        if [ -f "$DEST/models/yolov8n.om" ]; then
+            MODEL_DEST="$DEST/models/yolov8n.om"
+        else
+            MODEL_DEST="$DEST/models/yolo11n.pt"
+        fi
+    fi
+    "$DEST/venv/bin/python" - /etc/smartbag/config.json "$MODEL_DEST" <<'PY'
+import json
+import sys
+
+path, model_path = sys.argv[1:]
+with open(path, encoding="utf-8") as handle:
+    config = json.load(handle)
+config.setdefault("paths", {})["model"] = model_path
+alternating = config.setdefault("alternating_camera", {})
+alternating["detector_backend"] = "ss928_om" if model_path.endswith(".om") else "ultralytics"
+alternating["imgsz"] = 640 if model_path.endswith(".om") else alternating.get("imgsz", 416)
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(config, handle, ensure_ascii=False, indent=2)
+    handle.write("\n")
+PY
+fi
+SELECTED_MODEL=$("$DEST/venv/bin/python" - /etc/smartbag/config.json <<'PY'
+import json, sys
+try:
+    print(json.load(open(sys.argv[1], encoding="utf-8")).get("paths", {}).get("model", ""))
+except (OSError, ValueError):
+    print("")
+PY
+)
+[ -f "$SELECTED_MODEL" ] || {
+    echo "configured model missing: $SELECTED_MODEL" >&2
+    exit 1
+}
+if [ "${SELECTED_MODEL##*.}" = om ] && \
+   [ ! -f "$DEST/vision/ss928_backend/lib/libsmartbag_ss928_acl.so" ]; then
+    echo "SS928 .om selected but native adapter is missing; pass it as install.sh argument 4" >&2
+    exit 1
+fi
+if [ -n "$WHEELHOUSE" ]; then
+    if [ "${SELECTED_MODEL##*.}" = om ]; then
+        RUNTIME_REQUIREMENTS="$DEST/vision/requirements-board-npu.txt"
+    else
+        RUNTIME_REQUIREMENTS="$DEST/vision/requirements-board-cpu.txt"
+    fi
+    "$SCRIPT_DIR/install-board-deps-offline.sh" "$WHEELHOUSE" "$RUNTIME_REQUIREMENTS"
 fi
 if [ -f /etc/smartbag/hardware.json ]; then
     cp /etc/smartbag/hardware.json "/etc/smartbag/hardware.json.bak.$(date -u +%Y%m%dT%H%M%SZ)"

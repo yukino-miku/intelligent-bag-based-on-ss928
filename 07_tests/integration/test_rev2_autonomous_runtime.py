@@ -26,9 +26,20 @@ class Rev2AutonomousConfigTest(unittest.TestCase):
     def test_default_runtime_is_alternating_and_uses_fixed_venv(self) -> None:
         config = json.loads((DEPLOY / "config.example.json").read_text(encoding="utf-8"))
         self.assertEqual("/root/smartbag/venv/bin/python", config["paths"]["python"])
+        self.assertEqual("/root/smartbag/models/yolov8n.om", config["paths"]["model"])
         self.assertEqual("alternating_single_model", config["vision_runtime"]["mode"])
         self.assertTrue(config["alternating_camera"]["enabled"])
+        self.assertEqual("ss928_om", config["alternating_camera"]["detector_backend"])
+        self.assertEqual(
+            "/root/smartbag/vision/ss928_backend/lib/libsmartbag_ss928_acl.so",
+            config["alternating_camera"]["ss928_runtime_library"],
+        )
         self.assertTrue(config["audio"]["enabled"])
+
+    def test_installer_selects_npu_dependencies_and_requires_native_adapter(self) -> None:
+        install = (DEPLOY / "install.sh").read_text(encoding="utf-8")
+        self.assertIn('RUNTIME_REQUIREMENTS="$DEST/vision/requirements-board-npu.txt"', install)
+        self.assertIn("SS928 .om selected but native adapter is missing", install)
 
     def test_core_systemd_has_no_network_online_dependency_and_has_safe_stop(self) -> None:
         target = (DEPLOY / "systemd" / "smartbag.target").read_text(encoding="utf-8")

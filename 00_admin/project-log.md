@@ -1,5 +1,14 @@
 # Project Log
 
+## 2026-07-21
+
+- 将此前单图 ModelZoo harness 收敛为正式长驻后端：`libsmartbag_ss928_acl.so` 只在进程启动时初始化 ACL、加载 `yolov8n.om` 并分配输入/输出 dataset；Python 通过 ctypes 传内存 tensor，避免临时文件和逐帧模型加载。
+- 固定并校验当前模型契约：RGB_PLANAR 图像输入、COCO 80 类、单个 FP32 `1x84x8400` 输出；契约不匹配时拒绝启动。当前 ACL 镜像的 `aclFinalize()` 退出异常被限定在原生 adapter 内，正常释放模型、dataset 和 buffer 后由进程退出回收 ACL 全局状态。
+- SS928 输出已经接入原有 tracking、单目测距、速度、Future Conflict Gate、多帧 stabilizer、haptic JSONL、CSV 和 overlay；交替双摄共享一个模型，左右 IoU tracker、StableTrackId、TrackState 和 RiskModel 相互独立。
+- 本地已完成 adapter ARM64 交叉编译和针对预处理、输出解码、ROI 坐标恢复、独立 tracking、controller 参数透传的测试。实板连续 NPU/overlay 状态需在板端网络或串口恢复后补测，不把本地结果记为 BOARD TESTED。
+- 最终回归为 293 项 Python 测试（292 通过、1 项 Linux-only 跳过）、6 个小程序测试文件、24 个 JS 语法、22 个 tracked JSON 和 39 个 shell 语法；compileall、硬件刷新仓库策略与 diff whitespace 通过。ARM64 adapter SHA256 为 `00a496a6576f2f8473274878535715dfe47697b5f33692c4203f5ec913fdbe9d`。
+- 板端连接复查时，PC 仍为 `192.168.1.10/24`，但 `.102`/`.168` 的 SSH、80、8080、8081 和 ping 均无响应，且没有板端 USB-UART COM 口；因此未停止现有预览、未覆盖生产目录，也未把真实连续 NPU/overlay 记为通过。
+
 ## 2026-07-20
 
 - 将纯摄像头网页从三条并行 MJPEG 调整为一条顶部低延迟交替流和每秒左右缓存快照，减少重复传输与浏览器解码；在当前两只摄像头上验证 300 ms 时间片、0 预热丢帧、每片 4 帧，80 帧全部解码正常，左右各约 4.85 FPS，交替总流约 8.52 FPS，p95/最大帧间隔约 311/340 ms。硬件 STREAMON/OFF 仍造成约 0.3 秒周期停顿，未伪装为稳定同步双摄。

@@ -1,5 +1,13 @@
 # SS928 板端整合状态
 
+## 2026-07-21 正式 NPU 后端
+
+- `LOCAL IMPLEMENTED + CROSS-COMPILED`：`Ss928OmBackend`、ACL C ABI、内存预处理、YOLO 输出解码/NMS、轻量 tracker 和原风险/overlay 接口已经连通；ARM64 动态库交叉编译成功。
+- `NOT YET BOARD VERIFIED`：当前代码完成不代表真实双摄连续目标识别完成。仍需在板上核对 tensor 元数据、现场目标命中、左右 ID 隔离、overlay、端到端 FPS/盲区、内存/温度和 30 分钟稳定性。
+- `BOARD CONNECTION BLOCKED`：本轮收尾时 `.102`/`.168` 的 SSH 和视频端口均无响应，Windows 也未枚举板端 USB-UART；没有执行生产覆盖或硬件服务启用。
+- NPU 路径只需要板端 OpenCV、NumPy、ACL 运行库和 adapter，不需要 torch、torchvision、Ultralytics 或 lap。OpenVINO 继续只属于 PC/通用 CPU 路径。
+- 风险模型、Future Conflict Gate、多帧 stabilizer 和 haptic 输出没有被旁路；NPU 原始输出不能直接驱动震动。
+
 ## 2026-07-20 Rev2 硬件刷新
 
 - `LOCAL IMPLEMENTED`：autonomous 分支默认改为单模型交替双摄、0–4 四档触觉、有界持续灯光/音频、固定 venv、systemd controller/safe-off/boot-selftest 和完整 validation orchestrator。
@@ -45,7 +53,7 @@
 - `/dev/video0` 和 `/dev/video2` 对应 USB 路径 `3-1.3`/`3-1.4`，但重启后数字节点会互换；左右身份必须按稳定物理路径或显式映射，不能依赖枚举顺序。
 - 请求 `1680x1050 MJPEG @10` 实际仍得到 `1920x1080` JPEG。10/10 次交替成功，左右各 20 帧，无 STREAMON/OFF、超时、重连、丢帧或 USB 错误；每侧 3.735 FPS，最大 capture-only 盲区 545.945 ms。
 - 左右快照都完成板上 `yolov8n.om` 推理并生成输出；干净启动时 NPU 执行 25.44 ms。当前画面没有交通目标，`conf>=0.25` 无检测，不能作为目标识别命中证据。
-- 临时 ModelZoo harness 已验证模型卸载顺序问题，但 `EnvDeinit()` 仍因板端 ACL 兼容性异常退出。正式 USB 帧到 `Ss928OmBackend`、持续跟踪/风险/overlay 仍为 BLOCKED。
+- 当时临时 ModelZoo harness 已验证模型卸载顺序问题，但 `EnvDeinit()` 仍因板端 ACL 兼容性异常退出；该次隔离测试中的正式实时链仍为 BLOCKED。2026-07-21 已补齐正式后端代码，实板连续验收状态仍未通过。
 - 本次没有安装生产目录、enable systemd target 或测试 BMI270、TM6605、灯光、音频、GNSS、MR20、BLE。详细证据见 `07_tests/results/rev2-autonomous/latest-summary.md`。
 
 ## 仍需真实硬件验证
@@ -61,7 +69,7 @@
 
 ## 未完成
 
-- `Ss928OmBackend` 没有与现有 Python detector、BoT-SORT 和风险链兼容的真实厂商 API。归档仅证明存在 ATC、`.om` 和 C/C++ sample；OpenVINO 不是 SS928 NPU。
-- 板端 `/opt/lib/npu/libascendcl.so` 和 sensor 专用 `yolov8n.om` sample 不能直接消费当前 USB 内存帧；缺少匹配头文件、通用 C ABI、预处理/AIPP 和输出/NMS核对，因此未伪造后端。
+- `Ss928OmBackend` 已实现并接入现有风险链，但真实板端连续运行、现场目标命中和长测仍未验收；NPU tracker 是不依赖 torch 的轻量 IoU tracker，不声称与 BoT-SORT 字节级等价。
+- 当前 adapter 使用受控 CPU 预处理和 ACL 内存拷贝，尚未接入 MPP/VPSS 零拷贝；零拷贝属于性能优化待办，不影响当前接口正确性验收。
 - MPP VENC/RTSP 尚未接入当前 UVC detector 帧。当前交付是 CPU JPEG snapshot/MJPEG 基线，不宣称硬件 H.264/H.265 已完成。
 - 微信小程序真机和正式 AppID/HTTPS/合法域名尚未验证；浏览器页是当前独立板端视频验收入口。

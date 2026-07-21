@@ -165,15 +165,27 @@ class RuntimeOptionsTest(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 parse_args()
 
-    def test_ss928_om_backend_is_explicitly_selectable_but_not_faked(self) -> None:
+    def test_ss928_om_backend_and_native_runtime_paths_are_configurable(self) -> None:
         with patch.object(
             sys,
             "argv",
-            ["vision_obstacle_tracker.py", "--detector-backend", "ss928_om", "--model", "model.om"],
+            [
+                "vision_obstacle_tracker.py",
+                "--detector-backend",
+                "ss928_om",
+                "--model",
+                "model.om",
+                "--ss928-runtime-library",
+                "/opt/smartbag/libsmartbag_ss928_acl.so",
+                "--ss928-acl-config",
+                "/etc/smartbag/acl.json",
+            ],
         ):
             args = parse_args()
 
         self.assertEqual("ss928_om", args.detector_backend)
+        self.assertEqual("/opt/smartbag/libsmartbag_ss928_acl.so", args.ss928_runtime_library)
+        self.assertEqual("/etc/smartbag/acl.json", args.ss928_acl_config)
 
     def test_runtime_profile_can_be_overridden_by_explicit_values(self) -> None:
         with patch.object(

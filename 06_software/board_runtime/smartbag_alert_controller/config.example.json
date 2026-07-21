@@ -18,6 +18,9 @@
   "alternating_camera": {
     "enabled": false,
     "backend": "v4l2_stream_toggle",
+    "detector_backend": "ultralytics",
+    "ss928_runtime_library": "/root/smartbag/vision/ss928_backend/lib/libsmartbag_ss928_acl.so",
+    "ss928_acl_config": "",
     "width": 640,
     "height": 480,
     "fps": 10,

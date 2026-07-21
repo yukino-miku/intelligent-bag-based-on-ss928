@@ -656,6 +656,8 @@ def alternating_detector_command_from_config(config: dict[str, object]) -> str:
         "v4l2_stream_toggle",
         "--model",
         str(paths.get("model", "/root/smartbag/models/yolo11n.pt")),
+        "--detector-backend",
+        str(alternating.get("detector_backend", "ultralytics")),
         "--tracker",
         str(alternating.get("tracker", vision_root / "vehicle_botsort.yaml")),
         "--width",
@@ -733,6 +735,12 @@ def alternating_detector_command_from_config(config: dict[str, object]) -> str:
         "--calibration-mode",
         str(alternating.get("calibration_mode", "diagnostic")),
     ]
+    runtime_library = str(alternating.get("ss928_runtime_library", "")).strip()
+    if runtime_library:
+        argv.extend(["--ss928-runtime-library", runtime_library])
+    acl_config = str(alternating.get("ss928_acl_config", "")).strip()
+    if acl_config:
+        argv.extend(["--ss928-acl-config", acl_config])
     logging_config = config.get("logging") if isinstance(config.get("logging"), dict) else {}
     if bool(logging_config.get("risk_csv_enabled", False)):
         argv.extend(

@@ -2,7 +2,7 @@
   "paths": {
     "python": "/root/smartbag/venv/bin/python",
     "vision": "/root/smartbag/vision",
-    "model": "/root/smartbag/models/yolo11n.pt"
+    "model": "/root/smartbag/models/yolov8n.om"
   },
   "controller_status_file": "/run/smartbag/controller-status.json",
   "controller_event_jsonl": "/var/log/smartbag/controller-events.jsonl",
@@ -18,10 +18,13 @@
   "alternating_camera": {
     "enabled": true,
     "backend": "v4l2_stream_toggle",
+    "detector_backend": "ss928_om",
+    "ss928_runtime_library": "/root/smartbag/vision/ss928_backend/lib/libsmartbag_ss928_acl.so",
+    "ss928_acl_config": "",
     "width": 640,
     "height": 480,
     "fps": 30,
-    "imgsz": 416,
+    "imgsz": 640,
     "conf": 0.08,
     "max_det": 30,
     "normal_slice_ms": 500,

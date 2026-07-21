@@ -1,5 +1,13 @@
 # 更新记录
 
+## 2026-07-21
+
+- 实现正式 `Ss928OmBackend`：新增常驻 `.om` 模型的 SS928 ACL C ABI，USB BGR 帧直接在内存中完成 RGB planar letterbox、NPU 执行、`1x84x8400 FP32` 解码、类别过滤、class-aware NMS 和原图坐标恢复，不再逐帧写临时图片。
+- NPU 检测结果接入现有稳定 ID、距离/速度估计、Future Conflict Gate、多帧风险稳定、visual/haptic 输出、risk CSV 和 overlay；单摄使用轻量 IoU tracker，交替双摄保持左右 tracker/risk/标定完全独立且只加载一个模型。
+- 双摄 performance CSV 新增 preprocess、NPU execute 和 postprocess 分项；部署配置默认选择 `yolov8n.om` 和 `ss928_om`，preflight 根据后端检查依赖，NPU 路径不要求 torch/Ultralytics/lap。
+- 新增 ARM64 adapter 构建脚本、模型 tensor 契约检查、无 Ultralytics 单元测试和部署说明。代码与交叉编译通过不等同于实板连续目标检测通过，真实 overlay、目标命中、30 分钟稳定性和温度仍需板端验收。
+- 最终本地回归为 293 项 Python 测试（292 通过、1 项 Linux-only 跳过），并通过 6 个小程序测试文件、24 个 JS 语法、22 个 tracked JSON、39 个 shell 语法、compileall、仓库策略和 whitespace 检查。
+
 ## 2026-07-20
 
 - 优化 SS928 交替预览稳定性：网页默认从三条重复 MJPEG 改为一条顶部实时交替流加每秒左右缓存快照；实板验证 `640x480@30`、300 ms 时间片、0 预热丢帧、每片 4 帧时，80 帧解码无黑帧或损坏，左右各约 4.85 FPS，交替总流约 8.52 FPS，最大帧间隔约 340 ms。

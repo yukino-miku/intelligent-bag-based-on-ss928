@@ -12,6 +12,6 @@ make MPP_SAMPLE_ROOT=/opt/ss928/mpp/sample
 
 ## 模型后端
 
-当前完整可用后端是 `UltralyticsBackend`，PC 可使用 PyTorch/OpenVINO，板端 `board_cpu` 只是一套低负载参数。OpenVINO 不是 SS928 NPU。`Ss928OmBackend` 目前只定义接口并给出明确未实现错误，不伪造推理结果。
+PC 端继续使用 `UltralyticsBackend` 和 PyTorch/OpenVINO。板端已实现 `Ss928OmBackend`：常驻加载 `.om`，通过 ACL 内存输入执行 NPU 推理，完成 RGB planar letterbox、COCO 类别过滤、NMS、坐标恢复和轻量 tracker，再复用原风险与 overlay 链。OpenVINO 不是 SS928 NPU。
 
-后续 `.om` 工作需要：确定官方 ModelZoo/转换工具版本；固定输入尺寸、颜色空间、量化和 NMS 契约；实现 MPP/VPSS 零拷贝或受控拷贝；映射 detector 输出到现有 `Observation`；以录制视频对齐 PyTorch 基线；最后在真实板上测量 FPS、CPU/NPU 占用、端到端时延和温度。
+当前模型契约固定为 RGB_PLANAR 输入和单个 FP32 `1x84x8400` 输出。仍需在真实板上完成连续双摄目标命中、PyTorch 基线对齐、FPS/CPU/NPU/端到端时延/温度和 30 分钟稳定性验收。MPP/VPSS 零拷贝属于后续优化；当前正式链路使用一次受控 CPU 内存预处理和 ACL 缓冲区拷贝，不伪称零拷贝。
