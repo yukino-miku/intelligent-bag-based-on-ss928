@@ -564,12 +564,16 @@ class GatewayTest(unittest.TestCase):
 
         self.assertIn("let view='raw'", page)
         self.assertIn('<button id="toggle" disabled>检测画面不可用</button>', page)
-        self.assertIn("/api/v1/alternating/mjpeg", page)
-        self.assertIn("/api/v1/camera/${s}/snapshot.jpg", page)
+        self.assertNotIn("/api/v1/alternating/mjpeg", page)
+        self.assertIn("/api/v1/camera/${displaySide}/snapshot.jpg", page)
         self.assertNotIn("/api/v1/camera/${s}/mjpeg", page)
+        self.assertIn('id="focus-img"', page)
+        self.assertNotIn('id="left-img"', page)
+        self.assertNotIn('id="right-img"', page)
+        self.assertIn("setInterval(rotateSide,1000)", page)
         self.assertIn("FPS(L/R)", page)
         self.assertIn("p95_switch_latency_ms", page)
-        self.assertIn("低延迟交替画面", page)
+        self.assertIn("每 1 秒切换", page)
         self.assertIn(".onerror=", page)
 
     def test_debug_page_keeps_overlay_default_when_both_sides_are_available(self) -> None:
@@ -587,7 +591,7 @@ class GatewayTest(unittest.TestCase):
             page = response.read().decode("utf-8")
 
         self.assertIn("let view='overlay'", page)
-        self.assertIn("切换为原始画面", page)
+        self.assertIn("切换到原始画面", page)
 
     def test_mjpeg_emits_new_capture_when_v4l2_sequence_repeats(self) -> None:
         first = b"\xff\xd8first-jpeg\xff\xd9"

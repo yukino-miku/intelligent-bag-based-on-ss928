@@ -399,24 +399,21 @@ class AlternatingCameraGateway:
         token_query = f"&token={quote_plus(token)}" if token else ""
         status_query = f"?token={quote_plus(token)}" if token else ""
         overlay_ready = default_view == "overlay"
-        toggle_label = "切换为原始画面" if overlay_ready else "检测画面不可用"
+        toggle_label = "切换到原始画面" if overlay_ready else "检测画面不可用"
         toggle_disabled = "" if overlay_ready else " disabled"
         return f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>SS928 交替双摄</title>
-<style>body{{font-family:system-ui,sans-serif;margin:0;background:#101214;color:#eee}}header{{padding:12px 18px;background:#191d20;display:flex;gap:14px;align-items:center;flex-wrap:wrap}}button{{padding:7px 12px}}.live{{margin:12px;border:1px solid #444;background:#171a1d;padding:8px}}.live img{{max-height:68vh}}.grid{{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:0 12px 12px}}section{{border:1px solid #444;background:#171a1d;padding:8px}}img{{width:100%;aspect-ratio:4/3;object-fit:contain;background:#000}}pre{{white-space:pre-wrap;font-size:12px;min-height:12em}}@media(max-width:800px){{.grid{{grid-template-columns:1fr}}}}</style></head>
-<body><header><strong>SS928 交替双摄</strong><button id="toggle"{toggle_disabled}>{toggle_label}</button><span id="global">读取状态中</span></header>
-<section class="live"><h2>低延迟交替画面</h2><img id="alternating-img"><div id="active-note">等待摄像头</div></section><div class="grid">
-<section><h2>左侧</h2><img id="left-img"><pre id="left"></pre></section>
-<section><h2>右侧</h2><img id="right-img"><pre id="right"></pre></section></div>
-<script>let view='{default_view}',overlayReady={str(overlay_ready).lower()};const token='{token_query}',reconnectTimers={{}},toggle=document.getElementById('toggle');
-function refreshSnapshot(s){{document.getElementById(s+'-img').src=`/api/v1/camera/${{s}}/snapshot.jpg?view=${{view}}${{token}}&t=${{Date.now()}}`;}}
-function connectAlternating(){{document.getElementById('alternating-img').src=`/api/v1/alternating/mjpeg?view=${{view}}${{token}}&t=${{Date.now()}}`;}}
-function refreshSnapshots(){{for(const s of ['left','right'])refreshSnapshot(s);}}
-function setStreams(){{connectAlternating();refreshSnapshots();}}
-function updateToggle(){{toggle.disabled=!overlayReady&&view==='raw';toggle.textContent=view==='overlay'?'切换为原始画面':overlayReady?'切换为检测画面':'检测画面不可用';}}
-document.getElementById('alternating-img').onerror=()=>{{clearTimeout(reconnectTimers.alternating);reconnectTimers.alternating=setTimeout(connectAlternating,1000);}};
-toggle.onclick=()=>{{if(view==='raw'&&!overlayReady)return;view=view==='overlay'?'raw':'overlay';updateToggle();setStreams();}};
-async function poll(){{try{{const r=await fetch('/api/v1/status{status_query}');const v=await r.json();overlayReady=v.cameras.length===2&&v.cameras.every(c=>c.overlay_available);if(view==='overlay'&&!overlayReady){{view='raw';setStreams();}}updateToggle();const fps=v.cameras.map(c=>`${{c.side[0].toUpperCase()}}:${{c.effective_fps??'-'}}`).join('/');document.getElementById('global').textContent=`当前采集: ${{v.active_camera||'切换中'}} | FPS(L/R): ${{fps}} | 切换 p95: ${{v.p95_switch_latency_ms??'-'}} ms | CPU: ${{v.cpu_percent??'-'}}% | RSS: ${{v.process_rss_mb??'-'}} MiB`;document.getElementById('active-note').textContent=`当前来源: ${{v.active_camera||'切换中'}}；下方非活动侧显示最近缓存帧`;for(const c of v.cameras)document.getElementById(c.side).textContent=JSON.stringify(c,null,2);refreshSnapshots();}}catch(e){{document.getElementById('global').textContent=String(e);}}setTimeout(poll,1000);}}setStreams();poll();</script></body></html>"""
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>SS928 左右交替监测</title>
+<style>body{{font-family:system-ui,sans-serif;margin:0;background:#101214;color:#eee}}header{{padding:12px 18px;background:#191d20;display:flex;gap:14px;align-items:center;flex-wrap:wrap}}button{{padding:7px 12px}}.live{{margin:12px;border:1px solid #444;background:#171a1d;padding:8px}}.live img{{max-height:76vh}}.status-grid{{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:0 12px 12px}}section{{border:1px solid #444;background:#171a1d;padding:8px}}img{{width:100%;aspect-ratio:4/3;object-fit:contain;background:#000}}pre{{white-space:pre-wrap;font-size:12px;min-height:8em}}@media(max-width:800px){{.status-grid{{grid-template-columns:1fr}}}}</style></head>
+<body><header><strong>SS928 左右交替监测</strong><button id="toggle"{toggle_disabled}>{toggle_label}</button><span id="global">读取状态中</span></header>
+<section class="live"><h2 id="frame-title">左侧检测画面</h2><img id="focus-img"><div id="active-note">等待左侧画面</div></section>
+<div class="status-grid"><section><h2>左侧状态</h2><pre id="left"></pre></section><section><h2>右侧状态</h2><pre id="right"></pre></section></div>
+<script>let view='{default_view}',overlayReady={str(overlay_ready).lower()},displaySide='left';const token='{token_query}',toggle=document.getElementById('toggle'),focus=document.getElementById('focus-img');
+function refreshFocus(){{focus.src=`/api/v1/camera/${{displaySide}}/snapshot.jpg?view=${{view}}${{token}}&t=${{Date.now()}}`;const name=displaySide==='left'?'左侧':'右侧';document.getElementById('frame-title').textContent=`${{name}}${{view==='overlay'?'检测':'原始'}}画面`;document.getElementById('active-note').textContent=`当前显示：${{name}}；每 1 秒切换`;}}
+function rotateSide(){{displaySide=displaySide==='left'?'right':'left';refreshFocus();}}
+function updateToggle(){{toggle.disabled=!overlayReady&&view==='raw';toggle.textContent=view==='overlay'?'切换到原始画面':overlayReady?'切换到检测画面':'检测画面不可用';}}
+focus.onerror=()=>setTimeout(refreshFocus,500);
+toggle.onclick=()=>{{if(view==='raw'&&!overlayReady)return;view=view==='overlay'?'raw':'overlay';updateToggle();refreshFocus();}};
+async function poll(){{try{{const r=await fetch('/api/v1/status{status_query}');const v=await r.json();overlayReady=v.cameras.length===2&&v.cameras.every(c=>c.overlay_available);if(view==='overlay'&&!overlayReady){{view='raw';refreshFocus();}}updateToggle();const fps=v.cameras.map(c=>`${{c.side[0].toUpperCase()}}:${{c.effective_fps??'-'}}`).join('/');document.getElementById('global').textContent=`当前采集: ${{v.active_camera||'切换中'}} | FPS(L/R): ${{fps}} | 切换 p95: ${{v.p95_switch_latency_ms??'-'}} ms | CPU: ${{v.cpu_percent??'-'}}% | RSS: ${{v.process_rss_mb??'-'}} MiB`;for(const c of v.cameras)document.getElementById(c.side).textContent=JSON.stringify(c,null,2);}}catch(e){{document.getElementById('global').textContent=String(e);}}setTimeout(poll,1000);}}refreshFocus();setInterval(rotateSide,1000);poll();</script></body></html>"""
 
     def __enter__(self) -> "AlternatingCameraGateway":
         self.start()

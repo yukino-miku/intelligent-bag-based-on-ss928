@@ -2,6 +2,7 @@
 
 ## 2026-07-21
 
+- 按现场观察需求将板端双摄网页改为一个主画面，每 1 秒轮换显示左、右缓存的检测快照；两侧状态信息继续同时显示。显示轮换完全位于 HTTP 页面层，未修改相机 STREAMON/OFF 调度、每侧 NPU 推理、tracker、风险模型或 haptic 输出。
 - 恢复板端以太网 SSH 后完成正式 NPU 短测。ACL 元数据确认板载 `yolov8n.om` 为逻辑 `1x640x640x3 UINT8`、物理 614400-byte 静态 AIPP NV12 输入；修正此前错误的 RGB byte-size 假设，并保留普通 RGB CHW/HWC 模型兼容。
 - 板端 84.425 秒完整链完成 99/99 次左右切换、99 帧 NPU/tracking/risk/overlay；NPU execute 约 25.66 ms，detector 总耗时约 81.1 ms，CPU 平均 14.403%，RSS 平均 115.916 MiB。E2E p95/max 为 1219.665/1272.578 ms，短测尚未达到 1200 ms max 门限。
 - 左右 raw/overlay HTTP 均可读取，但两台相机当前连续输出近乎全黑 JPEG；50 帧持续采样仍黑，且正确 capture 节点和 V4L2 控制已核对。因此记录为 NPU 链功能通过、实景目标命中阻塞，不宣称检测框和风险实景验收通过。
