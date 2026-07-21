@@ -706,6 +706,8 @@ def alternating_detector_command_from_config(config: dict[str, object]) -> str:
         str(alternating.get("conf", 0.08)),
         "--max-det",
         str(alternating.get("max_det", 30)),
+        "--target-classes",
+        str(alternating.get("target_classes", "person,bicycle,car,motorcycle,bus,truck")),
         "--tracker-nominal-fps",
         str(alternating.get("tracker_nominal_fps", alternating.get("fps", 10))),
         "--tracker-effective-fps-mode",
@@ -756,6 +758,17 @@ def alternating_detector_command_from_config(config: dict[str, object]) -> str:
         argv.extend(["--left-calibration-file", left_calibration])
     if right_calibration:
         argv.extend(["--right-calibration-file", right_calibration])
+    for side, camera in (("left", left), ("right", right)):
+        argv.extend(
+            [
+                f"--{side}-rotation-deg",
+                str(camera.get("rotation_deg", 0)),
+            ]
+        )
+        if bool(camera.get("flip_horizontal", False)):
+            argv.append(f"--{side}-flip-horizontal")
+        if bool(camera.get("flip_vertical", False)):
+            argv.append(f"--{side}-flip-vertical")
     if not bool(alternating.get("risk_priority_enabled", True)):
         argv.append("--disable-risk-priority")
     if not bool(alternating.get("camera_reconnect_enabled", True)):
@@ -764,6 +777,8 @@ def alternating_detector_command_from_config(config: dict[str, object]) -> str:
         argv.append("--disable-video-gateway")
     if not bool(alternating.get("allow_emergency_single_slice_fast_path", True)):
         argv.append("--disable-emergency-single-slice-fast-path")
+    if bool(alternating.get("allow_unstable_camera_paths", False)):
+        argv.append("--allow-unstable-camera-paths")
     return shlex.join(argv)
 
 
@@ -2001,7 +2016,25 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--skip-pinmux", action="store_true", help="Skip bspmm pinmux setup.")
     parser.add_argument("--dry-run", action="store_true", help="Print PWM/audio actions without touching hardware.")
     parser.add_argument("--preflight-only", action="store_true", help="Validate configuration and preflight enabled actuators without starting services.")
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--runtime-profile",
+        choices=("standard", "vision_only_validation"),
+        default="standard",
+        help="vision_only_validation keeps vision/logging enabled while hard-disabling every actuator.",
+    )
+    args = parser.parse_args(argv)
+    if args.runtime_profile == "vision_only_validation":
+        args.dry_run = True
+        args.disable_haptics = True
+        args.disable_lights = True
+        args.disable_radar = True
+        args.disable_imu = True
+        args.disable_gnss = True
+        args.disable_ble = True
+        args.no_ble = True
+        args.no_audio = True
+        args.skip_pinmux = True
+    return args
 
 
 def main() -> None:

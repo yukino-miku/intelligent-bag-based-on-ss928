@@ -43,7 +43,7 @@ install -m 0755 "$SCRIPT_DIR"/check-runtime-deps.sh "$SCRIPT_DIR"/install-board-
 install -m 0755 "$SCRIPT_DIR"/hardware-preflight.sh "$SCRIPT_DIR"/i2c-mux-test.sh "$SCRIPT_DIR"/tm6605-test.sh "$SCRIPT_DIR"/light-test.sh "$SCRIPT_DIR"/pwm-list.sh "$SCRIPT_DIR"/mr20-network-preflight.sh "$SCRIPT_DIR"/mr20-network-install.sh "$SCRIPT_DIR"/mr20-status.sh "$SCRIPT_DIR"/mr20-capture.sh "$SCRIPT_DIR"/full-hardware-test.sh "$SCRIPT_DIR"/smartbag-hardware-profile.sh "$DEST/board-deploy/"
 install -m 0755 "$SCRIPT_DIR"/pwm-probe.py "$SCRIPT_DIR"/mr20-capture.py "$SCRIPT_DIR"/migrate-config.py "$DEST/board-deploy/"
 install -m 0755 "$SCRIPT_DIR"/safe_off.py "$SCRIPT_DIR"/wait_for_hardware.py "$SCRIPT_DIR"/boot_selftest.py "$SCRIPT_DIR"/rev2-board-validation.py "$SCRIPT_DIR"/upgrade_rev2_runtime_config.py "$DEST/board-deploy/"
-cp -a "$SCRIPT_DIR/hardware-profiles" "$SCRIPT_DIR/systemd-networkd" "$DEST/board-deploy/"
+cp -a "$SCRIPT_DIR/hardware-profiles" "$SCRIPT_DIR/runtime-profiles" "$SCRIPT_DIR/systemd-networkd" "$DEST/board-deploy/"
 install -m 0755 "$REPO_ROOT/05_firmware/ss928/pinmux/apply-smartbag-pinmux.sh" "$DEST/apply-smartbag-pinmux.sh"
 
 find "$DEST" -type d -name __pycache__ -prune -exec rm -rf {} +
@@ -143,7 +143,7 @@ git -C "$REPO_ROOT" rev-parse HEAD >"$DEST/REVISION" 2>/dev/null || printf 'unkn
 install -m 0644 "$SCRIPT_DIR/journald-smartbag.conf" /etc/systemd/journald.conf.d/smartbag.conf
 systemctl daemon-reload
 systemctl try-restart systemd-journald.service || true
-systemctl disable smartbag-alert.service smartbag-video.service smartbag-alternating-vision.service 2>/dev/null || true
+systemctl disable smartbag-alert.service smartbag-video.service smartbag-alternating-vision.service smartbag-vision-validation.service 2>/dev/null || true
 systemctl enable smartbag.target
 systemctl enable smartbag-alternating-cleanup.timer
 

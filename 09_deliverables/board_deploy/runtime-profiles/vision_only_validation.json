@@ -1,0 +1,17 @@
+{
+  "profile": "vision_only_validation",
+  "camera": true,
+  "npu": true,
+  "tracking": true,
+  "distance_speed": true,
+  "risk": true,
+  "gateway": true,
+  "jsonl_csv": true,
+  "controller_alert_dry_run": true,
+  "tm6605": false,
+  "lights": false,
+  "audio": false,
+  "radar": false,
+  "ble": false,
+  "cloud": false
+}

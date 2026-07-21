@@ -119,3 +119,10 @@
 - 已安装依赖 `opencv-python`、`ultralytics`、`torch CPU`、`lap`；实测视频入口和摄像头入口均可处理限定帧数并退出。
 - 视觉原型性能调优：`2560x1440` 在 OpenCV 摄像头读取阶段即被限制到约 `1.6fps`，不是 YOLO 本身瓶颈；改为默认 FFmpeg MJPEG 管道读取 `1280x720`，YOLO `imgsz=416`，实测约 `18fps`，兼顾识别细节和实时性。若追求更高帧率可改 `640x480`。
 - 修复 1080p 实时预览延迟：原 FFmpeg 摄像头读取按 FIFO 顺序处理 MJPEG 帧，YOLO 低于摄像头帧率时会积压旧帧；改为后台线程持续读取并只保留最新帧，主循环跳过过期帧。`1920x1080 + imgsz=416` 实测约 `17fps`，但延迟不再随运行时间累积。
+# 2026-07-22
+
+- 从 `agent/rev2-autonomous-board-runtime@c7991cfd62411bb7c99fa4a94b7397769404394a` 创建 `agent/complete-ss928-vision-runtime`。
+- 完成 PC/SS928 视觉链一致性审计，确认板端在 detector backend 之后复用原有 TrackState、RiskModel 和 RiskWarningStabilizer。
+- 增加摄像头物理身份硬闸门、左右 rotation/flip、时间感知轻量 tracker、四类视觉 session CSV、生产标定硬闸门和无 GUI 工具。
+- 增加 `vision_only_validation`，验证期间不访问物理执行器。
+- 网络和串口复查未找到可连接 SS928，记录 `BOARD_CONNECTION_BLOCKED`；实板验收项继续保持未通过。

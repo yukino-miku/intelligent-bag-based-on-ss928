@@ -23,6 +23,7 @@ from smartbag_alert_controller import (
     append_output_timing_jsonl,
     apply_effective_output,
     detector_commands_from_config,
+    parse_args,
     should_publish_alert_history,
     validate_dual_camera_config,
 )
@@ -203,8 +204,24 @@ class AlertControllerPipelineTest(unittest.TestCase):
         self.assertIn("--min-confirm-slices-danger 2", command)
         self.assertIn("--serve-port 8080", command)
         self.assertIn("--camera-reconnect-attempts 5", command)
+        self.assertIn("--target-classes person,bicycle,car,motorcycle,bus,truck", command)
+        self.assertIn("--left-rotation-deg 0", command)
+        self.assertIn("--right-rotation-deg 0", command)
         self.assertNotIn("--risk-log-dir", command)
         self.assertNotIn("--side", command)
+
+    def test_vision_only_validation_profile_hard_disables_outputs(self) -> None:
+        args = parse_args(["--runtime-profile", "vision_only_validation"])
+
+        self.assertTrue(args.dry_run)
+        self.assertTrue(args.disable_haptics)
+        self.assertTrue(args.disable_lights)
+        self.assertTrue(args.no_audio)
+        self.assertTrue(args.disable_radar)
+        self.assertTrue(args.disable_ble)
+        self.assertTrue(args.disable_imu)
+        self.assertTrue(args.disable_gnss)
+        self.assertFalse(args.disable_vision)
 
     def test_alternating_config_can_disable_risk_priority(self) -> None:
         config = {

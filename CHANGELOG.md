@@ -1,5 +1,18 @@
 # 更新记录
 
+## 2026-07-22
+
+- 建立 `agent/complete-ss928-vision-runtime`，保持 PC/SS928 共用 StableTrackId、TrackState、标定/背包坐标、Future Conflict、CPA、corridor、moving-away、RiskModel、稳定器和 alert 协议。
+- 正式交替运行默认只接受两条不同的 `/dev/v4l/by-path/*video-index0`，校验真实节点和 USB 物理身份，并在摄像头重开后验证身份未交换。
+- 新增左右独立 rotation/flip，统一在 detector、calibration 和 overlay 之前执行；production 标定必须匹配旋转后分辨率和图像方向。
+- SS928 NumPy tracker 增加真实时间戳、时间型 lost buffer、中心速度估计和运动预测；保留左右完全隔离，不宣称等价 BoT-SORT。
+- 默认目标类别补齐 `person,bicycle,car,motorcycle,bus,truck`。
+- session 新增 detections、tracks、distance-speed、risk-events 四类流式 CSV，以及 snapshots/overlays 目录；状态页增加速度、CPA、path conflict 和 raw/visual/haptic 字段。
+- 新增无 GUI 棋盘采集、内参计算、标定校验和 UVC 黑帧证据工具。
+- 新增 `vision_only_validation` controller profile 与 systemd unit，强制关闭全部物理输出和非视觉模块。
+- 本轮板端连接不可达，未执行黑帧恢复、真实标定、模型对比、长测、重启和 power-only 验收；结论保持 `VISION_POWER_ONLY_NOT_READY`。
+
+
 ## 2026-07-21
 
 - 将官方 YOLO11n 同一权重正确重导出为 FP32 `1x3x640x640 -> 1x84x8400` ONNX，并使用官方 `SVP_NNN_PC_V1.0.6.0`、`SS928V100`、`compile_mode=6` 和 RGB_PLANAR 静态 AIPP 成功生成 3,426,459-byte OM；新增可复现转换脚本、ONNX 契约检查、校准列表工具和中文说明。OM SHA256 为 `9e3c448ab7309428ea78cfdc509926404220fa74dd56c89e4995366f5f16af95`；本地 301 项 Python 测试通过（1 项 Linux-only 跳过）。当前以太网未连接，实板 ACL/目标命中仍待验证，未替换默认 `yolov8n.om`。

@@ -67,7 +67,19 @@ class _TrackMemory:
     track_id: int
     class_id: int
     bbox_xyxy: tuple[float, float, float, float]
+    first_seen_s: float
+    last_seen_s: float
+    velocity_x_px_s: float = 0.0
+    velocity_y_px_s: float = 0.0
+    hits: int = 1
     missed_frames: int = 0
+
+    def predicted_bbox(self, timestamp_s: float, max_prediction_s: float) -> tuple[float, float, float, float]:
+        dt = min(max(0.0, timestamp_s - self.last_seen_s), max_prediction_s)
+        dx = self.velocity_x_px_s * dt
+        dy = self.velocity_y_px_s * dt
+        x1, y1, x2, y2 = self.bbox_xyxy
+        return x1 + dx, y1 + dy, x2 + dx, y2 + dy
 
 
 def _bbox_iou(
@@ -109,20 +121,33 @@ class IndependentIouTracker:
         *,
         iou_threshold: float = 0.15,
         center_distance_threshold: float = 0.10,
-        max_missed_frames: int = 5,
+        max_missed_frames: int = 30,
+        max_lost_s: float = 1.5,
+        max_prediction_s: float = 1.0,
+        velocity_smoothing: float = 0.5,
     ) -> None:
         self.iou_threshold = float(iou_threshold)
         self.center_distance_threshold = float(center_distance_threshold)
         self.max_missed_frames = max(1, int(max_missed_frames))
+        self.max_lost_s = max(0.05, float(max_lost_s))
+        self.max_prediction_s = max(0.0, float(max_prediction_s))
+        self.velocity_smoothing = min(max(float(velocity_smoothing), 0.0), 1.0)
         self._next_track_id = 1
         self._tracks: dict[int, _TrackMemory] = {}
 
     def update_effective_fps(self, _effective_fps: float) -> None:
         return
 
-    def update(self, result: Any, _image: object = None) -> Any:
+    def update(
+        self,
+        result: Any,
+        _image: object = None,
+        *,
+        timestamp_s: float | None = None,
+    ) -> Any:
         if not isinstance(result, PortableDetectionResult):
             raise TypeError("IndependentIouTracker requires PortableDetectionResult")
+        timestamp_s = time.monotonic() if timestamp_s is None else float(timestamp_s)
 
         for memory in self._tracks.values():
             memory.missed_frames += 1
@@ -135,9 +160,10 @@ class IndependentIouTracker:
             for track_id, memory in self._tracks.items():
                 if track_id in assigned_tracks or memory.class_id != detection.class_id:
                     continue
-                iou = _bbox_iou(memory.bbox_xyxy, detection.bbox_xyxy)
+                predicted_bbox = memory.predicted_bbox(timestamp_s, self.max_prediction_s)
+                iou = _bbox_iou(predicted_bbox, detection.bbox_xyxy)
                 center_distance = _normalized_center_distance(
-                    memory.bbox_xyxy,
+                    predicted_bbox,
                     detection.bbox_xyxy,
                     result.orig_shape,
                 )
@@ -155,10 +181,29 @@ class IndependentIouTracker:
                     best_track_id,
                     detection.class_id,
                     detection.bbox_xyxy,
+                    timestamp_s,
+                    timestamp_s,
                 )
             else:
                 memory = self._tracks[best_track_id]
+                previous_x = (memory.bbox_xyxy[0] + memory.bbox_xyxy[2]) * 0.5
+                previous_y = (memory.bbox_xyxy[1] + memory.bbox_xyxy[3]) * 0.5
+                current_x = (detection.bbox_xyxy[0] + detection.bbox_xyxy[2]) * 0.5
+                current_y = (detection.bbox_xyxy[1] + detection.bbox_xyxy[3]) * 0.5
+                dt = timestamp_s - memory.last_seen_s
+                if dt > 1e-6:
+                    alpha = self.velocity_smoothing
+                    observed_vx = (current_x - previous_x) / dt
+                    observed_vy = (current_y - previous_y) / dt
+                    memory.velocity_x_px_s = (
+                        alpha * observed_vx + (1.0 - alpha) * memory.velocity_x_px_s
+                    )
+                    memory.velocity_y_px_s = (
+                        alpha * observed_vy + (1.0 - alpha) * memory.velocity_y_px_s
+                    )
                 memory.bbox_xyxy = detection.bbox_xyxy
+                memory.last_seen_s = timestamp_s
+                memory.hits += 1
                 memory.missed_frames = 0
             assigned_tracks.add(best_track_id)
             tracked_detections.append(replace(detection, track_id=best_track_id))
@@ -167,6 +212,7 @@ class IndependentIouTracker:
             track_id: memory
             for track_id, memory in self._tracks.items()
             if memory.missed_frames <= self.max_missed_frames
+            and timestamp_s - memory.last_seen_s <= self.max_lost_s
         }
         result.detections = tracked_detections
         return result

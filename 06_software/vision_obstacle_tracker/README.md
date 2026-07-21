@@ -1,5 +1,32 @@
 # Vision Obstacle Tracker
 
+## SS928 双摄正式链路
+
+`alternating_dual_camera_tracker.py` 使用一个 detector 模型和两个独立 side context。正式运行默认要求两条不同的 `/dev/v4l/by-path/*video-index0`，并拒绝同一真实视频节点或同一 USB 物理设备。目标默认类别为 `person,bicycle,car,motorcycle,bus,truck`。
+
+每侧可配置：
+
+- `--left-rotation-deg/--right-rotation-deg 0|90|180|270`
+- `--left-flip-horizontal/--right-flip-horizontal`
+- `--left-flip-vertical/--right-flip-vertical`
+- `--allow-unstable-camera-paths` 仅用于诊断，正式服务不要使用
+
+方向变换发生在 detector、calibration 和 overlay 之前。`production` 标定文件必须匹配变换后的宽高和 image_transform，否则启动失败。
+
+板端 session 位于配置的 `output_dir/<SESSION_ID>/`，包含 `session.json`、camera/switch/performance CSV、`detections.csv`、`tracks.csv`、`distance-speed.csv`、`risk-events.csv`、`alerts.csv`、`errors.log`、summary 和 snapshots/overlays 目录。CSV 按行流式写入，不缓存完整视频。
+
+无 GUI 工具：
+
+```sh
+python3 tools/diagnose_uvc_black_frames.py --device /dev/v4l/by-path/LEFT-video-index0 --output-dir /tmp/left-camera --frames 50
+python3 tools/capture_calibration_images.py --left-device /dev/v4l/by-path/LEFT-video-index0 --right-device /dev/v4l/by-path/RIGHT-video-index0 --right-rotation-deg 90 --output-dir /var/lib/smartbag/calibration/capture
+python3 tools/calibrate_intrinsics.py --images '/var/lib/smartbag/calibration/capture/left/*.jpg' --side left --square-size-m 0.025 --mount-x-m -0.15 --output /etc/smartbag/calibration-left.json
+python3 tools/validate_calibration.py /etc/smartbag/calibration-left.json --side left --mode production --expected-width 640 --expected-height 480 --expected-rotation-deg 0
+```
+
+`diagnose_uvc_black_frames.py` 同时检查亮度、标准差、熵、边缘密度和可见动态范围，并保存原始 MJPEG 与解码 PNG。`capture_calibration_images.py` 自动拒绝重复棋盘姿态；`calibrate_intrinsics.py` 输出逐图重投影误差。未完成真实安装尺寸测量时，不得把 extrinsics 标记为 calibrated。
+
+
 PC-side prototype for USB-camera or recorded-video testing:
 
 - YOLO object detection

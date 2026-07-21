@@ -106,6 +106,8 @@ CAMERA_EVENT_FIELDS = (
 PERFORMANCE_FIELDS = (
     "timestamp",
     "active_side",
+    "capture_fps",
+    "side_effective_fps",
     "left_effective_fps",
     "right_effective_fps",
     "left_last_frame_age_ms",
@@ -114,11 +116,13 @@ PERFORMANCE_FIELDS = (
     "mean_switch_latency_ms",
     "p95_switch_latency_ms",
     "inference_fps",
+    "decode_ms",
     "inference_ms",
     "detector_preprocess_ms",
     "npu_inference_ms",
     "detector_postprocess_ms",
     "tracking_ms",
+    "distance_ms",
     "risk_ms",
     "draw_ms",
     "jpeg_encode_ms",
@@ -178,6 +182,70 @@ ALERT_FIELDS = (
     "observation_age_ms",
 )
 
+DETECTION_FIELDS = (
+    "timestamp",
+    "side",
+    "slice_id",
+    "frame_id",
+    "class_id",
+    "class_name",
+    "confidence",
+    "x1",
+    "y1",
+    "x2",
+    "y2",
+)
+
+TRACK_FIELDS = (
+    "timestamp",
+    "side",
+    "track_id",
+    "class",
+    "age",
+    "hits",
+    "lost",
+    "id_switch_reason",
+)
+
+DISTANCE_SPEED_FIELDS = (
+    "timestamp",
+    "side",
+    "track_id",
+    "camera_x_m",
+    "camera_z_m",
+    "backpack_x_m",
+    "backpack_z_m",
+    "distance_m",
+    "longitudinal_speed_mps",
+    "lateral_speed_mps",
+    "closing_speed_mps",
+    "distance_source",
+    "distance_quality",
+    "speed_quality",
+)
+
+RISK_EVENT_FIELDS = (
+    "timestamp",
+    "side",
+    "track_id",
+    "class",
+    "distance_m",
+    "speed_mps",
+    "raw_level",
+    "visual_level",
+    "haptic_level",
+    "score",
+    "path_conflict",
+    "moving_away",
+    "cpa_time_s",
+    "cpa_distance_m",
+    "corridor_entry_time_s",
+    "pending_count",
+    "pending_slice_count",
+    "event_kind",
+    "clear_reason",
+)
+
 
 class _BufferedCsv:
     def __init__(self, path: Path, fieldnames: Iterable[str], flush_interval_s: float = 1.0) -> None:
@@ -223,6 +291,8 @@ class AlternatingSessionRecorder:
         self.session_dir.mkdir(parents=True, exist_ok=False)
         self.snapshots_dir = self.session_dir / "snapshots"
         self.snapshots_dir.mkdir()
+        self.overlays_dir = self.session_dir / "overlays"
+        self.overlays_dir.mkdir()
         self.latest_summary_path = Path(latest_summary_path) if latest_summary_path else None
         self.clock = clock
         self.started_monotonic_s = float(clock())
@@ -232,6 +302,19 @@ class AlternatingSessionRecorder:
         self.camera_csv = _BufferedCsv(self.session_dir / "camera-events.csv", CAMERA_EVENT_FIELDS)
         self.performance_csv = _BufferedCsv(self.session_dir / "performance.csv", PERFORMANCE_FIELDS)
         self.alerts_csv = _BufferedCsv(self.session_dir / "alerts.csv", ALERT_FIELDS)
+        self.detections_csv = _BufferedCsv(
+            self.session_dir / "detections.csv",
+            DETECTION_FIELDS,
+        )
+        self.tracks_csv = _BufferedCsv(self.session_dir / "tracks.csv", TRACK_FIELDS)
+        self.distance_speed_csv = _BufferedCsv(
+            self.session_dir / "distance-speed.csv",
+            DISTANCE_SPEED_FIELDS,
+        )
+        self.risk_events_csv = _BufferedCsv(
+            self.session_dir / "risk-events.csv",
+            RISK_EVENT_FIELDS,
+        )
         self.errors_file = (self.session_dir / "errors.log").open("w", encoding="utf-8")
         self.switch_events: deque[SwitchEvent] = deque(maxlen=TELEMETRY_WINDOW_SIZE)
         self.performance_rows: deque[dict[str, object]] = deque(maxlen=PERFORMANCE_WINDOW_SIZE)
@@ -438,6 +521,15 @@ class AlternatingSessionRecorder:
         row = {
             "timestamp": round(now_s, 6),
             "active_side": status.get("active_camera") or "none",
+            "capture_fps": round(
+                float(status.get("left_effective_fps", 0.0) or 0.0)
+                + float(status.get("right_effective_fps", 0.0) or 0.0),
+                3,
+            ),
+            "side_effective_fps": status.get(
+                f"{status.get('active_camera')}_effective_fps",
+                0.0,
+            ),
             "left_effective_fps": status.get("left_effective_fps", 0.0),
             "right_effective_fps": status.get("right_effective_fps", 0.0),
             "left_last_frame_age_ms": status.get("left_last_frame_age_ms"),
@@ -446,6 +538,7 @@ class AlternatingSessionRecorder:
             "mean_switch_latency_ms": status.get("average_switch_latency_ms"),
             "p95_switch_latency_ms": status.get("p95_switch_latency_ms"),
             "inference_fps": round(float(stage_metrics.get("inference_fps", 0.0)), 3),
+            "decode_ms": round(float(stage_metrics.get("decode_ms", 0.0)), 3),
             "inference_ms": round(float(stage_metrics.get("inference_ms", 0.0)), 3),
             "detector_preprocess_ms": round(
                 float(stage_metrics.get("detector_preprocess_ms", 0.0)), 3
@@ -455,6 +548,7 @@ class AlternatingSessionRecorder:
                 float(stage_metrics.get("detector_postprocess_ms", 0.0)), 3
             ),
             "tracking_ms": round(float(stage_metrics.get("tracking_ms", 0.0)), 3),
+            "distance_ms": round(float(stage_metrics.get("distance_ms", 0.0)), 3),
             "risk_ms": round(float(stage_metrics.get("risk_ms", 0.0)), 3),
             "draw_ms": round(float(stage_metrics.get("draw_ms", 0.0)), 3),
             "jpeg_encode_ms": round(float(stage_metrics.get("jpeg_encode_ms", 0.0)), 3),
@@ -538,6 +632,104 @@ class AlternatingSessionRecorder:
         if event_kind == "state_change" and row.get("fast_path_reason"):
             self.fast_path_count += 1
 
+    @staticmethod
+    def _level_value(value: object) -> int:
+        return int(getattr(value, "value", value) or 0)
+
+    def record_vision_result(
+        self,
+        result: object,
+        *,
+        timestamp_s: float,
+        side: str,
+        slice_id: int,
+        frame_id: int,
+        class_ids_by_name: dict[str, int] | None = None,
+    ) -> None:
+        class_ids_by_name = class_ids_by_name or {}
+        targets = list(getattr(result, "targets", ()))
+        raw_risks = getattr(result, "raw_risks", {})
+        display_risks = getattr(result, "display_risks", {})
+        stabilizer_debug = getattr(result, "stabilizer_debug", {})
+        for target in targets:
+            bbox = tuple(float(value) for value in target.bbox_xyxy)
+            class_name = str(target.class_name)
+            track_id = int(target.track_id)
+            raw = raw_risks.get(track_id)
+            display = display_risks.get(track_id)
+            debug = stabilizer_debug.get(track_id)
+            self.detections_csv.write(
+                {
+                    "timestamp": timestamp_s,
+                    "side": side,
+                    "slice_id": slice_id,
+                    "frame_id": frame_id,
+                    "class_id": class_ids_by_name.get(class_name, ""),
+                    "class_name": class_name,
+                    "confidence": target.confidence,
+                    "x1": bbox[0],
+                    "y1": bbox[1],
+                    "x2": bbox[2],
+                    "y2": bbox[3],
+                }
+            )
+            age = int(getattr(target, "track_age_frames", 1))
+            self.tracks_csv.write(
+                {
+                    "timestamp": timestamp_s,
+                    "side": side,
+                    "track_id": track_id,
+                    "class": class_name,
+                    "age": age,
+                    "hits": age,
+                    "lost": False,
+                    "id_switch_reason": "new_track" if age <= 1 else "continued",
+                }
+            )
+            camera_point = getattr(target, "camera_ground_point", None)
+            backpack_point = getattr(target, "ground_point", None)
+            self.distance_speed_csv.write(
+                {
+                    "timestamp": timestamp_s,
+                    "side": side,
+                    "track_id": track_id,
+                    "camera_x_m": getattr(camera_point, "x_m", ""),
+                    "camera_z_m": getattr(camera_point, "z_m", ""),
+                    "backpack_x_m": getattr(backpack_point, "x_m", ""),
+                    "backpack_z_m": getattr(backpack_point, "z_m", ""),
+                    "distance_m": getattr(target, "distance_m", ""),
+                    "longitudinal_speed_mps": getattr(target, "vz_mps", ""),
+                    "lateral_speed_mps": getattr(target, "vx_mps", ""),
+                    "closing_speed_mps": getattr(raw, "closing_speed_mps", ""),
+                    "distance_source": getattr(target, "distance_source", ""),
+                    "distance_quality": getattr(target, "distance_confidence", ""),
+                    "speed_quality": getattr(target, "velocity_confidence", ""),
+                }
+            )
+            self.risk_events_csv.write(
+                {
+                    "timestamp": timestamp_s,
+                    "side": side,
+                    "track_id": track_id,
+                    "class": class_name,
+                    "distance_m": getattr(target, "distance_m", ""),
+                    "speed_mps": getattr(target, "speed_mps", ""),
+                    "raw_level": self._level_value(getattr(raw, "level", 0)),
+                    "visual_level": self._level_value(getattr(display, "visual_level", 0)),
+                    "haptic_level": self._level_value(getattr(display, "haptic_level", 0)),
+                    "score": getattr(display, "score", getattr(raw, "score", 0.0)),
+                    "path_conflict": getattr(raw, "path_conflict", False),
+                    "moving_away": getattr(raw, "moving_away", False),
+                    "cpa_time_s": getattr(raw, "cpa_time_s", ""),
+                    "cpa_distance_m": getattr(raw, "cpa_distance_m", ""),
+                    "corridor_entry_time_s": getattr(raw, "corridor_entry_time_s", ""),
+                    "pending_count": getattr(debug, "pending_count", ""),
+                    "pending_slice_count": getattr(debug, "pending_slice_count", ""),
+                    "event_kind": "observation",
+                    "clear_reason": "",
+                }
+            )
+
     def _usb_error_count(self) -> int:
         return self.usb_error_count
 
@@ -547,6 +739,11 @@ class AlternatingSessionRecorder:
     def save_snapshot(self, frame: CapturedFrame, switch_index: int) -> Path:
         path = self.snapshots_dir / f"{switch_index:06d}-{frame.side}.jpg"
         path.write_bytes(frame.data)
+        return path
+
+    def save_overlay(self, data: bytes, side: str, frame_id: int) -> Path:
+        path = self.overlays_dir / f"{frame_id:08d}-{side}.jpg"
+        path.write_bytes(data)
         return path
 
     def error(self, message: str) -> None:
@@ -772,7 +969,16 @@ class AlternatingSessionRecorder:
     def close(self) -> None:
         if self._closed:
             return
-        for writer in (self.switch_csv, self.camera_csv, self.performance_csv, self.alerts_csv):
+        for writer in (
+            self.switch_csv,
+            self.camera_csv,
+            self.performance_csv,
+            self.alerts_csv,
+            self.detections_csv,
+            self.tracks_csv,
+            self.distance_speed_csv,
+            self.risk_events_csv,
+        ):
             writer.close()
         self.errors_file.close()
         self._closed = True

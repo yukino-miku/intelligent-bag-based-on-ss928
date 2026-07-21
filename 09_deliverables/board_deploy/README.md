@@ -356,3 +356,44 @@ sudo /root/smartbag/venv/bin/python /root/smartbag/board-deploy/safe_off.py --ha
 ```
 
 随后用 `fuser /dev/video0 /dev/video2` 确认两路均无占用。默认配置不等于实板验收：必须实际 enable target、断开电脑、完成两次断电/重启并检查 controller、safe-off、boot-selftest 和执行器清零，才能声明 `POWER_ONLY_AUTOSTART_READY`。
+# 视觉专用安全验收（2026-07-22）
+
+正式视觉验收先使用 `smartbag-vision-validation.service`。该 unit 使用 `vision_only_validation`，只运行双 UVC 交替采集、SS928 NPU、左右跟踪、测距测速、风险、JSONL/CSV 和浏览器 gateway；TM6605、灯光、音频、雷达、BLE、IMU、GNSS 与 pinmux 写入被命令行硬关闭。
+
+```sh
+sudo systemctl stop smartbag.target smartbag-controller.service smartbag-alternating-vision.service
+sudo systemctl start smartbag-vision-validation.service
+sudo systemctl status smartbag-vision-validation.service
+journalctl -u smartbag-vision-validation.service -f
+```
+
+正式模式必须在 `/etc/smartbag/config.json` 使用左右独立 `/dev/v4l/by-path/*video-index0`、`calibration_mode=production` 和两份真实标定。右摄像头如物理安装旋转 90 度，应在该侧配置 `rotation_deg: 90`，并用相同方向采集棋盘标定图。
+
+黑帧证据采集：
+
+```sh
+/root/smartbag/venv/bin/python /root/smartbag/vision/tools/diagnose_uvc_black_frames.py \
+  --device /dev/v4l/by-path/LEFT-video-index0 \
+  --output-dir /var/log/smartbag/camera-diagnostics/left --frames 50
+```
+
+双摄无 GUI 标定流程：
+
+```sh
+/root/smartbag/venv/bin/python /root/smartbag/vision/tools/capture_calibration_images.py \
+  --left-device /dev/v4l/by-path/LEFT-video-index0 \
+  --right-device /dev/v4l/by-path/RIGHT-video-index0 \
+  --right-rotation-deg 90 --output-dir /var/lib/smartbag/calibration/capture
+
+/root/smartbag/venv/bin/python /root/smartbag/vision/tools/calibrate_intrinsics.py \
+  --images '/var/lib/smartbag/calibration/capture/left/*.jpg' \
+  --side left --square-size-m 0.025 --mount-x-m -0.15 \
+  --camera-height-m 1.2 --camera-pitch-deg 5 \
+  --output /etc/smartbag/calibration-left.json
+
+/root/smartbag/venv/bin/python /root/smartbag/vision/tools/validate_calibration.py \
+  /etc/smartbag/calibration-left.json --side left --mode production \
+  --expected-width 640 --expected-height 480 --expected-rotation-deg 0
+```
+
+不要在未测量安装高度、pitch/yaw/roll、mount_x/mount_z 时传 `--mark-extrinsics-calibrated`。浏览器地址为 `http://<BOARD_IP>:8080/`，但浏览器不是核心服务依赖，客户端断开后检测必须继续。

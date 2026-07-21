@@ -1,5 +1,14 @@
 # 基于 SS928 的智能背包
 
+## 2026-07-22 视觉运行链更新
+
+本项目的正式板端视觉链是：左右 UVC 按物理 `by-path` 交替采集，单个 SS928 `.om` 模型常驻 NPU，左右 tracker/轨迹历史独立，随后复用 PC 端同一套标定、背包坐标、测距测速、Future Conflict Gate、CPA、corridor、moving-away、风险模型和多帧/跨 slice 稳定器。震动控制只允许消费稳定后的 haptic level，不能读取 raw risk。
+
+本轮新增了摄像头物理身份硬校验、每侧 rotation/flip、时间感知轻量 tracker、完整 session CSV、无 GUI 双摄标定工具、黑帧证据工具和 `vision_only_validation`。后者只开启相机、NPU、跟踪、风险、gateway 和日志，强制关闭 TM6605、灯光、音频、雷达、BLE、IMU、GNSS 与 pinmux 写入。
+
+当前板端无法通过 SSH、历史 IP 或 USB 串口访问，真实黑帧恢复、双摄 `calibrated=true`、YOLO8/YOLO11 实景对比、1/2/3/5 米误差、30 分钟长测、两次重启和仅供电启动均未执行。当前结论是 `VISION_POWER_ONLY_NOT_READY`。详见 [完整视觉状态](02_research/complete-ss928-vision-status.md)、[PC/SS928 一致性审计](02_research/pc-to-ss928-vision-parity-audit.md) 和 [验收摘要](07_tests/results/complete-ss928-vision/latest-summary.md)。
+
+
 视觉风险模型保持纯视觉：检测、跟踪、单目距离/速度、Future Conflict Gate、多帧稳定、visual/haptic 分层和自身前景过滤均由 `06_software/vision_obstacle_tracker` 完成。Rev2 板端另接 MR20 作为独立告警来源；它不改写视觉风险，而是在各自多帧确认后按 `(source, side)` 与视觉结果取同侧最大有效等级。
 
 ## 当前能力

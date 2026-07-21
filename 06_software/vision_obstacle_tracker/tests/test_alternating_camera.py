@@ -15,6 +15,7 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from alternating_camera.gateway import AlternatingCameraGateway
+from alternating_camera.image_transform import CameraImageTransform
 from alternating_camera.pipeline import ObservationGapTracker, select_latest_inference_frames
 from alternating_camera.scheduler import (
     AlternatingCaptureConfig,
@@ -27,8 +28,12 @@ from alternating_camera.scheduler import (
 from alternating_camera.session import (
     ALERT_FIELDS,
     CAMERA_EVENT_FIELDS,
+    DETECTION_FIELDS,
+    DISTANCE_SPEED_FIELDS,
     PERFORMANCE_FIELDS,
+    RISK_EVENT_FIELDS,
     SWITCH_EVENT_FIELDS,
+    TRACK_FIELDS,
     AlternatingSessionRecorder,
 )
 from alternating_camera.v4l2_capture import NegotiatedFormat, RawMjpegFrame
@@ -133,7 +138,16 @@ class FakeDevice:
         return [{"pixel_format": "MJPG", "sizes": [{"width": self.width, "height": self.height, "fps": [30.0]}]}]
 
     def identity(self):
-        return {"requested_path": self.path, "vid": "0000", "pid": "0000", "serial": "fixture"}
+        side = "left" if "left" in self.path or "1.3" in self.path else "right"
+        return {
+            "requested_path": self.path,
+            "resolved_path": f"/dev/video-{side}",
+            "bus_info": f"usb-fixture-{side}",
+            "usb_device": f"1-{3 if side == 'left' else 4}",
+            "vid": "0000",
+            "pid": "0000",
+            "serial": "fixture",
+        }
 
 
 def build_capture(*, config=None, left_options=None, right_options=None):
@@ -165,6 +179,81 @@ def build_capture(*, config=None, left_options=None, right_options=None):
 
 
 class AlternatingCaptureTest(unittest.TestCase):
+    def test_production_identity_gate_requires_by_path_index0(self) -> None:
+        config = AlternatingCaptureConfig(
+            frames_per_slice=1,
+            warmup_frames=0,
+            require_stable_camera_paths=True,
+        )
+        capture, _clock, _shared = build_capture(config=config)
+
+        with self.assertRaisesRegex(ValueError, "by-path"):
+            capture.open()
+
+    def test_production_identity_gate_accepts_distinct_by_path_devices(self) -> None:
+        clock = FakeClock()
+        shared = {"events": [], "devices": []}
+
+        def factory(path, width, height, fps):
+            device = FakeDevice(path, width, height, fps, clock=clock, shared=shared)
+            shared["devices"].append(device)
+            return device
+
+        capture = AlternatingV4l2Capture(
+            "/dev/v4l/by-path/platform-x-usb-0:1.3:1.0-video-index0",
+            "/dev/v4l/by-path/platform-x-usb-0:1.4:1.0-video-index0",
+            AlternatingCaptureConfig(
+                frames_per_slice=1,
+                warmup_frames=0,
+                require_stable_camera_paths=True,
+            ),
+            device_factory=factory,
+            clock=clock,
+            sleep=lambda seconds: clock.advance(seconds),
+        )
+
+        capture.open()
+
+        self.assertNotEqual(
+            capture.camera_identities()["left"]["usb_device"],
+            capture.camera_identities()["right"]["usb_device"],
+        )
+        capture.close()
+
+    def test_reopen_rejects_camera_identity_swap(self) -> None:
+        clock = FakeClock()
+        shared = {"events": [], "devices": []}
+
+        def factory(path, width, height, fps):
+            device = FakeDevice(path, width, height, fps, clock=clock, shared=shared)
+            shared["devices"].append(device)
+            return device
+
+        capture = AlternatingV4l2Capture(
+            "/dev/v4l/by-path/platform-x-usb-0:1.3:1.0-video-index0",
+            "/dev/v4l/by-path/platform-x-usb-0:1.4:1.0-video-index0",
+            AlternatingCaptureConfig(
+                frames_per_slice=1,
+                warmup_frames=0,
+                require_stable_camera_paths=True,
+            ),
+            device_factory=factory,
+            clock=clock,
+        )
+        capture.open()
+        left_device = capture.devices["left"]
+        original_identity = left_device.identity
+        left_device.identity = lambda: {
+            **original_identity(),
+            "bus_info": "usb-fixture-swapped",
+            "usb_device": "1-9",
+        }
+
+        with self.assertRaisesRegex(ValueError, "identity changed"):
+            capture._validate_camera_identities(initial=False, reopened_side="left")
+
+        capture.close()
+
     def test_streamoff_precedes_other_side_streamon_and_only_one_is_active(self) -> None:
         capture, _clock, shared = build_capture()
         capture.open()
@@ -384,6 +473,27 @@ class AlternatingCaptureTest(unittest.TestCase):
         self.assertLessEqual(tracker_buffer_frames(1000.0, 300), 300)
 
 
+class CameraImageTransformTest(unittest.TestCase):
+    def test_rotation_changes_dimensions_before_calibration(self) -> None:
+        transform = CameraImageTransform(rotation_deg=90)
+
+        self.assertEqual((480, 640), transform.output_size(640, 480))
+
+    def test_rotation_and_flip_apply_in_declared_order(self) -> None:
+        try:
+            import numpy as np
+        except ImportError as exc:
+            self.skipTest(str(exc))
+        frame = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.uint8)
+
+        transformed = CameraImageTransform(
+            rotation_deg=90,
+            flip_horizontal=True,
+        ).apply(frame)
+
+        np.testing.assert_array_equal(transformed, np.array([[1, 4], [2, 5], [3, 6]]))
+
+
 class SessionRecorderTest(unittest.TestCase):
     def test_bounded_switch_history_keeps_exact_totals(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -439,6 +549,47 @@ class SessionRecorderTest(unittest.TestCase):
                     "confirmed_across_slices": True,
                 }
             )
+            target = SimpleNamespace(
+                track_id=7,
+                class_name="car",
+                confidence=0.91,
+                bbox_xyxy=(10.0, 20.0, 30.0, 40.0),
+                track_age_frames=4,
+                camera_ground_point=SimpleNamespace(x_m=0.2, z_m=3.2),
+                ground_point=SimpleNamespace(x_m=-0.3, z_m=3.0),
+                distance_m=3.01,
+                vz_mps=-1.2,
+                vx_mps=0.1,
+                speed_mps=1.204,
+                distance_source="ground",
+                distance_confidence=0.8,
+                velocity_confidence=0.7,
+            )
+            raw = SimpleNamespace(
+                level=2,
+                score=0.65,
+                closing_speed_mps=1.1,
+                path_conflict=True,
+                moving_away=False,
+                cpa_time_s=2.0,
+                cpa_distance_m=0.5,
+                corridor_entry_time_s=1.5,
+            )
+            display = SimpleNamespace(visual_level=2, haptic_level=1, score=0.61)
+            debug = SimpleNamespace(pending_count=2, pending_slice_count=1)
+            recorder.record_vision_result(
+                SimpleNamespace(
+                    targets=[target],
+                    raw_risks={7: raw},
+                    display_risks={7: display},
+                    stabilizer_debug={7: debug},
+                ),
+                timestamp_s=10.2,
+                side="left",
+                slice_id=3,
+                frame_id=11,
+                class_ids_by_name={"car": 2},
+            )
             recorder.record_alert(
                 {
                     "haptic_level": 3,
@@ -489,6 +640,10 @@ class SessionRecorderTest(unittest.TestCase):
                 ("camera-events.csv", CAMERA_EVENT_FIELDS),
                 ("performance.csv", PERFORMANCE_FIELDS),
                 ("alerts.csv", ALERT_FIELDS),
+                ("detections.csv", DETECTION_FIELDS),
+                ("tracks.csv", TRACK_FIELDS),
+                ("distance-speed.csv", DISTANCE_SPEED_FIELDS),
+                ("risk-events.csv", RISK_EVENT_FIELDS),
             ):
                 with (session / filename).open(encoding="utf-8", newline="") as handle:
                     header = next(csv.reader(handle))
@@ -496,6 +651,8 @@ class SessionRecorderTest(unittest.TestCase):
             metadata = json.loads((session / "session.json").read_text(encoding="utf-8"))
             self.assertEqual("fixture-session", metadata["session_id"])
             self.assertNotIn("password", json.dumps(metadata).lower())
+            self.assertTrue((session / "snapshots").is_dir())
+            self.assertTrue((session / "overlays").is_dir())
 
 
 class SharedModelRuntimeTest(unittest.TestCase):

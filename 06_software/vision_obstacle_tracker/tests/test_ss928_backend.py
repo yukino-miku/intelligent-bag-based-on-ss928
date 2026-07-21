@@ -186,6 +186,65 @@ class PortableTrackerTest(unittest.TestCase):
         self.assertEqual(left_id_1, left_id_2)
         self.assertEqual(1, right_id)
 
+    def test_tracker_uses_timestamped_motion_prediction_across_alternating_gap(self):
+        names = {2: "car"}
+        tracker = IndependentIouTracker(
+            center_distance_threshold=0.04,
+            max_lost_s=2.0,
+            velocity_smoothing=1.0,
+        )
+
+        first_id = tracker.update(
+            PortableDetectionResult(
+                [PortableDetection((100.0, 100.0, 160.0, 160.0), 0.9, 2)],
+                names,
+                (480, 640),
+            ),
+            timestamp_s=1.0,
+        ).detections[0].track_id
+        tracker.update(
+            PortableDetectionResult(
+                [PortableDetection((120.0, 100.0, 180.0, 160.0), 0.9, 2)],
+                names,
+                (480, 640),
+            ),
+            timestamp_s=1.5,
+        )
+        predicted_id = tracker.update(
+            PortableDetectionResult(
+                [PortableDetection((160.0, 100.0, 220.0, 160.0), 0.9, 2)],
+                names,
+                (480, 640),
+            ),
+            timestamp_s=2.5,
+        ).detections[0].track_id
+
+        self.assertEqual(first_id, predicted_id)
+
+    def test_tracker_expires_by_elapsed_time_not_only_missed_frames(self):
+        names = {2: "car"}
+        tracker = IndependentIouTracker(max_lost_s=0.5, max_missed_frames=30)
+        first_id = tracker.update(
+            PortableDetectionResult(
+                [PortableDetection((100.0, 100.0, 160.0, 160.0), 0.9, 2)],
+                names,
+                (480, 640),
+            ),
+            timestamp_s=1.0,
+        ).detections[0].track_id
+
+        tracker.update(PortableDetectionResult([], names, (480, 640)), timestamp_s=2.0)
+        second_id = tracker.update(
+            PortableDetectionResult(
+                [PortableDetection((100.0, 100.0, 160.0, 160.0), 0.9, 2)],
+                names,
+                (480, 640),
+            ),
+            timestamp_s=2.1,
+        ).detections[0].track_id
+
+        self.assertNotEqual(first_id, second_id)
+
     def test_portable_result_enters_existing_distance_pipeline_after_roi_restore(self):
         result = PortableDetectionResult(
             [PortableDetection((250.0, 60.0, 330.0, 240.0), 0.9, 2, track_id=7)],
