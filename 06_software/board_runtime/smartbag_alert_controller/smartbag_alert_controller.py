@@ -748,6 +748,8 @@ def alternating_detector_command_from_config(config: dict[str, object]) -> str:
         )
     if bool(alternating.get("prefer_openvino", False)):
         argv.append("--prefer-openvino")
+    if bool(alternating.get("continuous_slice_inference", False)):
+        argv.append("--continuous-slice-inference")
     left_calibration = str(left.get("calibration_file", "")).strip()
     right_calibration = str(right.get("calibration_file", "")).strip()
     if left_calibration:

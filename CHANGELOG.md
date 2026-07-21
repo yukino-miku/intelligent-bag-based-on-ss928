@@ -2,7 +2,8 @@
 
 ## 2026-07-21
 
-- 双摄调试主页改为单一主画面，每 1 秒在左、右缓存的 raw/overlay 快照间切换；移除主页上的连续交替 MJPEG 和左右图像面板，减少浏览器传输与解码开销。该周期仅影响网页刷新，不改变双路交替采集、SS928 NPU 推理、跟踪和风险计算频率，原诊断 API 继续保留。
+- 修复单画面双摄预览被实现成每秒单张快照的问题：主页恢复为连续交替 MJPEG；新增 `--continuous-slice-inference`，活动摄像头在完整时间片内逐帧执行 SS928 NPU、跟踪、风险和 overlay，再 STREAMOFF 切换另一侧。实板流约 6.93 FPS，活动侧约 8 到 9 FPS、左右时间平均每侧约 3.3 FPS，CPU 平均约 55.7%，RSS 约 116 MiB。
+- 双摄调试主页曾先改为单一主画面并每秒切换左右缓存快照；该静态快照方案随后被本次连续交替 MJPEG 和时间片内逐帧推理取代，原诊断 API 继续保留。
 - 修正 SS928 板载模型输入格式：ACL 元数据的逻辑维度虽然为 `1x640x640x3 UINT8`，实际静态 AIPP 输入仅 614400 bytes，必须提交 NV12。后端现按 tensor byte size 自动识别 NV12，完成 BGR letterbox、I420 到 NV12 UV 交错转换，并保留普通 RGB CHW/HWC 路径。
 - 新增静态 AIPP NV12 元数据、Y/UV 排列、字节数和 fake NPU 端到端测试；仓库级回归为 296 项 Python 测试（295 通过、1 项 Linux-only 跳过）。
 - SS928 短测完成 99/99 次双摄交替和 99 帧完整 NPU/tracking/risk/overlay：NPU execute 约 25.66 ms，detector 总耗时约 81.1 ms，CPU 平均 14.403%，RSS 平均 115.916 MiB。完整 E2E max 1272.578 ms，略高于 1200 ms 门限，仍需调参和长测。

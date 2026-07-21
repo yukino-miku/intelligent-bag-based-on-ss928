@@ -216,11 +216,14 @@ sudo ethtool -s eth1 autoneg on advertise 0x02f
     "enabled": true,
     "backend": "v4l2_stream_toggle",
     "inference_frames_per_slice": 1,
-    "normal_slice_ms": 500,
-    "risk_slice_ms": 700,
-    "minimum_other_side_slice_ms": 250,
-    "max_blind_interval_ms": 1200,
-    "stale_observation_timeout_ms": 1800,
+    "continuous_slice_inference": true,
+    "normal_slice_ms": 1000,
+    "risk_slice_ms": 1000,
+    "minimum_other_side_slice_ms": 1000,
+    "warmup_frames": 0,
+    "frames_per_slice": 1,
+    "max_blind_interval_ms": 2200,
+    "stale_observation_timeout_ms": 2500,
     "tracker_effective_fps_mode": "effective_side",
     "min_confirm_slices_caution": 2,
     "min_confirm_slices_danger": 2,
@@ -229,8 +232,9 @@ sudo ethtool -s eth1 autoneg on advertise 0x02f
     "video_gateway_enabled": true,
     "serve_bind": "0.0.0.0",
     "serve_port": 8080,
+    "stream_fps_limit": 15,
     "calibration_mode": "production",
-    "risk_priority_enabled": true
+    "risk_priority_enabled": false
   }
 }
 ```
@@ -325,9 +329,9 @@ validation 支持 `preflight/i2c/haptics/lights/audio/gnss/imu/radar/camera/visi
 
 Controller 将状态变化写入 `/var/log/smartbag/actuator-events.jsonl`，字段包含 source event、controller receive、effective/haptic/light level、light mode、audio clip、实际 TM6605/PWM 写完成和 BLE transmit 的 monotonic 时间；只有时钟域一致且实际发生写入时才计算时延。Level 1/2 会写 TM6605，但灯光和音频保持关闭。
 
-`--inference-frames-per-slice` 默认只选择每片最后一张最新帧，采集到的其余有效帧只计入采集统计，不进入积压队列。`capture_only_max_blind_ms` 是纯 STREAMOFF/STREAMON/首帧指标；`end_to_end_max_gap_ms` 才包含解码、模型、tracker、风险、overlay、JPEG 和下一轮调度，正式验收只看后者。CAUTION 以上普通升级需要跨不同 slice，避免同一 burst 快速满足多帧确认。
+批处理模式的 `--inference-frames-per-slice` 只选择每片最后若干张最新帧。正式板端配置启用 `--continuous-slice-inference`，在活动摄像头的完整时间片内逐帧执行 NPU、tracker、风险和 overlay；它不先积攒旧帧，也不会同时 STREAMON 两路摄像头。当前实板连续流约 6.93 FPS，活动侧约 8 到 9 FPS、按左右平均每侧约 3.3 FPS；同侧最大观测间隔约 1.95 秒，因此配置使用 2500 ms stale timeout，避免正常切换时误清振。`capture_only_max_blind_ms` 只描述切换和首帧，正式验收仍看 `end_to_end_max_gap_ms`。CAUTION 以上普通升级继续要求跨不同 slice，不能用同一侧一秒内的 burst 绕过多帧稳定器。
 
-交替 detector 自己提供 `http://<BOARD_IP>:8080/`，无需 `smartbag-video.service`。页面同时显示左右 raw/overlay、active/cached/offline、帧龄、推理 FPS、风险和 E2E 间隔。测试接口：
+交替 detector 自己提供 `http://<BOARD_IP>:8080/`，无需 `smartbag-video.service`。主页只有一个连续 MJPEG 画面，按实际时间片在左、右 overlay 间切换，同时显示两侧 active/cached/offline、帧龄、推理 FPS、风险和 E2E 间隔。测试接口：
 
 ```sh
 curl -f 'http://127.0.0.1:8080/api/v1/camera/left/snapshot.jpg?view=raw' -o /tmp/left-raw.jpg

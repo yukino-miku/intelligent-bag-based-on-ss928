@@ -288,6 +288,8 @@ class AlternatingV4l2Capture:
         *,
         slice_ms: int | None = None,
         streamoff_after_slice: bool = False,
+        capture_until_deadline: bool = False,
+        frame_callback: Callable[[CapturedFrame, SwitchEvent], None] | None = None,
     ) -> SliceResult:
         self._require_side(side)
         if self._closed:
@@ -308,6 +310,7 @@ class AlternatingV4l2Capture:
         slice_started_s = event.switch_start_monotonic_s
         streamon_failures_before = self.streamon_failures
         streamoff_failures_before = self.streamoff_failures
+        callback_error: Exception | None = None
         try:
             self._stop_active(event)
             self._ensure_side_ready(side)
@@ -317,7 +320,9 @@ class AlternatingV4l2Capture:
             deadline_s = slice_started_s + requested_slice_ms / 1000.0
             total_needed = self.config.warmup_frames + self.config.frames_per_slice
             received = 0
-            while received < total_needed:
+            while True:
+                if not capture_until_deadline and received >= total_needed:
+                    break
                 remaining_s = deadline_s - self.clock()
                 if remaining_s <= 0.0:
                     break
@@ -348,6 +353,12 @@ class AlternatingV4l2Capture:
                 else:
                     frames.append(captured)
                     self._record_frame(captured)
+                    if frame_callback is not None:
+                        try:
+                            frame_callback(captured, event)
+                        except Exception as exc:
+                            callback_error = exc
+                            raise
                 received += 1
             event.valid_frames = len(frames)
             elapsed_s = max(self.clock() - slice_started_s, 1e-9)
@@ -364,7 +375,10 @@ class AlternatingV4l2Capture:
                 self._stop_active(event, update_from_side=False)
                 event.streamoff_complete_s = event.streamoff_end_s
         except Exception as exc:
-            if self.streamoff_failures > streamoff_failures_before:
+            if callback_error is not None:
+                event.error_type = "frame_callback_failure"
+                self._safe_stop_all()
+            elif self.streamoff_failures > streamoff_failures_before:
                 event.error_type = "streamoff_failure"
             elif isinstance(exc, OSError) and exc.errno == errno.ENOSPC:
                 event.error_type = "enospc"
@@ -374,8 +388,9 @@ class AlternatingV4l2Capture:
                 event.error_type = self._error_type(exc)
             event.error_message = str(exc)
             event.success = False
-            self.side_state[side].last_error = str(exc)
-            if not isinstance(exc, CameraReconnectPending):
+            if callback_error is None:
+                self.side_state[side].last_error = str(exc)
+            if callback_error is None and not isinstance(exc, CameraReconnectPending):
                 self._mark_side_failed(side, str(exc))
         finally:
             now_s = self.clock()
@@ -386,6 +401,8 @@ class AlternatingV4l2Capture:
             self.switch_count += 1
             self.switch_events.append(event)
             self._assert_single_active()
+        if callback_error is not None:
+            raise callback_error
         return SliceResult(event=event, frames=tuple(frames))
 
     def _stop_active(self, event: SwitchEvent, *, update_from_side: bool = True) -> None:

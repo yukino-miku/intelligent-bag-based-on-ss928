@@ -209,6 +209,61 @@ class AlternatingCaptureTest(unittest.TestCase):
         self.assertIsNotNone(result.event.streamoff_end_s)
         capture.close()
 
+    def test_capture_until_deadline_processes_frames_while_camera_is_streaming(self) -> None:
+        config = AlternatingCaptureConfig(
+            slice_ms=250,
+            frames_per_slice=2,
+            inference_frames_per_slice=1,
+            warmup_frames=0,
+        )
+        capture, clock, shared = build_capture(config=config)
+        callback_sequences = []
+
+        def process_frame(frame, event):
+            self.assertTrue(capture.devices[frame.side].is_streaming)
+            self.assertEqual(event.slice_id, frame.slice_id)
+            callback_sequences.append(frame.sequence)
+            clock.advance(0.050)
+
+        result = capture.capture_slice(
+            "left",
+            streamoff_after_slice=True,
+            capture_until_deadline=True,
+            frame_callback=process_frame,
+        )
+
+        self.assertTrue(result.event.success)
+        self.assertGreaterEqual(result.event.slice_duration_ms, 250.0)
+        self.assertGreater(len(result.frames), config.frames_per_slice)
+        self.assertEqual([frame.sequence for frame in result.frames], callback_sequences)
+        self.assertFalse(any(device.is_streaming for device in shared["devices"]))
+        capture.close()
+
+    def test_frame_processing_failure_stops_stream_and_is_not_camera_disconnect(self) -> None:
+        config = AlternatingCaptureConfig(
+            slice_ms=250,
+            frames_per_slice=1,
+            inference_frames_per_slice=1,
+            warmup_frames=0,
+        )
+        capture, _clock, shared = build_capture(config=config)
+
+        def fail_processing(_frame, _event):
+            raise RuntimeError("simulated NPU failure")
+
+        with self.assertRaisesRegex(RuntimeError, "simulated NPU failure"):
+            capture.capture_slice(
+                "left",
+                streamoff_after_slice=True,
+                capture_until_deadline=True,
+                frame_callback=fail_processing,
+            )
+
+        self.assertEqual("frame_callback_failure", capture.switch_events[-1].error_type)
+        self.assertEqual("ONLINE", capture.side_state["left"].connection_state)
+        self.assertFalse(any(device.is_streaming for device in shared["devices"]))
+        capture.close()
+
     def test_streamoff_failure_enters_safe_state_before_other_start(self) -> None:
         capture, _clock, shared = build_capture(left_options={"fail_stop_once": True})
         capture.capture_slice("left")
@@ -564,16 +619,16 @@ class GatewayTest(unittest.TestCase):
 
         self.assertIn("let view='raw'", page)
         self.assertIn('<button id="toggle" disabled>检测画面不可用</button>', page)
-        self.assertNotIn("/api/v1/alternating/mjpeg", page)
-        self.assertIn("/api/v1/camera/${displaySide}/snapshot.jpg", page)
+        self.assertIn("/api/v1/alternating/mjpeg", page)
+        self.assertNotIn("/api/v1/camera/${displaySide}/snapshot.jpg", page)
         self.assertNotIn("/api/v1/camera/${s}/mjpeg", page)
         self.assertIn('id="focus-img"', page)
         self.assertNotIn('id="left-img"', page)
         self.assertNotIn('id="right-img"', page)
-        self.assertIn("setInterval(rotateSide,1000)", page)
-        self.assertIn("FPS(L/R)", page)
+        self.assertNotIn("setInterval(rotateSide,1000)", page)
+        self.assertIn("推理 FPS(L/R)", page)
         self.assertIn("p95_switch_latency_ms", page)
-        self.assertIn("每 1 秒切换", page)
+        self.assertIn("连续检测流", page)
         self.assertIn(".onerror=", page)
 
     def test_debug_page_keeps_overlay_default_when_both_sides_are_available(self) -> None:

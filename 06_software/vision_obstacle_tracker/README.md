@@ -618,7 +618,7 @@ detector HTTP 提供 `/api/v1/camera/<side>/status`、`snapshot.jpg` 和 `mjpeg`
 
 ### 调度、盲区和跟踪时间尺度
 
-- `--inference-frames-per-slice` 默认 `1`：每片仍采集全部有效帧做采集统计，但只推理最后一张最新帧；旧帧立即跳过，没有无界队列。该值不得超过 `--frames-per-slice`。
+- 默认批处理路径中，`--inference-frames-per-slice 1` 只推理每片最后一张最新帧。板端实时模式增加 `--continuous-slice-inference`：活动摄像头在整个时间片内保持 STREAMON，每取得一帧就立即执行 NPU、跟踪、风险和 overlay，不先积攒一批旧帧。该模式仍无积压队列，并在时间片结束后 STREAMOFF 再切换另一侧。
 - `capture_switch_blind_interval_ms` 只描述 STREAMOFF -> 下一侧 STREAMON -> 第一帧；`end_to_end_observation_gap_ms` 按同一侧两张真正进入视觉算法的帧时间计算，包含另一侧采集、解码、推理、跟踪、风险、overlay、JPEG 和调度。验收使用后者。
 - `performance.csv` 和 `camera-events.csv` 记录各阶段 monotonic 时间、左右 E2E p50/p95/p99/max、跨侧 p95、已选/跳过帧、队列深度和最旧待处理帧龄。正常队列深度是 `0`，处理中的最新帧最多 `1`。
 - 内存中的 switch/E2E/性能历史使用有界 deque；CSV 仍逐条落盘，切换总数、错误数、最大盲区和性能均值/峰值使用独立累计量，不受窗口淘汰影响。
@@ -645,7 +645,7 @@ python3 alternating_camera_test.py \
   --output-dir /var/log/smartbag/alternating-camera-runs
 ```
 
-B 阶段页面为 `http://<板端地址>:8081/`。状态会标明当前 active side、另一侧缓存帧年龄和离线状态；gateway 只读缓存，不重新打开摄像头。主页只显示一个主画面，并每 1 秒在左、右缓存快照之间切换，避免并行传输和解码多路视频。A/B 没有 YOLO，也不生成 overlay，页面会自动选择 raw，按钮显示“检测画面不可用”并禁用；不能用 B 阶段证明 C 阶段检测 overlay 已通过。
+B 阶段页面为 `http://<板端地址>:8081/`。状态会标明当前 active side、另一侧缓存帧年龄和离线状态；gateway 只读缓存，不重新打开摄像头。主页只有一个连续交替 MJPEG 主画面，画面随实际 active side 切换，不再每秒请求一张静态快照。A/B 没有 YOLO，也不生成 overlay，页面会自动选择 raw，按钮显示“检测画面不可用”并禁用；不能用 B 阶段证明 C 阶段检测 overlay 已通过。
 
 若状态显示两侧 online 但页面黑屏，依次检查 `api/v1/status`、`snapshot.jpg?view=raw` 和 `mjpeg?view=raw`。单帧正常但连续流不刷新时，需确认网关没有只按 V4L2 sequence 去重，因为每次 STREAMOFF/STREAMON 后该序号可能重复；当前实现还比较采集时间和发布时间。
 
@@ -660,12 +660,14 @@ python3 alternating_dual_camera_tracker.py \
   --detector-backend ss928_om \
   --model /root/smartbag/models/yolov8n.om \
   --ss928-runtime-library /root/smartbag/vision/ss928_backend/lib/libsmartbag_ss928_acl.so \
-  --width 640 --height 480 --fps 30 --normal-slice-ms 500 \
-  --warmup-frames 2 --frames-per-slice 4 --inference-frames-per-slice 1 \
+  --width 640 --height 480 --fps 30 --normal-slice-ms 1000 \
+  --warmup-frames 0 --frames-per-slice 1 --inference-frames-per-slice 1 \
+  --continuous-slice-inference --disable-risk-priority \
+  --max-blind-interval-ms 2200 --stale-observation-timeout-ms 2500 \
   --tracker-effective-fps-mode effective_side --imgsz 640 --conf 0.08 \
   --min-confirm-slices-caution 2 --min-confirm-slices-danger 2 \
   --min-confirm-slices-emergency 2 --minimum-confirmation-interval-s 0.2 \
-  --serve-bind 0.0.0.0 --serve-port 8080 --jpeg-quality 80 \
+  --serve-bind 0.0.0.0 --serve-port 8080 --jpeg-quality 75 --stream-fps-limit 15 \
   --duration-s 60 --output-dir /var/log/smartbag/alternating-camera-runs \
   --risk-log-dir /var/log/smartbag
 ```
@@ -687,7 +689,7 @@ GET /api/v1/camera/{left|right}/snapshot.jpg?view={raw|overlay}
 GET /api/v1/camera/{left|right}/mjpeg?view={raw|overlay}
 ```
 
-访问 `http://<BOARD_IP>:8080/` 可在一个主画面中查看左右检测结果：页面每 1 秒在左、右缓存快照之间切换，并可切换 raw/overlay；下方只保留两侧状态文本，用于查看 active/cached/offline、帧龄、风险、推理 FPS、E2E 间隔、模型、后端、CPU、RSS 和温度。这个 1 秒周期只控制网页显示，不降低 USB 采集、NPU 推理、跟踪或风险计算频率。`alternating/mjpeg` 和各单侧 snapshot/MJPEG 接口仍保留用于诊断，其中交替 MJPEG 始终转发左右两侧中最新的一帧且不排队回放旧帧；它不代表两台摄像头同时 STREAMON。`--disable-video-gateway` 完全关闭网关；`--access-token` 只适合可信局域网基线，公网仍需反向代理、HTTPS、认证和防火墙。视频不走 BLE。
+访问 `http://<BOARD_IP>:8080/` 可在一个主画面中查看连续左右检测流，并切换 raw/overlay；下方只保留两侧状态文本，用于查看 active/cached/offline、帧龄、风险、推理 FPS、E2E 间隔、模型、后端、CPU、RSS 和温度。页面直接连接 `alternating/mjpeg`，显示的每一帧都是新采集并完成推理的帧，不重复缓存图冒充视频。正式配置让每侧活动约 1 秒后切换；当前实板 30 秒有效阶段处理 198 帧，交替 overlay 约 6.93 FPS，活动侧约 8 到 9 FPS、按左右时间平均每侧约 3.3 FPS，CPU 平均约 55.7%，RSS 约 116 MiB，同侧最大观测间隔约 1.95 秒。后者是单 USB 控制器时间复用的代价，不能解释为同步双摄。各单侧 snapshot/MJPEG 接口仍保留用于诊断；`--disable-video-gateway` 完全关闭网关，视频不走 BLE。
 
 ### 安装外参与断线恢复
 

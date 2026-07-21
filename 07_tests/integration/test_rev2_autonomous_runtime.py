@@ -34,6 +34,10 @@ class Rev2AutonomousConfigTest(unittest.TestCase):
             "/root/smartbag/vision/ss928_backend/lib/libsmartbag_ss928_acl.so",
             config["alternating_camera"]["ss928_runtime_library"],
         )
+        self.assertTrue(config["alternating_camera"]["continuous_slice_inference"])
+        self.assertEqual(1000, config["alternating_camera"]["normal_slice_ms"])
+        self.assertFalse(config["alternating_camera"]["risk_priority_enabled"])
+        self.assertEqual(15, config["alternating_camera"]["stream_fps_limit"])
         self.assertTrue(config["audio"]["enabled"])
 
     def test_installer_selects_npu_dependencies_and_requires_native_adapter(self) -> None:
