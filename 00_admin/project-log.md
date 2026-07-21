@@ -6,6 +6,7 @@
 - 板端 84.425 秒完整链完成 99/99 次左右切换、99 帧 NPU/tracking/risk/overlay；NPU execute 约 25.66 ms，detector 总耗时约 81.1 ms，CPU 平均 14.403%，RSS 平均 115.916 MiB。E2E p95/max 为 1219.665/1272.578 ms，短测尚未达到 1200 ms max 门限。
 - 左右 raw/overlay HTTP 均可读取，但两台相机当前连续输出近乎全黑 JPEG；50 帧持续采样仍黑，且正确 capture 节点和 V4L2 控制已核对。因此记录为 NPU 链功能通过、实景目标命中阻塞，不宣称检测框和风险实景验收通过。
 - 通过离线 aarch64 wheel 安装 NumPy 1.26.4 与 opencv-python-headless 4.10.0.84，只运行摄像头/NPU。发现并停止板上残留、反复访问未连接 TM6605/I2C 的旧 `smartbag-alert.service`，未启动 PWM、BLE、GNSS、IMU、雷达或音频。
+- 将已测试代码提交 `65364a5b3bd6a06e9ad53687d1942b2ec90bb391` 安装到 `/root/smartbag/releases/65364a5`，以软链接提供统一 `vision` 和 `python-packages` 路径，并链接板上合法模型。生产目录 compileall 和模型 metadata smoke test 通过；没有启用新的 systemd 服务，旧 alert unit 已禁用。
 - 本地仓库回归更新为 296 项 Python 测试（295 通过、1 项 Linux-only 跳过）；新增静态 AIPP NV12 格式、Y/UV 排列、字节数和 fake NPU 输入测试。
 - 将此前单图 ModelZoo harness 收敛为正式长驻后端：`libsmartbag_ss928_acl.so` 只在进程启动时初始化 ACL、加载 `yolov8n.om` 并分配输入/输出 dataset；Python 通过 ctypes 传内存 tensor，避免临时文件和逐帧模型加载。
 - 固定并校验当前模型契约：ACL 图像 tensor（普通 RGB 或静态 AIPP NV12）、COCO 80 类、单个 FP32 `1x84x8400` 输出；契约不匹配时拒绝启动。当前 ACL 镜像的 `aclFinalize()` 退出异常被限定在原生 adapter 内，正常释放模型、dataset 和 buffer 后由进程退出回收 ACL 全局状态。

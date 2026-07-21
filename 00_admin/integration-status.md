@@ -6,6 +6,7 @@
 - `CAMERA IMAGE BLOCKED`：当前 `/dev/video0` 和 `/dev/video2` 的原始 JPEG 均近乎全黑，连续 50 帧仍无场景。因此现场目标命中、检测框、左右 ID 和真实风险准确性仍未通过，不能把功能短测等同于完整视觉验收。
 - `PERFORMANCE PARTIAL`：合计推理 1.644 FPS，完整 E2E p95/max 为 1219.665/1272.578 ms，max 略超 1200 ms 门限；短测使用 `frames_per_slice=1`、`warmup_frames=0`，正式参数和 30 分钟稳定性仍待非黑画面恢复后复验。
 - 板载模型物理输入为 614400-byte NV12 静态 AIPP，不是 1228800-byte RGB。后端已按 ACL byte size 自动区分 NV12 与普通 RGB tensor，并有回归测试。
+- 已测试提交 `65364a5b3bd6a06e9ad53687d1942b2ec90bb391` 已安装到 `/root/smartbag/releases/65364a5`，统一 `vision`、`python-packages`、`models` 和 `config` 路径已建立；未创建或启用新的 systemd 服务。
 - NPU 路径只需要板端 OpenCV、NumPy、ACL 运行库和 adapter，不需要 torch、torchvision、Ultralytics 或 lap。OpenVINO 继续只属于 PC/通用 CPU 路径。
 - 风险模型、Future Conflict Gate、多帧 stabilizer 和 haptic 输出没有被旁路；NPU 原始输出不能直接驱动震动。
 

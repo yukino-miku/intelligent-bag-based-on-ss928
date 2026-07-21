@@ -31,9 +31,10 @@ USB native V4L2 MJPEG frame
 - PC 有线地址 `192.168.1.10/24`；板端可通过 `192.168.1.102` 和 `192.168.1.168` 到达，本次 SSH 使用 `.102`。
 - 模型：`/opt/sample/yolov8/yolov8n.om`，SHA256 `7010d928c2ce9675ea38b6ee353f1c4fcd4ec648a335d3735d85f2e0313d030b`。
 - ACL：`/opt/lib/npu/libascendcl.so`。
-- 离线安装 NumPy 1.26.4 和 opencv-python-headless 4.10.0.84；测试目录为 `/root/smartbag-npu-fa77ea3`。
+- 离线安装 NumPy 1.26.4 和 opencv-python-headless 4.10.0.84；先在 `/root/smartbag-npu-fa77ea3` 隔离测试，再把已测试代码提交 `65364a5b3bd6a06e9ad53687d1942b2ec90bb391` 安装到 `/root/smartbag/releases/65364a5`。
+- `/root/smartbag/vision` 和 `/root/smartbag/python-packages` 使用 release 软链接，模型使用 `/root/smartbag/models/yolov8n.om -> /opt/sample/yolov8/yolov8n.om`；`/root/smartbag/REVISION` 记录精确代码提交。
 - 两路稳定物理路径分别对应 USB `1.3` 和 `1.4` 的 `video-index0`；`video-index1` 不是 V4L2 capture 节点。
-- 只测试摄像头和视觉 NPU。未启动 PWM、TM6605、BLE、GNSS、IMU、雷达或音频。
+- 只测试摄像头和视觉 NPU。未启动 PWM、TM6605、BLE、GNSS、IMU、雷达或音频；板上残留且反复访问未连接 TM6605/I2C 的旧 `smartbag-alert.service` 已停止并禁用。
 
 ## 真实短测结果
 

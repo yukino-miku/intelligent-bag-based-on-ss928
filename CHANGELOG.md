@@ -6,6 +6,7 @@
 - 新增静态 AIPP NV12 元数据、Y/UV 排列、字节数和 fake NPU 端到端测试；仓库级回归为 296 项 Python 测试（295 通过、1 项 Linux-only 跳过）。
 - SS928 短测完成 99/99 次双摄交替和 99 帧完整 NPU/tracking/risk/overlay：NPU execute 约 25.66 ms，detector 总耗时约 81.1 ms，CPU 平均 14.403%，RSS 平均 115.916 MiB。完整 E2E max 1272.578 ms，略高于 1200 ms 门限，仍需调参和长测。
 - 当前两路 UVC 原始 JPEG 连续采样仍近乎全黑；HTTP raw/overlay 和 NPU 链正常，但没有实景目标命中证据。验收状态明确拆为 `BOARD FUNCTIONAL PASS` 与 `CAMERA IMAGE BLOCKED`，不把黑帧推理记为检测准确性通过。
+- 已测试代码提交 `65364a5b3bd6a06e9ad53687d1942b2ec90bb391` 已安装到板端 `/root/smartbag/releases/65364a5`，统一运行路径和模型链接校验通过。未启用新的硬件服务；残留且反复访问未连接 I²C 模块的旧 alert unit 已停止并禁用。
 - 实现正式 `Ss928OmBackend`：新增常驻 `.om` 模型的 SS928 ACL C ABI，USB BGR 帧直接在内存中完成 letterbox，并按模型契约转换为 RGB tensor 或静态 AIPP NV12，再执行 NPU、`1x84x8400 FP32` 解码、类别过滤、class-aware NMS 和原图坐标恢复，不再逐帧写临时图片。
 - NPU 检测结果接入现有稳定 ID、距离/速度估计、Future Conflict Gate、多帧风险稳定、visual/haptic 输出、risk CSV 和 overlay；单摄使用轻量 IoU tracker，交替双摄保持左右 tracker/risk/标定完全独立且只加载一个模型。
 - 双摄 performance CSV 新增 preprocess、NPU execute 和 postprocess 分项；部署配置默认选择 `yolov8n.om` 和 `ss928_om`，preflight 根据后端检查依赖，NPU 路径不要求 torch/Ultralytics/lap。
