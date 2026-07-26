@@ -47,6 +47,26 @@ def sample_state(t_mono=10.0):
 
 
 class CalibrationRecorderTest(unittest.TestCase):
+    def test_fall_fusion_runtime_is_optional_and_uses_board_config(self):
+        cfg = copy.deepcopy(bmi270_backpack.DEFAULT_CONFIG)
+        self.assertIsNone(bmi270_backpack.make_fall_fusion_runtime(cfg))
+
+        with tempfile.TemporaryDirectory() as temp:
+            cfg["fall_detection"] = {
+                "enabled": True,
+                "warning_marker": str(Path(temp) / "warning.json"),
+                "alarm_log": str(Path(temp) / "fall_alarm.jsonl"),
+                "warning_window_s": 10.0,
+                "recovery_window_s": 7.0,
+                "standing_posture_deg": 25.0,
+                "standing_hold_s": 1.0,
+            }
+            runtime = bmi270_backpack.make_fall_fusion_runtime(cfg)
+
+        self.assertIsNotNone(runtime)
+        self.assertEqual(runtime.fusion_config.warning_window_s, 10.0)
+        self.assertEqual(runtime.fusion_config.recovery_window_s, 7.0)
+
     def test_starts_first_file_and_writes_csv_row(self):
         with tempfile.TemporaryDirectory() as temp:
             cfg = config_with_data_dir(temp)

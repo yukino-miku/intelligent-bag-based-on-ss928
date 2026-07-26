@@ -71,6 +71,18 @@ class AlertCoreTest(unittest.TestCase):
         self.assertEqual(expired.duties_ns["right_1"], DEFAULT_PWM_PERIOD_NS)
         self.assertEqual(expired.duties_ns["right_2"], int(DEFAULT_PWM_PERIOD_NS * 0.60))
 
+    def test_source_specific_timeout_preserves_posture_reminder(self) -> None:
+        state = AlertState(event_timeout_s=1.0)
+        state.apply_event(
+            AlertEvent(side="left", level=1, source="posture:hunch", timeout_s=5.0),
+            now=10.0,
+        )
+
+        active = state.expire(now=14.9)
+        self.assertEqual(active.levels["left"], 1)
+        expired = state.expire(now=15.1)
+        self.assertEqual(expired.levels["left"], 0)
+
     def test_best_effort_stop_does_not_block_shutdown_on_sysfs_error(self) -> None:
         pwm = MagicMock()
         pwm.stop_all.side_effect = OSError("sysfs unavailable")

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import itertools
 import json
 import os
 import queue
@@ -12,12 +11,16 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Iterable
 
 COMMON_DIR = Path(__file__).resolve().parents[1] / "common"
 if str(COMMON_DIR) not in sys.path:
     sys.path.insert(0, str(COMMON_DIR))
+MR20_DIR = Path(__file__).resolve().parents[1] / "mr20_radar"
+if str(MR20_DIR) not in sys.path:
+    sys.path.insert(0, str(MR20_DIR))
 
 from ble_protocol import route_ble_command
 from runtime_metrics import ResourceSampler, atomic_write_json, status_timestamp
@@ -34,6 +37,9 @@ from alert_core import (
     parse_vision_alert_jsonl,
 )
 from ble_nus import BleNusServer
+from mr20_radar import MR20RadarWorker, load_radar_configs
+from pwm_lights import LinuxSysfsPwm, PwmLights
+from tm6605_haptics import LinuxI2cBus, Tm6605Haptics
 
 
 AUDIO_ROOT = Path("/root/smartbag/audio")
@@ -158,8 +164,10 @@ class AudioPlayer:
         self.default_sleep_s = default_sleep_s
         self.default_timeout_s = default_timeout_s
         self.skip_pinmux = skip_pinmux
-        self._queue: "queue.PriorityQueue[tuple[int, int, str]]" = queue.PriorityQueue()
-        self._sequence = itertools.count()
+        self._condition = threading.Condition()
+        self._pending_clip: str | None = None
+        self._current_clip: str | None = None
+        self._interrupt_current = threading.Event()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._process_lock = threading.Lock()
@@ -183,21 +191,23 @@ class AudioPlayer:
     def request(self, clip: str | None) -> None:
         if not self.enabled or not clip:
             return
-        try:
-            level = int(clip[1:])
-        except ValueError:
-            level = 0
-        self._queue.put((-level, next(self._sequence), clip))
+        level = self._clip_level(clip)
+        with self._condition:
+            if self._stop.is_set():
+                return
+            if self._current_clip is not None and level <= self._clip_level(self._current_clip):
+                return
+            if self._pending_clip is not None and level < self._clip_level(self._pending_clip):
+                return
+            self._pending_clip = clip
+            self._condition.notify()
 
     def clear(self) -> None:
-        while True:
-            try:
-                self._queue.get_nowait()
-            except queue.Empty:
-                break
-        with self._process_lock:
-            if self._process is not None and self._process.poll() is None:
-                self._process.terminate()
+        with self._condition:
+            self._pending_clip = None
+            self._interrupt_current.set()
+            self._condition.notify_all()
+        self._terminate_process()
 
     def stop(self) -> None:
         self._stop.set()
@@ -206,12 +216,23 @@ class AudioPlayer:
             self._thread.join(timeout=2.0)
 
     def _worker(self) -> None:
-        while not self._stop.is_set():
+        while True:
+            with self._condition:
+                self._condition.wait_for(lambda: self._stop.is_set() or self._pending_clip is not None)
+                if self._stop.is_set():
+                    return
+                clip = self._pending_clip
+                self._pending_clip = None
+                self._current_clip = clip
+                self._interrupt_current.clear()
             try:
-                _priority, _sequence, clip = self._queue.get(timeout=0.2)
-            except queue.Empty:
-                continue
-            self._play(clip)
+                if clip is not None:
+                    self._play(clip)
+            finally:
+                with self._condition:
+                    if self._current_clip == clip:
+                        self._current_clip = None
+                    self._condition.notify_all()
 
     def _play(self, clip: str) -> None:
         clip_dir = self.audio_root / clip
@@ -221,6 +242,8 @@ class AudioPlayer:
             return
         if not audio_file.exists():
             eprint(f"WARN missing audio clip {audio_file}")
+            return
+        if self._interrupt_current.is_set():
             return
         sleep_s, timeout_s = self._timing_for(clip_dir)
         with self._process_lock:
@@ -235,16 +258,32 @@ class AudioPlayer:
         try:
             deadline = time.monotonic() + max(timeout_s, sleep_s + 1.0)
             while time.monotonic() < deadline and process.poll() is None:
+                if self._interrupt_current.is_set():
+                    process.terminate()
+                    break
                 if time.monotonic() >= deadline - max(timeout_s - sleep_s, 1.0):
                     break
                 time.sleep(0.1)
-            process.communicate(input=b"\n\n", timeout=max(timeout_s - sleep_s, 1.0))
+            if process.poll() is None:
+                process.communicate(input=b"\n\n", timeout=max(timeout_s - sleep_s, 1.0))
         except subprocess.TimeoutExpired:
             process.kill()
         finally:
             with self._process_lock:
                 if self._process is process:
                     self._process = None
+
+    @staticmethod
+    def _clip_level(clip: str) -> int:
+        try:
+            return int(clip[1:])
+        except (TypeError, ValueError):
+            return 0
+
+    def _terminate_process(self) -> None:
+        with self._process_lock:
+            if self._process is not None and self._process.poll() is None:
+                self._process.terminate()
 
     def _timing_for(self, clip_dir: Path) -> tuple[float, float]:
         hint = clip_dir / "play_hint.txt"
@@ -357,7 +396,7 @@ class DetectorProcess:
                             f"level={event.level}"
                         )
                         continue
-                    self.event_queue.put(event)
+                    self.event_queue.put(replace(event, source=f"vision:{self.side or 'auto'}"))
         finally:
             try:
                 self.last_exit_code = process.poll()
@@ -365,7 +404,14 @@ class DetectorProcess:
                 self.last_exit_code = None
             clear_sides = (self.side,) if self.side in ("left", "right") else ("left", "right")
             for clear_side in clear_sides:
-                self.event_queue.put(AlertEvent(side=clear_side, level=0, ts=time.monotonic()))
+                self.event_queue.put(
+                    AlertEvent(
+                        side=clear_side,
+                        level=0,
+                        source=f"vision:{self.side or 'auto'}",
+                        ts=time.monotonic(),
+                    )
+                )
             self.next_restart_s = time.monotonic() + self.restart_backoff_s * min(
                 8.0,
                 2.0**self.restart_count,
@@ -518,6 +564,10 @@ def controller_status_payload(
         "ts": status_timestamp(),
         "pid": os.getpid(),
         "levels": dict(state.levels_by_side),
+        "source_levels": {
+            f"{source}:{side}": level
+            for (source, side), level in sorted(state.levels_by_source_side.items())
+        },
         "detectors": [detector.status() for detector in detectors],
         "modules": sorted(modules),
         "resources": resource_sampler.sample(),
@@ -590,6 +640,56 @@ def load_controller_config(path: str) -> dict[str, object]:
     return data
 
 
+def module_commands_from_config(config: dict[str, object]) -> dict[str, str]:
+    raw_modules = config.get("modules", {})
+    if not isinstance(raw_modules, dict):
+        raise ValueError("modules config must be a JSON object")
+    commands: dict[str, str] = {}
+    for name, namespace in (("gnss", "GNSS"), ("imu", "IMU")):
+        raw = raw_modules.get(name, {})
+        if raw in (None, False):
+            continue
+        if not isinstance(raw, dict):
+            raise ValueError(f"modules.{name} must be a JSON object")
+        if not bool(raw.get("enabled", False)):
+            continue
+        command = str(raw.get("command", "")).strip()
+        if not command:
+            raise ValueError(f"modules.{name}.command is required when enabled")
+        commands[namespace] = command
+    return commands
+
+
+def posture_reminder_from_module(
+    namespace: str,
+    response: str,
+    config: dict[str, object],
+    now_s: float | None = None,
+) -> tuple[tuple[AlertEvent, AlertEvent], str] | None:
+    if namespace != "IMU" or not response.startswith("REMINDER,HUNCH,"):
+        return None
+    raw = config.get("posture_reminder", {})
+    if not isinstance(raw, dict) or not bool(raw.get("enabled", True)):
+        return None
+    level = int(raw.get("level", 1))
+    if level < 1 or level > 4:
+        raise ValueError("posture_reminder.level must be 1..4")
+    duration_s = max(0.1, float(raw.get("duration_s", 5.0)))
+    clip = str(raw.get("audio_clip", "bad")).strip()
+    timestamp = time.monotonic() if now_s is None else float(now_s)
+    events = tuple(
+        AlertEvent(
+            side=side,
+            level=level,
+            source="posture:hunch",
+            ts=timestamp,
+            timeout_s=duration_s,
+        )
+        for side in ("left", "right")
+    )
+    return (events, clip)
+
+
 def start_stdin_reader(
     event_queue: "queue.Queue[AlertEvent]",
     command_queue: "queue.Queue[str]",
@@ -622,16 +722,40 @@ def start_stdin_reader(
     return thread
 
 
-def apply_output(output: AlertOutput, pwm: PwmController, audio: AudioPlayer) -> None:
-    pwm.apply(output.duties_ns)
+def apply_output(
+    output: AlertOutput,
+    pwm: PwmController,
+    audio: AudioPlayer,
+    haptics: Tm6605Haptics | None = None,
+    lights: PwmLights | None = None,
+) -> None:
+    levels = output.levels or {"left": 0, "right": 0}
+    if haptics is None:
+        pwm.apply(output.duties_ns)
+    else:
+        haptics.set_levels(levels)
+    if lights is not None:
+        lights.set_levels(levels)
     audio.request(output.audio_clip)
 
 
-def best_effort_stop_all(pwm: PwmController) -> None:
-    try:
-        pwm.stop_all()
-    except Exception as exc:
-        eprint(f"ERROR failed to clear all PWM outputs: {exc}")
+def best_effort_stop_all(
+    pwm: PwmController,
+    haptics: Tm6605Haptics | None = None,
+    lights: PwmLights | None = None,
+) -> None:
+    for label, device in (("TM6605", haptics), ("lights", lights)):
+        if device is None:
+            continue
+        try:
+            device.stop_all()
+        except Exception as exc:
+            eprint(f"ERROR failed to clear {label} outputs: {exc}")
+    if haptics is None:
+        try:
+            pwm.stop_all()
+        except Exception as exc:
+            eprint(f"ERROR failed to clear legacy PWM outputs: {exc}")
 
 
 def run_controller(args: argparse.Namespace) -> int:
@@ -639,6 +763,8 @@ def run_controller(args: argparse.Namespace) -> int:
     validate_dual_camera_config(config)
     pwm_config = config.get("pwm", {}) if isinstance(config.get("pwm", {}), dict) else {}
     audio_config = config.get("audio", {}) if isinstance(config.get("audio", {}), dict) else {}
+    output_config = config.get("outputs", {}) if isinstance(config.get("outputs", {}), dict) else {}
+    radar_config = config.get("radar", {}) if isinstance(config.get("radar", {}), dict) else {}
     timing_config = config.get("timing", {}) if isinstance(config.get("timing", {}), dict) else {}
     ble_config = config.get("ble", {}) if isinstance(config.get("ble", {}), dict) else {}
     pwm_period_ns = int(args.pwm_period_ns or pwm_config.get("period_ns", DEFAULT_PWM_PERIOD_NS))
@@ -665,6 +791,26 @@ def run_controller(args: argparse.Namespace) -> int:
         dry_run=args.dry_run,
         skip_pinmux=args.skip_pinmux,
     )
+    output_backend = str(args.output_backend or output_config.get("haptics_backend", "pwm_legacy"))
+    if output_backend not in {"pwm_legacy", "tm6605"}:
+        raise ValueError("outputs.haptics_backend must be pwm_legacy or tm6605")
+    haptics: Tm6605Haptics | None = None
+    if output_backend == "tm6605":
+        mux_value = output_config.get("tm6605_mux_address", "0x70")
+        mux_address = int(str(mux_value), 0) if mux_value not in (None, "", False) else None
+        connected = tuple(str(side) for side in output_config.get("tm6605_connected_sides", ["left", "right"]))
+        haptics = Tm6605Haptics(
+            LinuxI2cBus(Path(str(output_config.get("i2c_device", "/dev/i2c-0"))), dry_run=args.dry_run),
+            mux_address=mux_address,
+            channels={
+                "left": int(output_config.get("left_tm6605_channel", 1)),
+                "right": int(output_config.get("right_tm6605_channel", 2)),
+            },
+            connected_sides=connected,
+        )
+    lights: PwmLights | None = None
+    if bool(output_config.get("lights_enabled", output_backend == "tm6605")):
+        lights = PwmLights(LinuxSysfsPwm(Path(args.pwm_root), dry_run=args.dry_run))
     audio = AudioPlayer(
         Path(args.audio_root or str(audio_config.get("root", AUDIO_ROOT))),
         sample_audio=args.sample_audio,
@@ -675,6 +821,7 @@ def run_controller(args: argparse.Namespace) -> int:
         skip_pinmux=args.skip_pinmux,
     )
     detectors: list[DetectorProcess] = []
+    radars: list[MR20RadarWorker] = []
     modules: dict[str, RoutedModuleProcess] = {}
     ble: BleNusServer | None = None
     resource_sampler = ResourceSampler()
@@ -687,13 +834,21 @@ def run_controller(args: argparse.Namespace) -> int:
     signal.signal(signal.SIGTERM, _stop)
 
     try:
-        pwm.preflight()
+        if haptics is None:
+            pwm.preflight()
+        else:
+            haptics.preflight()
         if args.preflight_only:
             return 0
         audio.setup()
-        pwm.setup()
+        if haptics is None:
+            pwm.setup()
+        else:
+            haptics.setup(skip_pinmux=args.skip_pinmux)
+        if lights is not None:
+            lights.setup(skip_pinmux=args.skip_pinmux)
         audio.start()
-        pwm.stop_all()
+        best_effort_stop_all(pwm, haptics, lights)
 
         if not args.no_ble:
             try:
@@ -739,7 +894,21 @@ def run_controller(args: argparse.Namespace) -> int:
                 detector.start()
                 detectors.append(detector)
 
-        for namespace, command in (("GNSS", args.gnss_command), ("IMU", args.imu_command)):
+        radar_path = str(args.radar_config or radar_config.get("config", ""))
+        if bool(radar_config.get("enabled", False)) and radar_path:
+            radar_specs, radar_risk = load_radar_configs(radar_path)
+            for spec in radar_specs:
+                radar = MR20RadarWorker(spec, radar_risk, event_queue.put)
+                radar.start()
+                radars.append(radar)
+                eprint(f"started MR20 {spec.name} source={spec.radar_ip} side={spec.side} port={spec.port}")
+
+        configured_modules = module_commands_from_config(config)
+        module_commands = {
+            "GNSS": args.gnss_command or configured_modules.get("GNSS", ""),
+            "IMU": args.imu_command or configured_modules.get("IMU", ""),
+        }
+        for namespace, command in module_commands.items():
             if not command:
                 continue
             module = RoutedModuleProcess(namespace, command, response_queue, cwd=detector_cwd)
@@ -770,10 +939,10 @@ def run_controller(args: argparse.Namespace) -> int:
                 except queue.Empty:
                     break
                 if event_is_stale(event, time.monotonic(), max_event_age_s):
-                    eprint(f"ignored stale vision event side={event.side} level={event.level} ts={event.ts}")
+                    eprint(f"ignored stale {event.source} event side={event.side} level={event.level} ts={event.ts}")
                     continue
                 output = state.apply_event(event)
-                apply_output(output, pwm, audio)
+                apply_output(output, pwm, audio, haptics, lights)
                 if ble is not None:
                     ble.send_line(alert_event_ble_payload(event))
 
@@ -789,7 +958,7 @@ def run_controller(args: argparse.Namespace) -> int:
                         if command.kind == "clear":
                             audio.clear()
                         output = state.apply_command(command)
-                        apply_output(output, pwm, audio)
+                        apply_output(output, pwm, audio, haptics, lights)
                         if ble is not None:
                             ble.send_line("OK AL " + route.command)
                     elif route.namespace in ("GNSS", "IMU"):
@@ -817,16 +986,29 @@ def run_controller(args: argparse.Namespace) -> int:
                     namespace, response = response_queue.get_nowait()
                 except queue.Empty:
                     break
+                reminder = posture_reminder_from_module(namespace, response, config)
+                if reminder is not None:
+                    events, clip = reminder
+                    output = state.apply_event(events[0])
+                    output = state.apply_event(events[1])
+                    apply_output(output, pwm, audio, haptics, lights)
+                    if clip:
+                        audio.clear()
+                        audio.request(clip)
                 if ble is not None:
                     ble.send_line(response)
                 eprint(f"{namespace} response: {response[:200]}")
 
             expired = state.expire()
             if expired.expired_sides:
-                pwm.apply(expired.duties_ns)
+                apply_output(expired, pwm, audio, haptics, lights)
                 if ble is not None:
                     for side in expired.expired_sides:
                         ble.send_line(alert_event_ble_payload(AlertEvent(side=side, level=0, ts=time.monotonic())))
+            if haptics is not None:
+                haptics.tick()
+            if lights is not None:
+                lights.tick()
             now_s = time.monotonic()
             if status_file and now_s - last_status_write_s >= 1.0:
                 try:
@@ -840,15 +1022,17 @@ def run_controller(args: argparse.Namespace) -> int:
             time.sleep(args.poll_interval)
     finally:
         stop_event.set()
-        best_effort_stop_all(pwm)
+        best_effort_stop_all(pwm, haptics, lights)
         for detector in detectors:
             detector.stop()
+        for radar in radars:
+            radar.stop()
         for module in modules.values():
             module.stop()
         if ble is not None:
             ble.stop()
         audio.stop()
-        best_effort_stop_all(pwm)
+        best_effort_stop_all(pwm, haptics, lights)
     return 0
 
 
@@ -866,6 +1050,8 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--detector-cwd", default="", help="Working directory for detector commands.")
     parser.add_argument("--stdin-jsonl", action="store_true", help="Also read vision JSONL or AL commands from stdin.")
     parser.add_argument("--pwm-root", default="/sys/class/pwm", help="Linux PWM sysfs root.")
+    parser.add_argument("--output-backend", choices=("pwm_legacy", "tm6605"), default="", help="Override the configured haptic output backend.")
+    parser.add_argument("--radar-config", default="", help="Override the optional dual-MR20 JSON configuration path.")
     parser.add_argument("--pwm-period-ns", type=int, default=None, help="PWM period in ns; overrides config.")
     parser.add_argument("--event-timeout", type=float, default=None, help="Seconds before stale side vibration is stopped; overrides config.")
     parser.add_argument("--max-event-age", type=float, default=None, help="Reject vision events older than this many seconds; overrides config.")

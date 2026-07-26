@@ -1,0 +1,24 @@
+{
+  "detector": {
+    "sample_hz": 50.0,
+    "filter_window_samples": 5,
+    "low_g_threshold": 0.55,
+    "low_g_min_s": 0.06,
+    "possible_fall_gyro_dps": 170.0,
+    "possible_fall_jerk_gps": 13.0,
+    "impact_g_threshold": 2.2,
+    "impact_jerk_gps": 20.0,
+    "impact_gyro_dps": 250.0,
+    "impact_window_s": 1.2,
+    "impact_only_timeout_s": 0.8,
+    "posture_delta_deg": 35.0,
+    "posture_hold_s": 0.25,
+    "fall_confirm_timeout_s": 3.0,
+    "stationary_accel_tol_g": 0.12,
+    "stationary_gyro_dps": 18.0,
+    "stationary_jerk_gps": 3.0,
+    "stationary_hold_s": 0.3,
+    "terminal_hold_s": 8.5,
+    "max_dt_s": 0.2
+  }
+}

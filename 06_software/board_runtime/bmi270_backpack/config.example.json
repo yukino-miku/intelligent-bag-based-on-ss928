@@ -4,6 +4,8 @@
     "iio_path": "auto",
     "i2c_bus": 0,
     "i2c_addr": "0x68",
+    "i2c_mux_addr": "0x70",
+    "i2c_mux_channel": 0,
     "config_blob": "auto",
     "init_sensor": true,
     "sample_hz": 50.0
@@ -33,6 +35,8 @@
     "hunch_enabled": true,
     "hunch_pitch_deg": -15.5,
     "hunch_hold_s": 3.0,
+    "hunch_reminder_required_s": 15.0,
+    "hunch_reminder_window_s": 20.0,
     "hunch_max_gyro_dps": 30.0,
     "hunch_accel_min_g": 0.75,
     "hunch_accel_max_g": 1.25
@@ -84,7 +88,40 @@
     "pitch_zero_deg": 0.0,
     "yaw_zero_deg": 0.0
   },
+  "cloud_upload": {
+    "enabled": false,
+    "interval_s": 5.0,
+    "timeout_s": 5.0,
+    "event_queue_size": 32,
+    "daily_state_path": "/var/lib/smartbag/posture-daily.json",
+    "daily_max_gap_s": 10.0,
+    "latest_location_path": "/tmp/smartbag_latest_location.json",
+    "location_max_age_s": 120.0
+  },
   "fall_detection": {
-    "enabled": true
+    "enabled": true,
+    "detector_config": "/root/smartbag/imu_fall_detector/config.ss928.json",
+    "warning_marker": "/run/smartbag/last-high-warning.json",
+    "alarm_log": "/var/log/smartbag/fall-alarm.jsonl",
+    "manual_trigger_path": "/run/smartbag/manual-fall-trigger.json",
+    "warning_window_s": 10.0,
+    "recovery_window_s": 7.0,
+    "standing_posture_deg": 25.0,
+    "standing_hold_s": 1.0
+  },
+  "call_alert": {
+    "enabled": false,
+    "port": "/dev/ttyUSB1",
+    "baud": 115200,
+    "phone_env": "SMARTBAG_ALERT_PHONE",
+    "ring_seconds": 12.0
+  },
+  "sms_alert": {
+    "enabled": false,
+    "port": "/dev/ttyUSB1",
+    "baud": 115200,
+    "phone_env": "SMARTBAG_ALERT_PHONE",
+    "message": "SmartBag detected a severe fall. Please check the wearer immediately.",
+    "timeout_s": 30.0
   }
 }

@@ -10,6 +10,7 @@ Nordic UART Service using BlueZ.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import csv
 import json
 import math
@@ -26,7 +27,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
-from fall_bridge import FallEventBridge
+
+RUNTIME_DIR = Path(__file__).resolve().parents[1]
+COMMON_DIR = RUNTIME_DIR / "common"
+for module_dir in (RUNTIME_DIR, COMMON_DIR):
+    if str(module_dir) not in sys.path:
+        sys.path.insert(0, str(module_dir))
+
+from cloud_uploader import TelemetryClient  # noqa: E402
+from i2c_mux import interprocess_i2c_mux_lock  # noqa: E402
 
 try:
     import fcntl
@@ -72,6 +81,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "hunch_enabled": True,
         "hunch_pitch_deg": -15.5,
         "hunch_hold_s": 3.0,
+        "hunch_reminder_required_s": 15.0,
+        "hunch_reminder_window_s": 20.0,
         "hunch_max_gyro_dps": 30.0,
         "hunch_accel_min_g": 0.75,
         "hunch_accel_max_g": 1.25,
@@ -84,14 +95,50 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     },
     "output": {
         "console_hz": 5.0,
-        "ble_enabled": False,
+        "ble_enabled": True,
         "ble_hz": 10.0,
-        "ble_name": "SS928-SmartBag",
+        "ble_name": "BMI270-Backpack",
         "alert_file": "",
         "alert_active_value": "1",
         "alert_inactive_value": "0",
         "alert_pulse_ms": 300,
         "alert_command": [],
+    },
+    "fall_detection": {
+        "enabled": False,
+        "detector_config": "",
+        "warning_marker": "/run/smartbag/last-high-warning.json",
+        "alarm_log": "/var/log/smartbag/fall-alarm.jsonl",
+        "manual_trigger_path": "/run/smartbag/manual-fall-trigger.json",
+        "warning_window_s": 10.0,
+        "recovery_window_s": 7.0,
+        "standing_posture_deg": 25.0,
+        "standing_hold_s": 1.0,
+    },
+    "cloud_upload": {
+        "enabled": False,
+        "interval_s": 5.0,
+        "timeout_s": 5.0,
+        "event_queue_size": 32,
+        "daily_state_path": "/var/lib/smartbag/posture-daily.json",
+        "daily_max_gap_s": 10.0,
+        "latest_location_path": "/tmp/smartbag_latest_location.json",
+        "location_max_age_s": 120.0,
+    },
+    "call_alert": {
+        "enabled": False,
+        "port": "/dev/ttyUSB1",
+        "baud": 115200,
+        "phone_env": "SMARTBAG_ALERT_PHONE",
+        "ring_seconds": 12.0,
+    },
+    "sms_alert": {
+        "enabled": False,
+        "port": "/dev/ttyUSB1",
+        "baud": 115200,
+        "phone_env": "SMARTBAG_ALERT_PHONE",
+        "message": "SmartBag detected a severe fall. Please check the wearer immediately.",
+        "timeout_s": 30.0,
     },
     "calibration": {
         "data_dir": "/var/lib/smartbag/calibration",
@@ -122,9 +169,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
                 "duration_s": 30.0,
             },
         },
-    },
-    "fall_detection": {
-        "enabled": True,
     },
 }
 
@@ -386,14 +430,19 @@ class UserspaceI2cBmi270:
         addr: int,
         config_blob: Any = "auto",
         init_sensor: bool = True,
+        mux_addr: Optional[int] = None,
+        mux_channel: int = 0,
     ):
         if fcntl is None:
             raise RuntimeError("Userspace I2C backend needs Linux fcntl/i2c-dev")
         self.bus = bus
         self.addr = addr
+        self.mux_addr = mux_addr
+        self.mux_channel = mux_channel
+        if self.mux_addr is not None and self.mux_channel not in range(8):
+            raise ValueError(f"I2C mux channel must be 0..7, got {self.mux_channel}")
         self.dev_path = f"/dev/i2c-{bus}"
         self.fd = os.open(self.dev_path, os.O_RDWR)
-        fcntl.ioctl(self.fd, self.I2C_SLAVE, addr)
         chip_id = self.read_reg(self.CHIP_ID)
         if chip_id != self.EXPECTED_CHIP_ID:
             raise RuntimeError(
@@ -406,18 +455,30 @@ class UserspaceI2cBmi270:
     def close(self) -> None:
         os.close(self.fd)
 
+    @contextmanager
+    def _transaction(self):
+        with interprocess_i2c_mux_lock(disabled=self.mux_addr is None):
+            if self.mux_addr is not None:
+                fcntl.ioctl(self.fd, self.I2C_SLAVE, self.mux_addr)
+                os.write(self.fd, bytes((1 << self.mux_channel,)))
+            fcntl.ioctl(self.fd, self.I2C_SLAVE, self.addr)
+            yield
+
     def write_reg(self, reg: int, value: int) -> None:
-        os.write(self.fd, bytes([reg & 0xFF, value & 0xFF]))
+        with self._transaction():
+            os.write(self.fd, bytes([reg & 0xFF, value & 0xFF]))
 
     def write_block(self, reg: int, data: bytes) -> None:
-        os.write(self.fd, bytes([reg & 0xFF]) + data)
+        with self._transaction():
+            os.write(self.fd, bytes([reg & 0xFF]) + data)
 
     def read_reg(self, reg: int) -> int:
         return self.read_block(reg, 1)[0]
 
     def read_block(self, reg: int, length: int) -> bytes:
-        os.write(self.fd, bytes([reg & 0xFF]))
-        data = os.read(self.fd, length)
+        with self._transaction():
+            os.write(self.fd, bytes([reg & 0xFF]))
+            data = os.read(self.fd, length)
         if len(data) != length:
             raise RuntimeError(f"Short I2C read: wanted {length}, got {len(data)}")
         return data
@@ -672,6 +733,11 @@ class AnomalyDetector:
         self.cfg = cfg
         self.hold_start: Dict[str, float] = {}
         self.last_emit: Dict[str, float] = {}
+        self.active_conditions: Dict[str, bool] = {}
+        self.hunch_candidate = False
+
+    def is_condition_active(self, code: str) -> bool:
+        return bool(self.active_conditions.get(str(code), False))
 
     def update(self, state: Dict[str, Any]) -> List[Dict[str, Any]]:
         th = self.cfg["thresholds"]
@@ -686,6 +752,7 @@ class AnomalyDetector:
                 and accel_g >= float(th.get("hunch_accel_min_g", 0.75))
                 and accel_g <= float(th.get("hunch_accel_max_g", 1.25))
             )
+            self.hunch_candidate = hunch_active
             checks.append(
                 (
                     "HUNCH",
@@ -775,11 +842,15 @@ class AnomalyDetector:
         now = state["t_mono"]
         if not active:
             self.hold_start.pop(code, None)
+            self.active_conditions[code] = False
             return None
 
         start = self.hold_start.setdefault(code, now)
         if now - start < hold_s:
+            self.active_conditions[code] = False
             return None
+
+        self.active_conditions[code] = True
 
         cooldown = float(self.cfg["thresholds"]["alert_cooldown_s"])
         last = self.last_emit.get(code, -1e9)
@@ -875,7 +946,7 @@ class CalibrationRecorder:
 
     def __init__(self, cfg: Dict[str, Any]):
         cal_cfg = cfg.get("calibration", {})
-        self.data_dir = Path(str(cal_cfg.get("data_dir", "/root/bmi270_calibration")))
+        self.data_dir = Path(str(cal_cfg.get("data_dir", "/var/lib/smartbag/calibration")))
         self.modes = dict(DEFAULT_CONFIG["calibration"]["modes"])
         user_modes = cal_cfg.get("modes", {})
         if isinstance(user_modes, dict):
@@ -1564,7 +1635,7 @@ def print_iio_devices() -> None:
         print(f"{item['path']} name={item['name']} channels={item['channels']}")
 
 
-def probe_bmi270_i2c(bus: Optional[int] = None) -> None:
+def probe_bmi270_i2c(bus: Optional[int] = None, mux_addr: Optional[int] = None, mux_channel: int = 0) -> None:
     if fcntl is None:
         print("I2C probe needs Linux fcntl/i2c-dev")
         return
@@ -1579,9 +1650,13 @@ def probe_bmi270_i2c(bus: Optional[int] = None) -> None:
             try:
                 fd = os.open(dev, os.O_RDWR)
                 try:
-                    fcntl.ioctl(fd, UserspaceI2cBmi270.I2C_SLAVE, addr)
-                    os.write(fd, bytes([UserspaceI2cBmi270.CHIP_ID]))
-                    chip = os.read(fd, 1)
+                    with interprocess_i2c_mux_lock(disabled=mux_addr is None):
+                        if mux_addr is not None:
+                            fcntl.ioctl(fd, UserspaceI2cBmi270.I2C_SLAVE, mux_addr)
+                            os.write(fd, bytes((1 << mux_channel,)))
+                        fcntl.ioctl(fd, UserspaceI2cBmi270.I2C_SLAVE, addr)
+                        os.write(fd, bytes([UserspaceI2cBmi270.CHIP_ID]))
+                        chip = os.read(fd, 1)
                 finally:
                     os.close(fd)
                 if chip:
@@ -1618,15 +1693,152 @@ def make_imu_source(cfg: Dict[str, Any], args: argparse.Namespace) -> Any:
     if backend in ("auto", "i2c"):
         bus = args.i2c_bus if args.i2c_bus is not None else int(dev_cfg.get("i2c_bus", 0))
         addr = parse_int(args.i2c_addr if args.i2c_addr else dev_cfg.get("i2c_addr", "0x68"))
+        mux_addr_value = args.i2c_mux_addr if args.i2c_mux_addr else dev_cfg.get("i2c_mux_addr")
+        mux_addr = parse_int(mux_addr_value) if mux_addr_value is not None else None
+        mux_channel = args.i2c_mux_channel if args.i2c_mux_channel is not None else int(dev_cfg.get("i2c_mux_channel", 0))
         config_blob = dev_cfg.get("config_blob", "auto")
         init_sensor = bool(dev_cfg.get("init_sensor", True))
         print(
-            f"Using userspace I2C {bus=} addr=0x{addr:02x} init={init_sensor}",
+            f"Using userspace I2C {bus=} addr=0x{addr:02x} mux={mux_addr!r} channel={mux_channel} init={init_sensor}",
             flush=True,
         )
-        return UserspaceI2cBmi270(bus, addr, config_blob, init_sensor)
+        return UserspaceI2cBmi270(bus, addr, config_blob, init_sensor, mux_addr, mux_channel)
 
     raise RuntimeError(f"Unknown device backend: {backend}")
+
+
+def make_fall_fusion_runtime(
+    cfg: Dict[str, Any],
+    cloud_alarm_sink: Any = None,
+    call_alarm_sink: Any = None,
+) -> Any:
+    fall_cfg = cfg.get("fall_detection", {})
+    if not bool(fall_cfg.get("enabled", False)):
+        return None
+
+    from fall_fusion_runtime import FallFusionConfig, FallFusionRuntime
+
+    fusion_config = FallFusionConfig(
+        warning_window_s=float(fall_cfg.get("warning_window_s", 10.0)),
+        recovery_window_s=float(fall_cfg.get("recovery_window_s", 7.0)),
+        standing_posture_deg=float(fall_cfg.get("standing_posture_deg", 25.0)),
+        standing_hold_s=float(fall_cfg.get("standing_hold_s", 1.0)),
+    )
+    detector_config = str(fall_cfg.get("detector_config", "")).strip() or None
+    return FallFusionRuntime(
+        warning_marker=str(fall_cfg.get("warning_marker", "/run/smartbag/last-high-warning.json")),
+        fusion_config=fusion_config,
+        detector_config_path=detector_config,
+        alarm_log=str(fall_cfg.get("alarm_log", "/var/log/smartbag/fall-alarm.jsonl")),
+        cloud_alarm_sink=cloud_alarm_sink,
+        call_alarm_sink=call_alarm_sink,
+        manual_trigger_path=str(fall_cfg.get("manual_trigger_path", "/run/smartbag/manual-fall-trigger.json")),
+    )
+
+
+def make_posture_cloud_reporter(cfg: Dict[str, Any]) -> Any:
+    cloud_cfg = cfg.get("cloud_upload", {})
+    if not bool(cloud_cfg.get("enabled", False)):
+        return None
+
+    from posture_cloud import PostureCloudReporter, PostureDailyAccumulator
+
+    client = TelemetryClient(
+        timeout_s=float(cloud_cfg.get("timeout_s", 5.0)),
+        event_queue_size=int(cloud_cfg.get("event_queue_size", 32)),
+    )
+    accumulator = PostureDailyAccumulator(
+        str(cloud_cfg.get("daily_state_path", "/var/lib/smartbag/posture-daily.json")),
+        max_gap_s=float(cloud_cfg.get("daily_max_gap_s", 10.0)),
+    )
+    return PostureCloudReporter(
+        client,
+        accumulator,
+        interval_s=float(cloud_cfg.get("interval_s", 5.0)),
+        latest_location_path=str(
+            cloud_cfg.get("latest_location_path", "/tmp/smartbag_latest_location.json")
+        ),
+        location_max_age_s=float(cloud_cfg.get("location_max_age_s", 120.0)),
+    )
+
+
+def make_call_alarm_sink(
+    cfg: Dict[str, Any],
+    environ: Mapping[str, str] = os.environ,
+) -> Any:
+    call_cfg = cfg.get("call_alert", {})
+    if not bool(call_cfg.get("enabled", False)):
+        return None
+
+    from mt5710_connectivity.mt5710_connectivity import Mt5710CallNotifier
+
+    phone_env = str(call_cfg.get("phone_env", "SMARTBAG_ALERT_PHONE"))
+    phone = str(environ.get(phone_env, "")).strip()
+    if not phone:
+        print(
+            f"WARN call alert disabled: {phone_env} is not set",
+            file=sys.stderr,
+            flush=True,
+        )
+        return None
+    try:
+        return Mt5710CallNotifier(
+            phone=phone,
+            port=str(call_cfg.get("port", "/dev/ttyUSB1")),
+            baud=int(call_cfg.get("baud", 115200)),
+            ring_seconds=float(call_cfg.get("ring_seconds", 12.0)),
+        )
+    except ValueError:
+        print(
+            f"WARN call alert disabled: {phone_env} is invalid",
+            file=sys.stderr,
+            flush=True,
+        )
+        return None
+
+
+def make_sms_alarm_sink(
+    cfg: Dict[str, Any],
+    environ: Mapping[str, str] = os.environ,
+) -> Any:
+    sms_cfg = cfg.get("sms_alert", {})
+    if not bool(sms_cfg.get("enabled", False)):
+        return None
+    from mt5710_connectivity.mt5710_connectivity import Mt5710SmsNotifier
+
+    phone_env = str(sms_cfg.get("phone_env", "SMARTBAG_ALERT_PHONE"))
+    phone = str(environ.get(phone_env, "")).strip()
+    if not phone:
+        print(f"WARN SMS alert disabled: {phone_env} is not set", file=sys.stderr, flush=True)
+        return None
+    try:
+        return Mt5710SmsNotifier(
+            phone=phone,
+            message=str(sms_cfg.get("message") or "SmartBag severe fall alert"),
+            port=str(sms_cfg.get("port", "/dev/ttyUSB1")),
+            baud=int(sms_cfg.get("baud", 115200)),
+            timeout_s=float(sms_cfg.get("timeout_s", 30.0)),
+        )
+    except ValueError:
+        print(f"WARN SMS alert disabled: {phone_env} is invalid", file=sys.stderr, flush=True)
+        return None
+
+
+def combine_alarm_sinks(*sinks: Any) -> Any:
+    active = tuple(sink for sink in sinks if sink is not None)
+    if not active:
+        return None
+
+    def notify(event: Mapping[str, Any]) -> bool:
+        delivered = False
+        for sink in active:
+            try:
+                delivered = bool(sink(event)) or delivered
+            except Exception as exc:
+                print(f"WARN remote fall notification failed: {type(exc).__name__}", file=sys.stderr, flush=True)
+        return delivered
+
+    return notify
 
 
 def run(args: argparse.Namespace) -> int:
@@ -1643,21 +1855,21 @@ def run(args: argparse.Namespace) -> int:
     estimator = MotionEstimator(cfg)
     detector = AnomalyDetector(cfg)
     alert_output = AlertOutput(cfg)
-    calibration_recorder = CalibrationRecorder(cfg)
-    fall_bridge = (
-        FallEventBridge(float(cfg["device"]["sample_hz"]))
-        if bool(cfg.get("fall_detection", {}).get("enabled", True))
-        else None
+    posture_cloud = make_posture_cloud_reporter(cfg)
+    from posture_reminder import CumulativeHunchReminder, write_reminder_trigger
+    thresholds = cfg["thresholds"]
+    hunch_reminder = CumulativeHunchReminder(
+        thresholds.get("hunch_reminder_required_s", 15.0),
+        thresholds.get("hunch_reminder_window_s", 20.0),
     )
+    remote_alarm_sink = combine_alarm_sinks(make_sms_alarm_sink(cfg), make_call_alarm_sink(cfg))
+    fall_fusion = make_fall_fusion_runtime(
+        cfg,
+        cloud_alarm_sink=posture_cloud.report_fall if posture_cloud is not None else None,
+        call_alarm_sink=remote_alarm_sink,
+    )
+    calibration_recorder = CalibrationRecorder(cfg)
     commands: "queue.Queue[str]" = queue.Queue()
-    if args.command_stdin:
-        def _command_reader() -> None:
-            for line in sys.stdin:
-                text = line.strip()
-                if text:
-                    commands.put(text)
-
-        threading.Thread(target=_command_reader, daemon=True).start()
 
     ble: Optional[BleNusServer] = None
     if bool(cfg["output"]["ble_enabled"]):
@@ -1699,11 +1911,41 @@ def run(args: argparse.Namespace) -> int:
             state = estimator.update(sample)
             state = apply_posture_correction(state, cfg)
             alerts = detector.update(state)
-            fall_events = fall_bridge.update_jsonl(sample) if fall_bridge is not None else []
         except Exception as exc:
             print(f"ERR read/process failed: {exc}", file=sys.stderr, flush=True)
             time.sleep(0.2)
             continue
+
+        if fall_fusion is not None:
+            try:
+                fall_fusion.update(sample)
+                fall_fusion.consume_manual_trigger()
+            except Exception as exc:
+                print(f"WARN fall fusion failed: {exc}", file=sys.stderr, flush=True)
+
+        if posture_cloud is not None:
+            try:
+                posture_cloud.tick(
+                    state,
+                    hunch_active=detector.is_condition_active("HUNCH"),
+                    now_mono=now,
+                    now_wall=time.time(),
+                )
+            except Exception as exc:
+                print(
+                    f"WARN posture cloud reporting failed: {type(exc).__name__}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+        if hunch_reminder.update(detector.hunch_candidate, now):
+            reminder = write_reminder_trigger("/run/smartbag/posture-reminder.json", now_wall=time.time())
+            print("REMINDER,HUNCH,level=light,duration=5", flush=True)
+            if posture_cloud is not None:
+                try:
+                    posture_cloud.report_hunch_reminder(state, reminder)
+                except Exception as exc:
+                    print(f"WARN posture reminder upload failed: {type(exc).__name__}", file=sys.stderr, flush=True)
 
         while True:
             try:
@@ -1713,8 +1955,6 @@ def run(args: argparse.Namespace) -> int:
 
         for alert in alerts:
             alert_output.emit(alert)
-        for fall_event in fall_events:
-            print(fall_event, flush=True)
 
         calibration_recorder.write_sample(state, alerts)
         completed_capture = calibration_recorder.tick()
@@ -1736,6 +1976,8 @@ def run(args: argparse.Namespace) -> int:
     calibration_recorder.close_if_active("shutdown")
     if ble is not None:
         ble.stop()
+    if posture_cloud is not None:
+        posture_cloud.telemetry_client.close()
     return 0
 
 
@@ -1778,9 +2020,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="",
         help="BMI270 I2C address, usually 0x68 or 0x69.",
     )
+    parser.add_argument("--i2c-mux-addr", default="", help="Optional TCA9548A I2C address, for example 0x70.")
+    parser.add_argument("--i2c-mux-channel", type=int, default=None, help="TCA9548A channel for BMI270, normally 0.")
     parser.add_argument("--ble", action="store_true", help="Force BLE on.")
     parser.add_argument("--no-ble", action="store_true", help="Force BLE off.")
-    parser.add_argument("--command-stdin", action="store_true", help="Read STATUS/ZERO/SET commands from stdin for the unified board service.")
     parser.add_argument(
         "--alert-file",
         default="",
@@ -1796,7 +2039,7 @@ def main() -> int:
         print_iio_devices()
         return 0
     if args.probe_i2c:
-        probe_bmi270_i2c(args.i2c_bus)
+        probe_bmi270_i2c(args.i2c_bus, parse_int(args.i2c_mux_addr) if args.i2c_mux_addr else None, args.i2c_mux_channel or 0)
         return 0
     return run(args)
 

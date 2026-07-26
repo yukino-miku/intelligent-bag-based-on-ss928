@@ -46,6 +46,8 @@ DEFAULT_LEVEL_DUTY_PERCENT = {
 LEVEL_DUTY_PERCENT = DEFAULT_LEVEL_DUTY_PERCENT
 
 SIDE_ALIASES = {
+    "\u5de6": "left",
+    "\u53f3": "right",
     "l": "left",
     "left": "left",
     "左": "left",
@@ -66,11 +68,13 @@ class AlertCommand:
 class AlertEvent:
     side: str
     level: int
+    source: str = "vision"
     score: float | None = None
     track_id: int | None = None
     ts: float | None = None
     class_name: str | None = None
     distance_m: float | None = None
+    timeout_s: float | None = None
 
 
 @dataclass(frozen=True)
@@ -177,6 +181,7 @@ def parse_vision_alert_jsonl(line: str) -> AlertEvent | None:
     return AlertEvent(
         side=normalize_side(str(data["side"])),
         level=normalize_level(data["level"]),
+        source=str(data.get("source") or "vision"),
         score=float(data["score"]) if data.get("score") is not None else None,
         track_id=int(data["track_id"]) if data.get("track_id") is not None else None,
         ts=float(data["ts"]) if data.get("ts") is not None else None,
@@ -204,23 +209,37 @@ class AlertState:
         self.min_audio_interval_s = max(0.0, float(min_audio_interval_s))
         self.period_ns = int(period_ns)
         self.level_duty_percent = level_duty_percent or DEFAULT_LEVEL_DUTY_PERCENT
-        self.levels_by_side = {"left": 0, "right": 0}
-        self.last_event_mono_by_side: dict[str, float] = {}
+        self.levels_by_source_side: dict[tuple[str, str], int] = {}
+        self.last_event_mono_by_source_side: dict[tuple[str, str], float] = {}
+        self.timeout_s_by_source_side: dict[tuple[str, str], float] = {}
         self.last_audio_mono_by_clip: dict[str, float] = {}
+
+    @property
+    def levels_by_side(self) -> dict[str, int]:
+        return {side: self._effective_level(side) for side in VALID_SIDES}
 
     def apply_event(self, event: AlertEvent, now: float | None = None) -> AlertOutput:
         now = time.monotonic() if now is None else now
         side = normalize_side(event.side)
         level = normalize_level(event.level)
-        previous_level = self.levels_by_side[side]
-        self.levels_by_side[side] = level
+        source = self._normalize_source(event.source)
+        key = (source, side)
+        previous_level = self._effective_level(side)
         if level > 0:
-            self.last_event_mono_by_side[side] = now
+            self.levels_by_source_side[key] = level
+            self.last_event_mono_by_source_side[key] = now
+            self.timeout_s_by_source_side[key] = max(
+                self.event_timeout_s,
+                float(event.timeout_s) if event.timeout_s is not None else self.event_timeout_s,
+            )
         else:
-            self.last_event_mono_by_side.pop(side, None)
+            self.levels_by_source_side.pop(key, None)
+            self.last_event_mono_by_source_side.pop(key, None)
+            self.timeout_s_by_source_side.pop(key, None)
 
-        clip = audio_clip_for(side, level)
-        if clip is not None and not self._should_emit_audio(clip, previous_level, level, now):
+        effective_level = self._effective_level(side)
+        clip = audio_clip_for(side, effective_level)
+        if clip is not None and not self._should_emit_audio(clip, previous_level, effective_level, now):
             clip = None
         return self._output(audio_clip=clip)
 
@@ -233,29 +252,36 @@ class AlertState:
             raise ValueError(f"unsupported alert command kind: {command.kind!r}")
         side = normalize_side(command.side)
         level = normalize_level(command.level)
-        self.levels_by_side[side] = level
+        key = ("manual", side)
         if level > 0:
-            self.last_event_mono_by_side[side] = now
+            self.levels_by_source_side[key] = level
+            self.last_event_mono_by_source_side[key] = now
         else:
-            self.last_event_mono_by_side.pop(side, None)
-        clip = audio_clip_for(side, level)
+            self.levels_by_source_side.pop(key, None)
+            self.last_event_mono_by_source_side.pop(key, None)
+        clip = audio_clip_for(side, self._effective_level(side))
         if clip:
             self.last_audio_mono_by_clip[clip] = now
         return self._output(audio_clip=clip)
 
     def clear(self) -> None:
-        self.levels_by_side = {"left": 0, "right": 0}
-        self.last_event_mono_by_side.clear()
+        self.levels_by_source_side.clear()
+        self.last_event_mono_by_source_side.clear()
+        self.timeout_s_by_source_side.clear()
         self.last_audio_mono_by_clip.clear()
 
     def expire(self, now: float | None = None) -> AlertOutput:
         now = time.monotonic() if now is None else now
         expired: list[str] = []
-        for side, last_event_mono in list(self.last_event_mono_by_side.items()):
-            if now - last_event_mono > self.event_timeout_s:
-                self.levels_by_side[side] = 0
-                del self.last_event_mono_by_side[side]
-                expired.append(side)
+        for key, last_event_mono in list(self.last_event_mono_by_source_side.items()):
+            timeout_s = self.timeout_s_by_source_side.get(key, self.event_timeout_s)
+            if now - last_event_mono > timeout_s:
+                _source, side = key
+                self.levels_by_source_side.pop(key, None)
+                del self.last_event_mono_by_source_side[key]
+                self.timeout_s_by_source_side.pop(key, None)
+                if side not in expired:
+                    expired.append(side)
         return self._output(expired_sides=tuple(expired))
 
     def _should_emit_audio(self, clip: str, previous_level: int, level: int, now: float) -> bool:
@@ -283,3 +309,16 @@ class AlertState:
             levels=dict(self.levels_by_side),
             expired_sides=expired_sides,
         )
+
+    def _effective_level(self, side: str) -> int:
+        return max(
+            (level for (_source, event_side), level in self.levels_by_source_side.items() if event_side == side),
+            default=0,
+        )
+
+    @staticmethod
+    def _normalize_source(source: str) -> str:
+        normalized = str(source or "").strip().lower()
+        if not normalized:
+            raise ValueError("alert source must not be empty")
+        return normalized

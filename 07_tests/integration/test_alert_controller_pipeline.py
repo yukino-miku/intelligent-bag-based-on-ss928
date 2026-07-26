@@ -16,6 +16,7 @@ from smartbag_alert_controller import (
     DetectorProcess,
     alert_event_ble_payload,
     detector_commands_from_config,
+    posture_reminder_from_module,
     validate_dual_camera_config,
 )
 
@@ -81,6 +82,18 @@ class AlertControllerPipelineTest(unittest.TestCase):
         self.assertEqual(0, output.duties_ns["left_2"])
         self.assertGreater(output.duties_ns["right_1"], 0)
         self.assertGreater(output.duties_ns["right_2"], 0)
+
+    def test_clearing_one_source_preserves_other_source_on_same_side(self) -> None:
+        state = AlertState(event_timeout_s=1.0)
+        state.apply_event(AlertEvent("left", 3, source="vision:left"), now=1.0)
+        state.apply_event(AlertEvent("left", 2, source="radar:left_rear"), now=1.0)
+
+        output = state.apply_event(AlertEvent("left", 0, source="vision:left"), now=1.1)
+
+        self.assertEqual(2, output.levels["left"])
+        self.assertGreater(output.duties_ns["left_1"], 0)
+        cleared = state.apply_event(AlertEvent("left", 0, source="radar:left_rear"), now=1.2)
+        self.assertEqual(0, cleared.levels["left"])
 
     def test_single_camera_detector_exit_clears_both_sides(self) -> None:
         event_queue = queue.Queue()
@@ -152,6 +165,28 @@ class AlertControllerPipelineTest(unittest.TestCase):
         self.assertIn('"name":"DANGER"', payload)
         self.assertIn('"class":"car"', payload)
         self.assertIn('"distance_m":4.2', payload)
+
+    def test_hunch_reminder_uses_independent_bilateral_source(self) -> None:
+        parsed = posture_reminder_from_module(
+            "IMU",
+            "REMINDER,HUNCH,level=light,duration=5",
+            {"posture_reminder": {"enabled": True, "level": 1, "duration_s": 5, "audio_clip": "bad"}},
+            now_s=10.0,
+        )
+        self.assertIsNotNone(parsed)
+        events, clip = parsed
+        self.assertEqual("bad", clip)
+        self.assertEqual({"left", "right"}, {event.side for event in events})
+        self.assertTrue(all(event.source == "posture:hunch" for event in events))
+
+        state = AlertState(event_timeout_s=1.0)
+        state.apply_event(AlertEvent("left", 3, source="vision:left"), now=10.0)
+        output = state.apply_event(events[0], now=10.0)
+        output = state.apply_event(events[1], now=10.0)
+        self.assertEqual(3, output.levels["left"])
+        self.assertEqual(1, output.levels["right"])
+        cleared = state.apply_event(AlertEvent("left", 0, source="vision:left"), now=10.1)
+        self.assertEqual(1, cleared.levels["left"])
 
 
 if __name__ == "__main__":
