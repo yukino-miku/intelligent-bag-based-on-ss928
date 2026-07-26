@@ -1,0 +1,12 @@
+ARCH ?= arm64
+CROSS_COMPILE ?= aarch64-mix210-linux-
+KERNELDIR ?= ../../SS928V100_SDK_V2.0.2.2/open_source/linux/linux-4.19.y/
+TARGET := hi_tsensor
+TARGET_DRIVER := hi_tsensor_driver
+APP_TARGET := hi_tsensor_driver_sample
+LIB := libhi_tsensor.a
+
+$(TARGET)-y +=  hi_tsensor_driver.o
+obj-m := $(TARGET).o
+
+EXTRA_CFLAGS += -Wno-date-time

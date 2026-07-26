@@ -1,5 +1,7 @@
 # SS928 板端整合清单
 
+> 本文是 2026-07-15 对旧分支的阶段性审计，保留作历史。2026-07-26 来源 `main@59071297...` 的完整 24,421 文件审计、MR20/TM6605/Cloud/NPU 等新增模块决定，以 `sanda-full-integration-plan.md` 和 `sanda-full-file-manifest.csv` 为准。
+
 整合日期：2026-07-15。只读来源：`sanda-tt/ss928`，ref `codex/dx-gp21-tracker`，提交 `d7e10fd06dc553f94d2db3a3d19987ec8648f7dc`。目标分支：`agent/ss928-board-integration`。未使用 unrelated histories 合并，未修改来源仓库。
 
 | 原路径 | 主要功能 | 运行方式 | 硬件依赖 | 依赖 | 迁移 | 目标路径 | 重构 | 重复/替代 | 决定与理由 |

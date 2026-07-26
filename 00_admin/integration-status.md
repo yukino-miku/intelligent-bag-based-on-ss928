@@ -1,35 +1,53 @@
-# SS928 板端整合状态
+# SS928 全量整合状态
 
-## 已完成
+## 仓库与审计
 
-- 正式 systemd 使用左右固定双 USB detector；配置拒绝同一真实设备或相同 stream port，跨侧告警被 Controller 拒绝。
-- 每个 detector 是相机唯一所有者，使用容量 1 latest-frame buffer、有限断流重连、独立 tracker/RiskModel/stabilizer/CSV 和稳定 haptic JSONL。
-- 左右 PWM 独立；单侧 level=0、超时或 detector 退出只清对应侧，子进程有限退避重启，另一侧继续。
-- 双路 snapshot/MJPEG、聚合状态、浏览器调试页和按需 JPEG；BLE 不传视频。
-- 微信小程序双摄页、地址 storage、raw/overlay、暂停/重连、左右自动告警和真实 SYS 状态。
-- GNSS/BMI 默认不注册 BLE；统一设备名为 `SS928-SmartBag`。
-- 双标定模板、依赖/相机/preflight/stream/模拟双视频脚本和部署文档已齐全。
-- 本地 203 项 Python 测试、4 个小程序测试文件和 compileall/JSON/JS/shell/diff 检查通过。
+- 目标基线：`06c6cfd1dc11a0f92c54ce8aad5252d554ececa5`。
+- 来源基线：`sanda-tt/ss928@59071297e5d8f339332a7234406429f94ffe2570`，只读使用。
+- 来源 24,421 个 Git blob 均进入 `sanda-full-file-manifest.csv`；路径、大小和 SHA-256 由校验器重新核对。
+- 5 个缺失 Git LFS 对象和 1 个含设备凭据 handoff 标为 `BLOCKED`，不伪造、不提交。
 
-## 真实开发板已验证（2026-07-16）
+## 已完成整合
 
-- USB-UART 登录确认 SS928V100、Ubuntu 22.04.1/aarch64、Linux 4.19.90、4 CPU；当前总内存仅 952 MiB、无 swap。
-- 两台 `0bda:3035` UVC 相机分别枚举为 `/dev/video0`、`/dev/video2`，但序列号相同导致 by-id 冲突，只能用不同 by-path 固定物理口。
-- 两台相机当前共同挂在 `10320000.xhci_1` 的 USB 2.0 hub 下。标准库 V4L2 mmap 单路短测约 8.42/7.46 FPS；双路 640x480 和 320x240 均有一侧 `ENOSPC`，当前接法未通过双摄验收。
-- 当前镜像缺少 `cv2/torch/ultralytics/lap` 及 V4L2/FFmpeg/GStreamer 工具，板端视觉和推流尚未启动；未修改现有 systemd 服务。
+- 固定左右双 USB detector、独立 tracker/risk/stabilizer/risk CSV、latest-frame HTTP、双路 gateway 和统一 Controller 保持不变。
+- Controller 按 `(source, side)` 融合视觉和可选 MR20；单来源清零、超时或退出不会清除另一来源或另一侧。
+- TCA9548A 通道分配：BMI270=0、左 TM6605=1、右 TM6605=2；BMI/TM 使用同一跨进程 I2C 锁。
+- 正式输出：左右 TM6605/LRA、Pin7/Pin32 灯、可选 MAX98357；Pin35/Pin37 只保留 legacy PWM 后端。
+- BMI270 单进程姿态、累计驼背提醒、跌倒融合、CloudBase、可选短信/电话；驼背输出使用独立 `posture:hunch` 来源，不覆盖交通风险。
+- DX-GP21、MT5710 NCM、Tsensor、WS73、CloudBase、小程序和硬件 profile 接入统一部署；可选模块故障不阻塞本地视觉和安全清零。
+- 云函数必需 `lib/*.js` 已纳入 Git；Cloud env、token、手机号和板端凭据不写死在公开配置。
 
-## 仍需真实硬件验证
+## SS928 NPU 状态
 
-- 将一台相机移到另一 USB 根控制器，重新确定两个 by-path，并完成双摄持续 FPS、掉线重连和总线带宽测试。
-- 通过联网 apt 或经过 ABI 验证的离线 aarch64 包补齐 OpenCV/torch/ultralytics/lap，再验证模型加载。
-- `board_dual_balanced` 双 detector 的 capture/inference/stream FPS、CPU、内存、最高温度和 30 分钟以上稳定性；当前只有未解码的短时 UVC 数据。
-- 左右独立相机内参、畸变、高度、pitch、朝向和风险日志实景校准。
-- PWM sysfs 编号、四路物理方向、电机驱动供电、单侧退出清振和紧急停止。
-- BlueZ NUS、自动 alert、GNSS/IMU/SYS 往返；手机真机 snapshot、局域网/HTTPS/合法域名限制。
-- DX-GP21 UART4、BMI270 IIO/I2C、MAX98357；音频默认关闭。
+- 已完成：ACL I/O 合约、NV12 letterbox、YOLO decode/NMS、离线 raw runner、detections JSONL 协议和 4 项本机 native C++ tests。
+- 来源历史证据：固定输入 100 帧 ACL 平均推理约 25.112 ms、后处理约 16.292 ms、总吞吐约 23.348 FPS。
+- 未完成：工厂 OM 的真实目标正确性、USB 实时输入、双路 NPU 调度、detections 到现有 BoT-SORT/TrackState/RiskModel/overlay 的实时桥接。
+- 因此当前正式实时后端仍是 Python Ultralytics；不得宣称完整 NPU 避障链已可用。
 
-## 未完成
+## 测试状态
 
-- `Ss928OmBackend` 没有与现有 Python detector、BoT-SORT 和风险链兼容的真实厂商 API。归档仅证明存在 ATC、`.om` 和 C/C++ sample；OpenVINO 不是 SS928 NPU。
-- MPP VENC/RTSP 尚未接入当前 UVC detector 帧。当前交付是 CPU JPEG snapshot/MJPEG 基线，不宣称硬件 H.264/H.265 已完成。
-- 微信小程序真机和正式 AppID/HTTPS/合法域名尚未验证；浏览器页是当前独立板端视频验收入口。
+整合前基线共 203 项 Python 测试通过。整合后本机验证结果：
+
+- 290 项 Python 测试通过：视觉 147、USB 录像 8、BMI270 22、Cloud 6、GNSS 6、IMU/fall 11、MR20 7、MT5710 23、Controller 17、温度 3、跨模块集成 40。
+- 11 个小程序/CloudBase Node 测试文件通过；32 个 JavaScript 文件通过 `node --check`。
+- 4 个 SS928 NPU 后端 C++ native tests 通过，并验证 Windows/Linux 双平台 `make clean` 路径。
+- `compileall`、7 个关键模块 import、27 个 JSON、21 个 Shell、配置同步、manifest 全量校验、重复哈希、大文件、secret 和 `git diff --check` 检查通过。
+- 仓库根目录直接运行 `python -m unittest discover -v` 因测试分散在各非包模块目录而发现 0 项；最终结果来自各模块与 `07_tests/integration` 的显式 discovery，不把 0 项 discovery 记作测试通过。
+- 本机无 WSL/systemd 环境，无法运行 `systemd-analyze verify`；systemd 路径、默认 target、硬件所有权和可选服务故障隔离由 40 项集成测试中的部署断言验证。
+
+## 既有实板证据
+
+- 2026-07-16 记录：SS928V100、Ubuntu 22.04.1/aarch64、Linux 4.19.90、4 CPU、约 952 MiB RAM。
+- 两台 `0bda:3035` UVC 当时分别枚举为 `/dev/video0`、`/dev/video2`，同序列号导致 by-id 冲突；共同位于 USB 2.0 hub 时双路出现 `ENOSPC`。
+- 这些是历史基线，不等于本分支已在当前接线完成部署、自启或端到端检测。
+
+## 仍需本轮真实硬件验收
+
+2026-07-26 本轮收尾时 Windows 物理以太网适配器状态为 `Disconnected`，已知板端地址均无 ICMP/SSH 响应，因此没有执行上传、服务启动或 reboot。以下项目保持未验证：
+
+- 两路相机当前 by-path、不同根控制器、30 分钟持续采集、断流重连、detector FPS/CPU/RAM/温度。
+- 两份相机内参/畸变/高度/pitch 和实景风险日志。
+- TCA channel、TM6605/LRA、灯、MAX98357、BMI270、MR20、DX-GP21、MT5710、WS73、Tsensor 的实际端口和供电。
+- Controller 清零、Cloud/5G 断网、systemd restart、reboot 自启和 safe-off。
+- 微信小程序真机 BLE/局域网/CloudBase；正式 AppID、HTTPS 和合法域名。
+- 真实可用 OM、双路 NPU 实时链与 Python 风险结果对齐。

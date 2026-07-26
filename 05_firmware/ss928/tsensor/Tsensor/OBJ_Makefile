@@ -1,0 +1,25 @@
+include $(PWD)/Makefile.param
+
+NFS_PATH ?= /root/Workspace/NFS/
+APP_PATH := ./$(APP_TARGET)
+OBJ_PATH := ./$(TARGET)_obj
+
+PWD := $(shell pwd)
+
+default: driver
+
+driver:
+	@echo -e "\e[0;32;1m--Compiling '$(TARGET)'.ko... Configs as follow:\e[0;36;1m"
+	@echo ---- CROSS_COMPILE=$(CROSS_COMPILE)
+	@echo ---- ARCH=$(ARCH)
+	@echo ---- PATH=$(PWD)
+	@echo ---- KERNELDIR=$(KERNELDIR)
+	@@echo -e "\e[0m"
+	@$(MAKE) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) -C $(KERNELDIR) M=$(PWD) modules
+
+driver_clean:
+	@echo -e "\e[0;32;1m--Clean Driver \e[0;36;1m"
+	@@echo -e "\e[0m"
+	@rm -rf $(TARGET).ko
+
+clean: driver_clean

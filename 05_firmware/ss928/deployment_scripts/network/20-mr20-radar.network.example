@@ -1,0 +1,19 @@
+# Optional dedicated MR20 link. Copy only after adapting interface names and
+# addresses to the actual board; this file is not installed automatically.
+
+[Match]
+Name=eth1
+
+[Link]
+RequiredForOnline=no
+
+[Network]
+Address=192.168.1.10/24
+Address=192.168.2.102/24
+LinkLocalAddressing=no
+IPv6AcceptRA=no
+ConfigureWithoutCarrier=yes
+
+[Route]
+Destination=192.168.1.200/32
+Scope=link

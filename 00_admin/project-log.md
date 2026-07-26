@@ -1,5 +1,17 @@
 # Project Log
 
+## 2026-07-26
+
+- 从目标基线 `06c6cfd1dc11a0f92c54ce8aad5252d554ececa5` 创建 `agent/full-sanda-integration`，固定只读来源 `sanda-tt/ss928@59071297e5d8f339332a7234406429f94ffe2570`。
+- 使用 Git object 遍历 24,421 个来源 blob，建立可重现 manifest 和独立 SHA/路径校验器；LFS 缺失对象与含凭据 handoff 明确阻塞。
+- 选择性合并来源新增的 MR20、TCA/TM6605、灯、CloudBase、MT5710、Tsensor、WS73、CAD、小程序和 OM 实验代码，没有合并来源根目录或 Git 历史。
+- Controller 增加 source+side 状态隔离、跨进程 I2C mux 锁、TM6605/灯/MR20/音频和驼背提醒；保持固定左右 detector 及稳定 haptic JSONL 为正式视觉链。
+- 统一 systemd 硬件所有者与 `/root/smartbag` 路径，增加 config migration、profile、safe-off 和可选 connectivity/temperature/WS73 service。
+- 修复 CloudBase 函数 `lib` 被 `.gitignore` 误排除的问题，并移除云函数内硬编码环境 ID。
+- NPU 代码只收敛为离线 detection producer，保留工厂 OM 检测失败证据，不把固定输入 ACL 成功写成实时避障完成。
+- 收尾验证通过 290 项 Python、11 个 Node 测试文件、4 个 NPU native C++ tests，以及 compile/import/JSON/JavaScript/Shell/config/manifest/secret/大文件/重复哈希检查。根目录通用 unittest discovery 发现 0 项，实际结果使用逐模块 discovery。
+- 当前 Windows 物理以太网为断开状态，板端 SSH 不可达；本分支没有伪造上传、systemd 启动、摄像头/NPU 或 reboot 自启结果。
+
 ## 2026-07-16
 
 - 通过 USB-UART 在真实 SS928 板上完成只读审计：确认 Ubuntu 22.04.1/aarch64、SDK V2.0.2.2、952 MiB 内存，以及 `/dev/video0`/`video2` 两路 UVC。两台相机序列号相同且共用同一 USB 2.0 hub；单路底层 MJPEG 短测约 8.42/7.46 FPS，双路 640x480/320x240 均出现一侧 `ENOSPC`。板上缺少 cv2/torch/ultralytics/lap，故未宣称视觉检测已在板端运行。

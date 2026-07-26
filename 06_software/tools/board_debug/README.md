@@ -13,3 +13,5 @@ py board_debug.py logs --lines 120
 ```
 
 首次连接请先用系统 `ssh` 接受并核对主机指纹；脚本默认拒绝未知主机密钥。
+
+`uvc_probe_capture.py` 是不依赖 OpenCV 的 V4L2/UVC 诊断工具，用于在安装完整视觉依赖前确认格式、单路/双路采集和 USB `ENOSPC`。它只做采集诊断，不执行 YOLO、跟踪或风险判断。

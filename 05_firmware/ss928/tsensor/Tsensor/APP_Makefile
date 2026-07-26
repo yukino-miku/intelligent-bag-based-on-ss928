@@ -1,0 +1,9 @@
+include $(PWD)/Makefile.param
+
+CC = $(CROSS_COMPILE)gcc
+
+default:
+	@$(CC) $(APP_TARGET).c $(LIB) -o $(APP_TARGET)
+
+clean:
+	@rm $(APP_TARGET)

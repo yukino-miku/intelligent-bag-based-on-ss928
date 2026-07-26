@@ -1,23 +1,18 @@
 # 板端进程架构
 
+完整架构和资源所有权以 [integrated-system-architecture.md](integrated-system-architecture.md) 为准。本文件保留部署入口摘要。
+
 ```text
-left USB camera -> left detector (single camera owner)
-  -> left stabilized haptic vision_alert JSONL -> controller -> left PWM
-  -> left raw/overlay latest frame -> detector-local HTTP
+left fixed USB camera  -> left detector  -> haptic JSONL --+
+right fixed USB camera -> right detector -> haptic JSONL --+--> Controller
+optional MR20 workers -------------------------------------+      | BLE/TM6605/lights/audio
 
-right USB camera -> right detector (single camera owner)
-  -> right stabilized haptic vision_alert JSONL -> controller -> right PWM
-  -> right raw/overlay latest frame -> detector-local HTTP
-
-dual camera gateway -> proxy/aggregate both detector HTTP endpoints -> Wi-Fi/LAN -> phone
-
-BMI270 -> posture + fall/impact board events -> controller/board service
-DX-GP21 -> GNSS JSON -> local track store -> controller/board service
-controller/board service -> one BLE NUS -> mobile mini program
+BMI270 child -> posture/fall/reminder/cloud/SMS-call
+DX-GP21 child -> valid GNSS track/cache/cloud
+MT5710 service -> connectivity only
+video gateway -> detector latest frames only -> LAN/mini program
 ```
 
-正式部署默认启动两个固定 detector：左相机事件只能是 `left`，右相机事件只能是 `right`，中央目标也不跨侧发送。旧单摄 `--single-camera/--side auto` 只保留兼容测试，不进入默认 systemd 链。两个 detector 不共享 camera handle、tracker、TrackState、RiskModel、stabilizer、限流器或 risk CSV。
+正式部署始终使用两个固定 detector，不使用交替采集。每个 detector 独占对应 camera、tracker、TrackState、RiskModel、stabilizer、限流和 risk CSV。Gateway 不重新打开 camera。
 
-Controller 是默认 BLE 唯一所有者；GNSS/BMI 子模块通过 JSONL/stdin 命令与它交互。BLE 不传视频。`smartbag-video.service` 只代理 detector 已有的最新帧，不重新打开摄像头；手机无客户端时不会主动执行 JPEG 编码。
-
-视觉风险层次必须保持：`raw_risk_level` 是单帧候选；`visual_risk_level` 是稳定后的画框级别；`haptic_risk_level` 是更严格的震动输入；实际 PWM 还会经过事件时效、侧别、限流和等级配置。
+Controller 是 BLE、TM6605、灯、音频和 MR20 UDP worker 的唯一所有者；BMI/GNSS 默认 `--no-ble`。视觉风险层保持 `raw_risk_level -> visual_risk_level -> haptic_risk_level`，震动 JSONL 只允许稳定后的 haptic level。Controller 再按 source+side、事件时效和输出 profile 决定实际硬件等级。

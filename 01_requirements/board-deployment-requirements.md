@@ -22,6 +22,9 @@
 - 摄像头：两个不同的 USB V4L2 设备；序列号唯一时可用 `/dev/v4l/by-id`，相同型号/序列号时必须固定物理口并用两个不同的 by-path。默认配置不得使用同一真实节点，双路还必须通过并发首帧测试。IMX347 MIPI 只作可选诊断，不进入默认服务。
 - I2C0：BMI270，地址 `0x68`/`0x69`；支持 IIO 和用户态 I2C。
 - UART4：DX-GP21，`/dev/ttyAMA4`，NMEA。
-- PWM sysfs：四路左右震动，等级 0 到 4。
+- 正式震动：I2C0/TCA9548A channel 1/2 的左右 TM6605/LRA，等级 0 到 4；Pin35/Pin37 四路 PWM 方案仅作 legacy fallback。
+- 正式灯光：Pin7/Pin32 左右 PWM 灯，由 Controller 独占。
+- BMI270、TM6605 必须共享 TCA channel 配置和跨进程 I2C 锁；默认不能出现第二 BMI 采集进程。
+- MR20、GNSS、音频、MT5710、Tsensor 均通过硬件 profile/环境配置启用，缺失时不得阻止本地视觉与安全清零。
 - I2S：MAX98357 可选音频，默认关闭且不得阻塞震动。
 - 默认只能由 board service/controller 注册一个 Nordic UART Service，广播名 `SS928-SmartBag`；GNSS 和 BMI270 默认 `--no-ble`。

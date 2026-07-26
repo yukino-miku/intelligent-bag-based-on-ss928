@@ -1,3 +1,8 @@
-# 板端脚本说明
+# 板端辅助配置
 
-统一安装、启动和卸载入口位于 `09_deliverables/board_deploy`。本目录不再为每个软件模块维护互相矛盾的 `/root/...` 路径。正式安装前先运行 `preflight.sh`，再由 `install.sh` 安装 systemd unit 和统一配置。
+正式 install/start/upgrade/uninstall 入口位于 `09_deliverables/board_deploy`。本目录只保留硬件初始化辅助文件：
+
+- `ws73-bluetooth-module-start.sh`：在 `/opt/sample/ws73` 或 `WS73_MODULE_DIR` 加载 `plat_soc.ko`/`ble_soc.ko`，等待 `hci0`；由可选 `smartbag-ws73.service` 调用。
+- `network/20-mr20-radar.network.example`：MR20 独立网口示例，含历史 IP，仅作模板，不由安装脚本自动复制。
+
+应用 networkd 示例前必须根据当前 interface/IP/路由修改，避免与电脑管理网或另一网口形成同网段冲突。WS73 service 只加载模块，BlueZ/NUS 仍由系统 `bluetooth.service` 与 SmartBag Controller 管理。

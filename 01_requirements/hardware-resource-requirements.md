@@ -6,7 +6,10 @@
 | sensor0 MIPI + I2C7 | IMX347 可选诊断 | EULER_4SEN V1.0、2 lane；不属于默认双 USB 启动链 |
 | I2C0 Pin3/5 | BMI270 | 3.3V，地址 0x68/0x69，IIO 或 userspace 二选一 |
 | UART4 Pin8/10 | DX-GP21 | `/dev/ttyAMA4`，TTL 电平，NMEA 波特率与模块一致 |
-| PWM Pin7/32/35/37 | 四路震动 | 独立电机驱动和电源，共地，启动/退出强制关闭 |
+| I2C0 + TCA9548A | BMI270、左右 TM6605 | 0x70；channel 0/1/2；mux select 与传输共用跨进程锁 |
+| TM6605 + LRA | 左右震动 | Controller 独占，独立驱动/电源，启动/退出强制停止 |
+| PWM Pin7/32 | 左右灯 | Controller 独占，等级/节奏配置化 |
+| PWM Pin35/37 | legacy 震动兼容 | 非默认；不得与 TM6605 正式 profile 同时宣称为同一输出 |
 | I2S Pin12/38/40 | MAX98357 | 可选；不使用 MCLK，不占 Pin7 |
 | Bluetooth/BlueZ | 统一 NUS | 只允许一个默认 GATT 服务所有者 |
 | Wi-Fi/LAN | 双路 snapshot/MJPEG 和状态 | 手机与板端双向可达；BLE 不传视频；正式小程序网络规则另行验收 |

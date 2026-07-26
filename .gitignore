@@ -1,6 +1,9 @@
 # User-requested exclusions
 08_media/
-10_archive/
+10_archive/*
+!10_archive/sanda_ss928/
+10_archive/sanda_ss928/*
+!10_archive/sanda_ss928/README.md
 
 # Video/test capture data
 *.mp4
@@ -22,8 +25,8 @@ build/
 dist/
 dist_onefile/
 out/
-bin/
-lib/
+/bin/
+/lib/
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
