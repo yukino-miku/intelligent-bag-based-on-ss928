@@ -1,0 +1,71 @@
+<view wx:if="{{isAlertsMode}}" class="alarm-page">
+  <view wx:if="{{!isAlarmDetail}}" class="alarm-list">
+    <view class="alarm-list__header">
+      <view class="alarm-list__title">危险报警历史</view>
+      <view class="alarm-list__subtitle">报警记录 / 时间线</view>
+    </view>
+
+    <view wx:if="{{alarmLoading}}" class="alarm-state">正在加载云端摔倒记录…</view>
+    <view wx:elif="{{alarmError}}" class="alarm-state alarm-state--error">{{alarmError}}</view>
+    <view wx:elif="{{!alarmRecords.length}}" class="alarm-state">暂无摔倒报警记录</view>
+
+    <scroll-view wx:else class="alarm-history" scroll-y="true">
+      <view
+        class="alarm-card"
+        wx:for="{{alarmRecords}}"
+        wx:key="id"
+        bind:tap="openAlarmDetail"
+        data-id="{{item.id}}"
+      >
+        <view class="alarm-card__date">{{item.dateLabel}}日</view>
+        <view class="alarm-card__body">
+          <view class="alarm-card__title">{{item.typeText}}</view>
+          <view class="alarm-card__time">{{item.timeText}}</view>
+          <view class="alarm-card__risk">风险等级：{{item.riskText}}</view>
+          <view class="alarm-card__location">{{item.locationText}}</view>
+          <view class="alarm-card__message">{{item.messageText}}</view>
+        </view>
+        <view class="alarm-card__arrow">›</view>
+      </view>
+    </scroll-view>
+  </view>
+
+  <view wx:else class="alarm-detail">
+    <map
+      wx:if="{{selectedAlarm && selectedAlarm.hasLocation}}"
+      class="alarm-detail__map"
+      latitude="{{selectedAlarm.latitude}}"
+      longitude="{{selectedAlarm.longitude}}"
+      markers="{{alarmMarkers}}"
+      scale="15"
+    ></map>
+
+    <view class="alarm-detail__info">
+      <view class="alarm-detail__title">{{selectedAlarm.typeText}}</view>
+      <view class="alarm-detail__place">{{selectedAlarm.locationText}}</view>
+
+      <view class="alarm-detail__row">
+        <text class="alarm-detail__label">风险等级</text>
+        <text class="alarm-detail__value">{{selectedAlarm.riskText}}</text>
+      </view>
+      <view class="alarm-detail__row">
+        <text class="alarm-detail__label">报警时间</text>
+        <text class="alarm-detail__value">{{selectedAlarm.timeDetail}}</text>
+      </view>
+      <view class="alarm-detail__row">
+        <text class="alarm-detail__label">报警地点</text>
+        <text class="alarm-detail__value">{{selectedAlarm.addressText}}</text>
+      </view>
+      <view class="alarm-detail__row">
+        <text class="alarm-detail__label">报警消息</text>
+        <text class="alarm-detail__value">{{selectedAlarm.messageText}}</text>
+      </view>
+      <view class="alarm-detail__row">
+        <text class="alarm-detail__label">坐标</text>
+        <text class="alarm-detail__value">{{selectedAlarm.locationText}}</text>
+      </view>
+
+      <button class="alarm-detail__button" bind:tap="goAlarmList">返回历史</button>
+    </view>
+  </view>
+</view>

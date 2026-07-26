@@ -1,0 +1,12 @@
+<view class="remote">
+  <view class="remote__header"><view class="remote__title">SmartBag 蓝牙遥控测试</view><view class="remote__subtitle">{{deviceLabel}}</view></view>
+  <view class="remote__status remote__status--{{statusLevel}}">{{statusText}}</view>
+  <button class="remote__scan" bindtap="startScan" loading="{{scanning}}" disabled="{{connecting || connected}}">{{scanButtonText}}</button>
+  <view class="remote__devices" wx:if="{{devices.length && !connected}}"><button wx:for="{{devices}}" wx:key="deviceId" class="remote__device" bindtap="connectFromTap" data-device-id="{{item.deviceId}}" data-device-name="{{item.name}}">连接 {{item.name}}（{{item.rssi}}）</button></view>
+  <button wx:if="{{connected}}" class="remote__disconnect" bindtap="disconnectDevice">断开连接</button>
+  <view class="remote__group remote__group--left"><view class="remote__group-title">左侧四级预警</view><view class="remote__buttons"><button class="remote__button" bindtap="sendAlert" data-command="AL L1" disabled="{{!connected}}">AL L1</button><button class="remote__button" bindtap="sendAlert" data-command="AL L2" disabled="{{!connected}}">AL L2</button><button class="remote__button remote__button--high" bindtap="sendAlert" data-command="AL L3" disabled="{{!connected}}">AL L3</button><button class="remote__button remote__button--critical" bindtap="sendAlert" data-command="AL L4" disabled="{{!connected}}">AL L4</button></view></view>
+  <view class="remote__group remote__group--right"><view class="remote__group-title">右侧四级预警</view><view class="remote__buttons"><button class="remote__button" bindtap="sendAlert" data-command="AL R1" disabled="{{!connected}}">AL R1</button><button class="remote__button" bindtap="sendAlert" data-command="AL R2" disabled="{{!connected}}">AL R2</button><button class="remote__button remote__button--high" bindtap="sendAlert" data-command="AL R3" disabled="{{!connected}}">AL R3</button><button class="remote__button remote__button--critical" bindtap="sendAlert" data-command="AL R4" disabled="{{!connected}}">AL R4</button></view></view>
+  <button class="remote__clear" bindtap="stopAlert" disabled="{{!connected}}">AL CLEAR 停止预警</button>
+  <button class="remote__fall" bindtap="triggerFall" disabled="{{!connected}}">AL FALL 模拟摔倒报警并上传</button>
+  <view class="remote__reply"><view class="remote__reply-label">板端回复</view><view class="remote__reply-text">{{commandResponse}}</view></view>
+</view>

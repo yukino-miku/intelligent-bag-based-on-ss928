@@ -24,12 +24,36 @@ const FEATURE_ENTRIES = [
     route: "/pages/tracks/index"
   },
   {
+    key: "alarms",
+    title: "跌倒报警历史",
+    subtitle: "CloudBase 严重摔倒记录",
+    icon: "警",
+    tone: "red",
+    route: "/pages/alarms/index"
+  },
+  {
     key: "posture",
-    title: "姿态分析和记录",
+    title: "姿态校准与采集",
     subtitle: "BMI270 姿态 / 标定",
     icon: "姿",
     tone: "purple",
     route: "/pages/index/index"
+  },
+  {
+    key: "posture-analysis",
+    title: "云端姿态分析",
+    subtitle: "日统计与实时姿态",
+    icon: "云",
+    tone: "green",
+    route: "/pages/posture-analysis/index"
+  },
+  {
+    key: "remote",
+    title: "板端蓝牙遥控",
+    subtitle: "统一 NUS 命令与输出诊断",
+    icon: "控",
+    tone: "blue",
+    route: "/pages/remote/index"
   }
 ];
 

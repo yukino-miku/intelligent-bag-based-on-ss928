@@ -4,7 +4,11 @@
     "pages/cameras/index",
     "pages/tracks/index",
     "pages/index/index",
-    "pages/monitor/index"
+    "pages/monitor/index",
+    "pages/remote/index",
+    "pages/alarms/index",
+    "pages/posture-analysis/index",
+    "pages/posture-live/index"
   ],
   "window": {
     "backgroundColor": "#F3F5F7",

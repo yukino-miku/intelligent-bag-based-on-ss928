@@ -1,24 +1,23 @@
 # SS928 SmartBag 微信小程序
 
-原生小程序包含首页、双摄画面、GNSS 轨迹、BMI270 姿态、monitor、tracks、BLE NUS、WGS84 到 GCJ-02 和本地告警历史。默认只扫描统一设备名 `SS928-SmartBag`。
+原生小程序包含：首页、左右摄像头画面、monitor、GNSS tracks、BMI270 姿态、云端姿态分析/实时状态、跌倒告警历史和统一 BLE remote。默认设备名为 `SS928-SmartBag`。
 
-## 双摄实时画面
+## 导入
 
-首页进入“**双摄实时画面**”后可配置：
+用微信开发者工具导入本目录。`miniprogram/envList.js` 默认不写 CloudBase 环境；在自己的项目中配置合法 env/AppID。两套函数分别位于：
 
-- `boardHost`：板端 IP、主机名或含协议地址；不在代码中写死；
-- `videoPort`：默认 8080；
-- `accessToken`：可选；
-- `refreshFps`：snapshot 刷新 1..10 FPS；
-- 左右 API path、raw/overlay 模式。
+- `cloudfunctions/smartbag-device-ingest`：HTTP telemetry ingest，需要服务端 `CLOUDBASE_ENV_ID` 和上传 token。
+- `cloudfunctions/smartbag-app-api`：小程序读取 status、posture、track 和 alarm。
 
-配置保存在 `smartbagCameraConfig` (`wx.setStorageSync`)。页面同时显示左右 snapshot、在线状态、采集/推理/预览 FPS、最后帧延迟、风险、设备路径和更新时间，并支持暂停、恢复、重连和单侧大图。当前启用 `SnapshotHttpTransport`；`CameraTransport` 保留后续协议扩展边界。MJPEG endpoint 供浏览器验证，不宣称已在微信 `<image>` 中稳定连续播放。
+quickstartFunctions、example、默认脚手架素材和 private config 已移除。Cloud token、设备 IP 和访问 token 不写入仓库。
 
-## 自动告警
+## 双摄画面
 
-Controller 通过 BLE TX 推送 `typ=alert`。monitor 分别维护左右当前状态，并把最多 40 条历史保存到本地 storage；`level=0` 只清对应侧，手动清除会同步删除本地历史。BLE 行缓存会跨 notification 拼接 JSON，避免分包导致半行解析。首页的设备、系统和电量来自最近 `typ=sys` 状态；没有电池传感器时显示“未接入”，不显示虚构百分比。
+摄像头页保存 `boardHost`、gateway port、可选 token、refresh FPS 和 raw/overlay 选项。Gateway 只通过 LAN/Wi-Fi 提供 snapshot/MJPEG；BLE 不传视频。开发工具可临时关闭域名校验，正式真机仍需实际 AppID、网络权限、HTTPS/合法域名和手机到板端的可达性。
 
-命令命名空间：
+## BLE 命令
+
+使用 Nordic UART Service UUID `6E400001/2/3`，默认只连接统一设备：
 
 ```text
 AL L1 / AL R2 / AL CLEAR
@@ -27,19 +26,12 @@ IMU STATUS / IMU ZERO / IMU ZERO_V / IMU SET <key>=<value>
 SYS STATUS
 ```
 
-## 导入和真机限制
+视觉/雷达告警按 side 独立显示；`level=0` 只清对应侧。CloudBase 加载失败显示不可用状态，不制造设备在线、电量或位置。
 
-用微信开发者工具导入本目录。仓库的游客 AppID 只用于工具预览；真机 BLE 和局域网必须换成自己的小程序配置。开发调试可临时勾选“不校验合法域名、TLS 版本及 HTTPS 证书”，但正式环境必须按微信当前网络规则配置 AppID、通信域名/HTTPS，并在目标 iOS、Android 微信版本上验证。
-
-官方网络规则说明局域网 IP 从基础库 2.4.0 起可用于网络接口，但手机和板端仍必须互相可达，且 AP 客户端隔离、系统网络权限、基础库版本和发布配置都可能影响结果：<https://developers.weixin.qq.com/miniprogram/dev/framework/ability/network.html>。
-
-未完成真实手机验证时，先用浏览器打开 `http://<BOARD_IP>:8080/`，再验证小程序 snapshot。不要把开发者工具成功写成正式真机已完成。
-
-## 工具测试
+## 测试
 
 ```sh
-node tests/alarm-utils.test.js
-node tests/track-utils.test.js
-node tests/camera-transport.test.js
-node tests/alert-state.test.js
+for test in tests/*.test.js; do node "$test"; done
 ```
+
+测试覆盖告警状态、历史页、双摄 transport、首页、姿态、CloudBase contract、remote 和轨迹工具。开发者工具预览通过不等于手机真机/发布版已验收。

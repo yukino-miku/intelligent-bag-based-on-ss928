@@ -1,0 +1,11 @@
+page { min-height: 100vh; background: #f3f5f7; color: #17212b; }
+.remote { min-height: 100vh; box-sizing: border-box; padding: 32rpx 28rpx 56rpx; }
+.remote__header, .remote__group, .remote__reply { margin-bottom: 22rpx; padding: 24rpx; border-radius: 14rpx; background: #fff; box-shadow: 0 4rpx 14rpx rgba(23, 33, 43, .06); }
+.remote__title { font-size: 40rpx; font-weight: 700; }.remote__subtitle { margin-top: 8rpx; color: #66717d; font-size: 24rpx; }
+.remote__status { margin-bottom: 20rpx; padding: 16rpx 20rpx; border-radius: 10rpx; background: #e8edf1; color: #52606d; font-size: 26rpx; text-align: center; }.remote__status--connected { background: #dcf5eb; color: #087253; }.remote__status--warn { background: #fff0e8; color: #ba4d26; }
+.remote__scan, .remote__disconnect, .remote__clear { margin: 0 0 20rpx; border-radius: 10rpx; font-size: 28rpx; }.remote__scan { background: #0b7f78; color: #fff; }.remote__disconnect { background: #fff; color: #56616b; }.remote__clear { background: #293642; color: #fff; }
+.remote__fall { margin: 0 0 20rpx; border-radius: 10rpx; background: #c33d35; color: #fff; font-size: 28rpx; }.remote__fall[disabled] { opacity: .42; }
+.remote__devices { margin-bottom: 20rpx; }.remote__device { margin-bottom: 12rpx; background: #fff; color: #0b7f78; font-size: 26rpx; }
+.remote__group-title { margin-bottom: 18rpx; color: #24313b; font-size: 30rpx; font-weight: 700; }.remote__buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 14rpx; }
+.remote__button { margin: 0; border-radius: 10rpx; background: #eaf3f2; color: #087253; font-size: 27rpx; }.remote__button--high { background: #fff0d8; color: #b66d00; }.remote__button--critical { background: #ffe3e0; color: #c33d35; font-weight: 700; }.remote__button[disabled], .remote__clear[disabled] { opacity: .42; }
+.remote__reply-label { color: #66717d; font-size: 23rpx; }.remote__reply-text { margin-top: 10rpx; color: #17212b; font-size: 27rpx; line-height: 1.5; word-break: break-all; }

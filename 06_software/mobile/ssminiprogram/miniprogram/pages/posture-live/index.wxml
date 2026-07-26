@@ -1,0 +1,8 @@
+<view class="dashboard">
+  <view class="dashboard__header"><view><view class="dashboard__title">BMI270 实时姿态</view><view class="dashboard__subtitle">{{deviceLabel}}</view></view><view class="dashboard__status dashboard__status--{{statusLevel}}">{{statusText}}</view></view>
+  <view class="mode-switch"><button class="mode-switch__item" bindtap="goAnalysis">姿态分析</button><button class="mode-switch__item mode-switch__item--active">实时姿态</button></view>
+  <view class="current-panel"><view class="current-panel__label">当前姿态</view><view class="current-panel__value current-panel__value--{{postureKey}}">{{postureText}}</view><view class="current-panel__detail">{{postureDetail}}</view></view>
+  <view class="pose-frame pose-frame--{{postureKey}}"><view class="pose-frame__badge">{{postureText}}</view><view class="pose-frame__body"><view class="pose-frame__head"></view><view class="pose-frame__torso pose-frame__torso--{{postureKey}}"></view><view class="pose-frame__bag"></view></view></view>
+  <view class="update-line">更新时间 {{updateTime}}</view><view class="reminder-line" wx:if="{{showReminder}}">已触发震动和语音提醒</view>
+  <view class="history-panel"><view class="history-panel__title">驼背震动提醒历史（最近十条）</view><view wx:if="{{!reminderHistory.length}}" class="history-panel__empty">暂无提醒记录</view><view wx:for="{{reminderHistory}}" wx:key="id" class="history-item"><view>{{item.timeText}}</view><view>{{item.message}}</view></view></view>
+</view>

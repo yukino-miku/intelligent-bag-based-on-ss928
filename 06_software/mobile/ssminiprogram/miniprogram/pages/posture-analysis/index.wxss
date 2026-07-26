@@ -1,0 +1,10 @@
+page { min-height: 100vh; background: #f3f5f7; color: #17212b; }
+.page { box-sizing: border-box; min-height: 100vh; padding: 34rpx 28rpx 56rpx; }
+.topbar, .panel__head { display: flex; align-items: center; justify-content: space-between; gap: 18rpx; }
+.topbar { align-items: flex-start; margin-bottom: 22rpx; }
+.title { font-size: 42rpx; font-weight: 700; line-height: 1.2; }
+.subtitle, .panel__meta { color: #66717d; }.subtitle { margin-top: 8rpx; font-size: 24rpx; word-break: break-all; }
+.status { max-width: 285rpx; box-sizing: border-box; padding: 10rpx 16rpx; border-radius: 8rpx; background: #e7ecef; color: #41505c; font-size: 22rpx; line-height: 32rpx; text-align: center; }.status--connected { background: #dff5ed; color: #09664c; }
+.mode-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 12rpx; margin-bottom: 22rpx; }.mode-switch__item { display: flex; align-items: center; justify-content: center; height: 70rpx; margin: 0; padding: 0 22rpx; border-radius: 8rpx; background: #fff; color: #25313b; font-size: 26rpx; line-height: 70rpx; box-shadow: inset 0 0 0 2rpx #d9e0e6; }.mode-switch__item--active { background: #0b7f78; color: #fff; box-shadow: none; }
+.panel { box-sizing: border-box; margin-bottom: 22rpx; padding: 20rpx; border-radius: 8rpx; background: #fff; box-shadow: inset 0 0 0 2rpx #e1e7ec; }.panel__head { margin-bottom: 16rpx; }.panel__title { font-size: 28rpx; font-weight: 700; }.panel__meta { font-size: 23rpx; word-break: break-all; }
+.analysis-layout { display: flex; align-items: center; gap: 22rpx; }.analysis-pie { width: 260rpx; height: 260rpx; flex-shrink: 0; }.analysis-stats { display: grid; flex: 1; min-width: 0; gap: 14rpx; }.analysis-stat { box-sizing: border-box; min-height: 106rpx; padding: 16rpx 18rpx; border-radius: 8rpx; background: #f7fafc; }.analysis-stat--good { box-shadow: inset 6rpx 0 0 #18a058; }.analysis-stat--bad { box-shadow: inset 6rpx 0 0 #e5534b; }.analysis-stat__value { color: #17212b; font-size: 42rpx; font-weight: 700; line-height: 48rpx; }.analysis-stat__label { margin-top: 8rpx; color: #66717d; font-size: 24rpx; }

@@ -143,6 +143,26 @@ const normalizeTrackPoint = (raw) => {
   };
 };
 
+const normalizeCloudTrackPoint = (raw) => {
+  const item = raw && typeof raw === "object" ? raw : {};
+  const location = item.location && typeof item.location === "object" ? item.location : {};
+  let time = item.reportedAt || item.deviceTimestampMs || item.observedAtMs || item.receivedAt;
+  if (typeof time === "string" && !isFiniteNumber(time)) {
+    time = new Date(time.replace(/-/g, "/")).getTime();
+  }
+  return normalizeTrackPoint({
+    t: time,
+    lat: location.latitude,
+    lon: location.longitude,
+    acc: location.accuracyM,
+    spd: item.speed,
+    course: item.heading,
+    fix: location.valid === false ? 0 : 1,
+    cs: item.coordSystem || item.coordinateSystem || "wgs84",
+    src: "cloud"
+  });
+};
+
 const pointKey = (point) => (
   String(point.time) + ":" +
   point.rawLatitude.toFixed(7) + ":" +
@@ -282,6 +302,7 @@ module.exports = {
   formatTrackTime,
   isValidCoordinate,
   mergeTrackChunk,
+  normalizeCloudTrackPoint,
   normalizeTrackPoint,
   outOfChina,
   wgs84ToGcj02

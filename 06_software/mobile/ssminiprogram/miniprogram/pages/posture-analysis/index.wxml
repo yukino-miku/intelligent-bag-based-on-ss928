@@ -1,0 +1,5 @@
+<view class="page">
+  <view class="topbar"><view><view class="title">姿态分析</view><view class="subtitle">{{deviceLabel}}</view></view><view class="status status--{{statusLevel}}">{{statusText}}</view></view>
+  <view class="mode-switch"><button class="mode-switch__item mode-switch__item--active">姿态分析</button><button class="mode-switch__item" bindtap="goMonitor">实时姿态</button></view>
+  <view class="panel analysis-panel"><view class="panel__head"><view class="panel__title">今日姿态分析</view><view class="panel__meta">云端每日汇总</view></view><view class="analysis-layout"><canvas class="analysis-pie" canvas-id="posturePie" width="180" height="180"></canvas><view class="analysis-stats"><view class="analysis-stat analysis-stat--good"><view class="analysis-stat__value">{{stats.goodPercent}}%</view><view class="analysis-stat__label">良好姿态</view></view><view class="analysis-stat analysis-stat--bad"><view class="analysis-stat__value">{{stats.badPercent}}%</view><view class="analysis-stat__label">不良姿态</view></view></view></view></view>
+</view>
