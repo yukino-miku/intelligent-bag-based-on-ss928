@@ -1,0 +1,12 @@
+[Unit]
+Description=SS928 SmartBag board temperature status logger
+
+[Service]
+Type=simple
+WorkingDirectory=/root/smartbag/temperature
+ExecStart=/usr/bin/python3 /root/smartbag/temperature/temperature_reader.py --interval 30
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=smartbag.target

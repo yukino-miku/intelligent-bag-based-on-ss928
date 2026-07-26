@@ -1,0 +1,12 @@
+{
+  "name": "dual-usb-base",
+  "description": "Two fixed USB cameras, BMI270, TM6605/LRA and lights; optional external modules disabled.",
+  "config_patch": {
+    "radar": {"enabled": false},
+    "modules": {
+      "gnss": {"enabled": false},
+      "imu": {"enabled": true}
+    },
+    "audio": {"enabled": false}
+  }
+}

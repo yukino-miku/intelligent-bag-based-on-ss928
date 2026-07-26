@@ -68,9 +68,39 @@
       "4": [100, 100]
     }
   },
+  "outputs": {
+    "haptics_backend": "tm6605",
+    "i2c_device": "/dev/i2c-0",
+    "tm6605_mux_address": "0x70",
+    "bmi270_mux_channel": 0,
+    "left_tm6605_channel": 1,
+    "right_tm6605_channel": 2,
+    "tm6605_connected_sides": ["left", "right"],
+    "lights_enabled": true
+  },
+  "radar": {
+    "enabled": false,
+    "config": "/etc/smartbag/mr20.json"
+  },
+  "modules": {
+    "gnss": {
+      "enabled": false,
+      "command": "/usr/bin/python3 /root/smartbag/gnss/dx_gp21_tracker.py --config /root/smartbag/gnss/config.ss928_uart4.json --command-stdin --no-ble"
+    },
+    "imu": {
+      "enabled": true,
+      "command": "/usr/bin/python3 /root/smartbag/imu/bmi270_backpack.py --config /etc/smartbag/bmi270.json --command-stdin --no-ble"
+    }
+  },
   "timing": {
     "event_timeout_s": 1.0,
     "max_event_age_s": 2.0
+  },
+  "posture_reminder": {
+    "enabled": true,
+    "level": 1,
+    "duration_s": 5.0,
+    "audio_clip": "bad"
   },
   "audio": {
     "enabled": false,

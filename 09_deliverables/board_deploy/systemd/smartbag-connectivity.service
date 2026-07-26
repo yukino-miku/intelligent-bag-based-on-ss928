@@ -1,0 +1,19 @@
+[Unit]
+Description=SS928 SmartBag optional MT5710 connectivity owner
+After=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=simple
+Environment=SMARTBAG_CONNECTIVITY_ENABLED=0
+Environment=SMARTBAG_MT5710_PORT=/dev/ttyUSB1
+EnvironmentFile=-/etc/smartbag/smartbag.env
+ExecCondition=/bin/sh -c '[ "${SMARTBAG_CONNECTIVITY_ENABLED:-0}" = "1" ]'
+WorkingDirectory=/root/smartbag/connectivity
+ExecStart=/usr/bin/python3 /root/smartbag/connectivity/mt5710_connectivity.py --port ${SMARTBAG_MT5710_PORT}
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+
+[Install]
+WantedBy=smartbag.target

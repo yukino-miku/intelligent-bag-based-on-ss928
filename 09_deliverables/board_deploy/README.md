@@ -1,6 +1,6 @@
-# SS928 双 USB 摄像头板端部署
+# SS928 智能背包板端部署
 
-正式部署默认是两路固定方向 detector：左 USB 摄像头只控制左侧 PWM，右 USB 摄像头只控制右侧 PWM。Controller 独占 `SS928-SmartBag` BLE；视频只走 Wi-Fi/LAN，不走 BLE。`smartbag.target` 不启动 IMX347、VO 或 MIPI 显示。
+正式部署默认是两路固定方向 detector：左/右 USB camera 分别由唯一 detector 持有。Controller 独占 `SS928-SmartBag` BLE、TM6605/LRA、Pin7/Pin32 灯、可选 MR20 和 MAX98357；视频只走 Wi-Fi/LAN。`smartbag.target` 不启动 IMX347、VO、MIPI 显示或交替双摄入口。
 
 ## 1. 准备两路摄像头
 
@@ -17,7 +17,7 @@ v4l2-ctl --device /dev/video2 --list-formats-ext
 
 序列号唯一时推荐 `/dev/v4l/by-id/...-video-index0`，避免重启后 `/dev/video0`、`video2` 交换。相同型号摄像头若序列号相同，by-id 会冲突，此时必须改用两个不同的 `/dev/v4l/by-path/...` 并固定物理 USB 口。不要把同一真实设备的两个别名配置为左右相机。
 
-2026-07-16 当前实板的两台 `0bda:3035` 摄像头序列号完全相同，且都位于 `10320000.xhci_1` 下的同一 USB 2.0 hub。并发 640x480 与 320x240 MJPEG 都出现一侧 `VIDIOC_STREAMON: ENOSPC`。正式测试前必须把其中一台移动到另一 xHCI 根路径，再用 `camera-list.sh` 和 preflight 复核；只看到两个 `/dev/video*` 节点不代表双路可同时工作。
+2026-07-16 的历史实板基线中，两台 `0bda:3035` 序列号相同且共用 USB 2.0 hub，并发时出现 `VIDIOC_STREAMON: ENOSPC`。更换端口后必须重新运行 `camera-list.sh` 和 preflight；历史节点和拓扑不能当作当前接线事实。
 
 ## 2. 依赖和安装
 
@@ -27,6 +27,13 @@ sudo sh install-deps.sh                 # 只检查，不安装
 sudo sh install-deps.sh --install-system # 可选：安装 apt 中的系统包
 sudo sh install.sh /path/to/intelligent-bag-based-on-ss928
 sudo install -m 0644 /合法来源/yolo11n.pt /root/smartbag/models/yolo11n.pt
+```
+
+首次安装可选硬件 profile；profile 只是对默认配置的递归覆盖，不包含 secret：
+
+```sh
+sudo env SMARTBAG_HARDWARE_PROFILE="$PWD/profiles/dual-usb-base.json" \
+  sh install.sh /path/to/intelligent-bag-based-on-ss928
 ```
 
 脚本不会在线安装 `torch/ultralytics/lap`，因为 ARM wheel、Python ABI 和板端镜像必须匹配。先运行 `check-runtime-deps.sh`，再使用经过板端验证的本地 wheel 或镜像包。归档 SDK、模型和 wheel 不会复制进 Git。
@@ -56,6 +63,16 @@ sudo install -m 0644 /合法来源/yolo11n.pt /root/smartbag/models/yolo11n.pt
   "stream_gateway": {"bind": "0.0.0.0", "port": 8080, "access_token": ""}
 }
 ```
+
+`pwm_channels` 仅保留旧配置兼容。正式 `outputs.haptics_backend=tm6605` 时，TCA9548A 地址默认 0x70，BMI270/左 TM6605/右 TM6605 分别使用 channel 0/1/2；灯使用 Pin7/Pin32。Pin35/Pin37 只在显式选择 legacy PWM backend 时使用。接线以 `04_hardware/ss928/40pin-usage.md` 为唯一事实源。
+
+可选模块：
+
+- `radar.enabled=false` 为默认；启用前编辑 `/etc/smartbag/mr20.json`，确认每个 radar 的 IP、bind port、side 和 networkd 路由。示例 network 文件不会自动安装。
+- `modules.gnss.enabled=false` 为基线；修复/接入 DX-GP21 并验证 `/dev/ttyAMA4` 后再启用。
+- `modules.imu.enabled=true`；不要另启旧 BMI service。
+- `audio.enabled=false`；确认 MAX98357、I2S pinmux 和素材许可后再启用。
+- `/etc/smartbag/smartbag.env` 必须 root:root 0600；MT5710、Cloud token、告警号码和 WS73 路径均在这里配置。
 
 安装生成的两个 calibration 文件只是可编辑模板，不含伪造的内参。必须分别填写左右相机的 `camera_matrix`、畸变、实际安装高度和 pitch；两台相机的高度、朝向、FOV 和畸变不能默认相同。先修正标定，再调整风险阈值。
 
@@ -90,7 +107,9 @@ sh logs.sh -f
 journalctl -u smartbag-alert.service -f
 ```
 
-`smartbag-alert.service` 由配置生成两条等价于 `--left-detector`/`--right-detector` 的固定侧命令。子进程日志带 `[left]`、`[right]`，其 stdout 只承载 JSONL。任一 detector 退出会先清本侧 PWM，再有限次数指数退避重启；另一侧继续运行。事件过期、level=0、SIGTERM 和异常也会清振。
+`smartbag-alert.service` 由配置生成两条等价于 `--left-detector`/`--right-detector` 的固定侧命令。子进程 stdout 只承载 JSONL。任一 detector 退出会先清本侧 vision source，再有限退避重启；同侧 MR20 或另一侧继续。事件过期、level=0、SIGTERM、异常和 `ExecStopPost` safe-off 都会清振/灯。
+
+`smartbag.target` 必需 alert 与 video，按条件拉起 WS73 module loader、MT5710 connectivity 和 temperature。MT5710 service 只拥有 NCM，不启动 BMI/GNSS；Cloud/5G 失败不会停止本地告警。驼背 `REMINDER,HUNCH` 会以 `posture:hunch` 独立来源触发双侧轻振 5 秒，可选播放 `bad` 音频，不覆盖交通风险。
 
 ## 7. 双路视频接口
 
@@ -129,7 +148,9 @@ sh stream-test.sh 127.0.0.1 8080
 4. 设置 `process_every_n=2`，明确降低推理采样频率，但不会积压旧帧。
 5. 最后才把 detector profile 回退为 `board_cpu`。
 
-Ultralytics 的当前调用把推理与 BoT-SORT 组合在 `model.track()` 内，因此 profile 记录为 `infer+track`，不虚构无法可靠分开的 tracker 时间。当前板上只有约 952 MiB 总内存，并缺少 cv2/torch/ultralytics/lap；现有数据只覆盖底层 UVC 短测，不是双路 detector 的 CPU、内存、FPS、温度或 NPU 性能。
+Ultralytics 的当前调用把推理与 BoT-SORT 组合在 `model.track()` 内，因此 profile 记录为 `infer+track`，不虚构无法可靠分开的 tracker 时间。2026-07-16 历史镜像只有约 952 MiB 内存且缺少视觉依赖；部署时必须重新检查当前镜像。
+
+`vision/ss928_backend` 的 ACL/OM 代码目前只验收到离线 detections JSONL。来源固定输入性能不等于真实检测正确，也不等于双 USB NPU 实时链。真实 OM、camera-to-NV12、双路调度以及 detections-to-BoT-SORT/risk bridge 验收前，正式实时后端仍使用 Python Ultralytics。
 
 ## 10. 停止和卸载
 
@@ -138,4 +159,4 @@ sudo sh stop-all.sh
 sudo sh uninstall.sh
 ```
 
-卸载不删除 `/etc/smartbag` 和 `/var/lib/smartbag`。BMI270 I2C blob、模型、真实标定和设备身份信息由用户合法提供。音频默认关闭。
+卸载不删除 `/etc/smartbag` 和 `/var/lib/smartbag`。升级使用 `upgrade.sh` 和 `migrate_config.py` 保留本地值；需要切换 profile 时先备份配置，再运行 `apply_hardware_profile.py`。BMI270 blob、模型、真实标定、设备身份和 secret 均由用户合法提供。

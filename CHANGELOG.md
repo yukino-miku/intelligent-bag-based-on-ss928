@@ -1,5 +1,18 @@
 # 更新记录
 
+## 2026-07-26
+
+- 完成 `sanda-tt/ss928@59071297e5d8f339332a7234406429f94ffe2570` 的 24,421 个 Git blob 全量审计；manifest 记录每个来源文件的 SHA-256、用途、目标落点、动作和测试状态，并由独立脚本重算校验。
+- 在现有固定左右双 USB detector、Future Conflict Gate、多帧稳定和 visual/haptic 风险链基础上，整合 MR20、TCA9548A/TM6605、左右 PWM 灯、BMI270 驼背/跌倒、MT5710、CloudBase、Tsensor、WS73、小程序、CAD 和 SS928 OM 实验后端；未恢复交替双摄正式方案。
+- Controller 改为按 `(source, side)` 融合，单一视觉/雷达来源清零不会误清其他来源；新增 TM6605、灯、异步音频、MR20 worker、跨进程 I2C mux 锁和驼背 `posture:hunch` 双侧提醒。
+- 正式硬件默认调整为 TCA channel 0 BMI270、channel 1/2 左右 TM6605，Pin7/Pin32 灯；Pin35/Pin37 仅作 legacy PWM 兼容。增加 WS73 可选 module loader 和 MR20 networkd 示例，不自动写入板端网络。
+- MT5710 service 只拥有 NCM 连通性，不再重复拉起 BMI/GNSS；Cloud/SMS/call 故障不阻塞本地告警，GNSS 无有效 fix 时省略位置，温度失败返回明确状态。
+- 微信小程序保留原有双摄/monitor/tracks/BMI 页面，新增 CloudBase 告警、云端姿态、统一 BLE remote；移除 quickstart/example/placeholder 脚手架入口，Cloud 环境和上传 token 外置。
+- 增加统一部署的 config migration、hardware profile、safe-off、connectivity/temperature/WS73 units 和配置保留升级流程。
+- SS928 NPU 只接入经 native tests 验证的模型合约、NV12 预处理、YOLO 解码和离线 detections JSONL。来源固定输入 ACL 性能证据被保留，但真实 OM 检测与双 USB 实时 tracker/risk bridge 仍明确标为硬件阻塞。
+- 新增完整整合架构、许可边界、来源索引和中文部署文档；来源 LFS 缺失对象、含密码 handoff、SDK/模型/日志/构建物未迁移。
+- 收尾验证通过 290 项 Python 测试、11 个小程序/CloudBase Node 测试文件、4 个 NPU native C++ tests、32 个 JavaScript、27 个 JSON、21 个 Shell 和逐文件 manifest 校验；当前板端 SSH 不可达，部署/自启/硬件结果保持未验证。
+
 ## 2026-07-16
 
 - 正式板端部署从单摄默认改为左右两个固定 USB detector：每个进程只打开一次对应相机，左事件只驱动左 PWM，右事件只驱动右 PWM；旧 `--single-camera/--side auto` 仅保留兼容测试。

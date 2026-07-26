@@ -1,0 +1,14 @@
+[Unit]
+Description=Load optional SS928 WS73 Bluetooth controller modules
+ConditionPathExists=/opt/sample/ws73/ble_soc.ko
+Before=bluetooth.service
+After=local-fs.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/smartbag/smartbag.env
+ExecStart=/root/smartbag/ws73-bluetooth-module-start.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=smartbag.target

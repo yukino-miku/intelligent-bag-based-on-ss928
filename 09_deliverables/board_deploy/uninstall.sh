@@ -9,6 +9,9 @@ rm -f /etc/systemd/system/smartbag-vision.service \
       /etc/systemd/system/smartbag-video.service \
       /etc/systemd/system/smartbag-gnss.service \
       /etc/systemd/system/smartbag-imu.service \
+      /etc/systemd/system/smartbag-connectivity.service \
+      /etc/systemd/system/smartbag-temperature.service \
+      /etc/systemd/system/smartbag-ws73.service \
       /etc/systemd/system/smartbag.target
 systemctl daemon-reload
 rm -rf /root/smartbag

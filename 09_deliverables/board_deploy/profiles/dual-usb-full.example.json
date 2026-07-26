@@ -1,0 +1,12 @@
+{
+  "name": "dual-usb-full-example",
+  "description": "Example enabling MR20, GNSS and optional audio after hardware validation.",
+  "config_patch": {
+    "radar": {"enabled": true},
+    "modules": {
+      "gnss": {"enabled": true},
+      "imu": {"enabled": true}
+    },
+    "audio": {"enabled": true}
+  }
+}

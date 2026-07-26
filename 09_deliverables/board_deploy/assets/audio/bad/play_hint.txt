@@ -1,0 +1,11 @@
+duration_seconds=5.397
+sleep_seconds=8
+timeout_seconds=16
+remote_dir=/root/max98357_i2s_test
+remote_command:
+cd /root/max98357_i2s_test || exit 1
+bspmm 0x102F010C 0x1202
+bspmm 0x102F0108 0x1102
+bspmm 0x102F0104 0x1202
+bspmm 0x102F0110 0x1102
+{ sleep 8; printf '\n\n'; } | timeout 16 /opt/sample/audio/sample_audio 2
