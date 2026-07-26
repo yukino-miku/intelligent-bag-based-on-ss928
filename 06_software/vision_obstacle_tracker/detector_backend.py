@@ -32,9 +32,10 @@ class Ss928OmBackend(DetectorBackend):
     def __init__(self, model_path: str | Path) -> None:
         self.model_path = Path(model_path)
         raise RuntimeError(
-            "SS928 .om inference is not implemented in this repository. "
-            "Exporting an OpenVINO model does not create an SS928 NPU model; "
-            "a verified ModelZoo/SVP runtime adapter is still required."
+            "The audited SS928 ACL/OM native backend is available under ss928_backend, "
+            "but its live USB-frame bridge into the Python Future Conflict risk pipeline "
+            "is not yet hardware-accepted. Use ss928_backend/scripts/run_offline.sh for "
+            "locked NV12 diagnostics; OpenVINO is not an SS928 NPU substitute."
         )
 
     @property

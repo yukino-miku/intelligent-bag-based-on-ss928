@@ -1,0 +1,32 @@
+{
+  "case_id": "stage_g_bus_001",
+  "locked": true,
+  "source_image": {
+    "path": "data/test_source.jpg",
+    "description": "London red double-decker bus occupying most of the image",
+    "width": 546,
+    "height": 413,
+    "bytes": 76274,
+    "sha256": "e4c4dd62995cbe30501798f86fcf5973c7abe3ff9f7711fdb72c6d1f7f304484"
+  },
+  "raw_input": {
+    "path": "data/test_input.nv12",
+    "bytes": 614400,
+    "sha256": "76314d959c8e4dcd6a1d2893c9fad3013f31805caadcdcbc58caeda220a76e0a",
+    "head_32_hex": "7272727272727272727272727272727272727272727272727272727272727272",
+    "tail_32_hex": "8080808080808080808080808080808080808080808080808080808080808080",
+    "width": 640,
+    "height": 640,
+    "stride_y": 640,
+    "stride_uv": 640,
+    "y_plane": {
+      "offset": 0,
+      "bytes": 409600
+    },
+    "uv_plane": {
+      "offset": 409600,
+      "bytes": 204800
+    }
+  },
+  "rule": "Both raw runners must open this exact raw_input path and must not perform image decoding, resizing, letterboxing, color conversion, or input regeneration."
+}
