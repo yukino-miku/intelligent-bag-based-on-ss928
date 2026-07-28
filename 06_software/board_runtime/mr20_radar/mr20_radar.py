@@ -56,6 +56,15 @@ class RadarScan:
     measurement_count: int
     captured_mono_s: float
     targets: tuple[MR20Target, ...]
+    expected_target_count: int = 0
+    received_target_count: int = 0
+    unique_target_count: int = 0
+    complete: bool = True
+    completion_reason: str = "target_count_reached"
+    missing_target_count: int = 0
+    duplicate_target_count: int = 0
+    measurement_sequence_gap: int = 0
+    started_mono_s: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -79,6 +88,8 @@ class RadarConfig:
     invert_longitudinal: bool = False
     invert_lateral_velocity: bool = False
     invert_longitudinal_velocity: bool = False
+    scan_timeout_ms: int = 120
+    max_targets_per_scan: int = 64
 
 
 @dataclass(frozen=True)
@@ -132,6 +143,8 @@ def load_radar_configs(path: str | Path) -> tuple[list[RadarConfig], RiskConfig]
             invert_longitudinal=bool(item.get("invert_longitudinal", False)),
             invert_lateral_velocity=bool(item.get("invert_lateral_velocity", False)),
             invert_longitudinal_velocity=bool(item.get("invert_longitudinal_velocity", False)),
+            scan_timeout_ms=max(10, int(item.get("scan_timeout_ms", 120))),
+            max_targets_per_scan=max(1, int(item.get("max_targets_per_scan", 64))),
         )
         for item in data.get("radars", []) if item.get("enabled", True)
     ]
@@ -175,6 +188,175 @@ class RadarRiskEvaluator:
         return 0, round(ttc_s, 2)
 
 
+@dataclass
+class RadarScanStatistics:
+    complete_scans: int = 0
+    incomplete_scans: int = 0
+    zero_target_scans: int = 0
+    duplicate_targets: int = 0
+    sequence_gaps: int = 0
+    orphan_target_frames: int = 0
+    scan_timeouts: int = 0
+    latest_complete_scan_mono_s: float | None = None
+
+    def as_dict(self, now_s: float | None = None) -> dict[str, float | int | None]:
+        now_s = time.monotonic() if now_s is None else now_s
+        total = self.complete_scans + self.incomplete_scans
+        return {
+            "complete_scans": self.complete_scans,
+            "incomplete_scans": self.incomplete_scans,
+            "zero_target_scans": self.zero_target_scans,
+            "duplicate_targets": self.duplicate_targets,
+            "sequence_gaps": self.sequence_gaps,
+            "orphan_target_frames": self.orphan_target_frames,
+            "scan_timeouts": self.scan_timeouts,
+            "latest_complete_scan_mono_s": self.latest_complete_scan_mono_s,
+            "latest_complete_scan_age": (
+                max(0.0, now_s - self.latest_complete_scan_mono_s)
+                if self.latest_complete_scan_mono_s is not None else None
+            ),
+            "complete_scan_ratio": self.complete_scans / total if total else 0.0,
+        }
+
+
+class MR20ScanAssembler:
+    """Assemble 0x60A/0x60B messages without hiding incomplete scans."""
+
+    def __init__(self, radar_name: str, side: str, *, timeout_s: float = 0.12, max_targets: int = 64) -> None:
+        self.radar_name = radar_name
+        self.side = side
+        self.timeout_s = max(0.01, float(timeout_s))
+        self.max_targets = max(1, int(max_targets))
+        self.statistics = RadarScanStatistics()
+        self._expected: int | None = None
+        self._measurement: int | None = None
+        self._started_s = 0.0
+        self._received = 0
+        self._targets: dict[int, MR20Target] = {}
+        self._duplicates = 0
+        self._sequence_gap = 0
+        self._last_measurement: int | None = None
+
+    def push(self, message: MR20ObjectListStatus | MR20Target, now_s: float) -> tuple[RadarScan, ...]:
+        scans: list[RadarScan] = []
+        if isinstance(message, MR20ObjectListStatus):
+            if self._expected is not None:
+                scans.append(self._finish(now_s, False, "next_status_before_complete"))
+            gap = 0
+            if self._last_measurement is not None:
+                step = (message.measurement_count - self._last_measurement) & 0xFFFF
+                if step != 1:
+                    gap = (step - 1) & 0xFFFF
+                    self.statistics.sequence_gaps += gap
+            self._last_measurement = message.measurement_count
+            self._sequence_gap = gap
+            self._expected = int(message.target_count)
+            self._measurement = int(message.measurement_count)
+            self._started_s = float(now_s)
+            self._received = 0
+            self._targets = {}
+            self._duplicates = 0
+            if self._expected > self.max_targets:
+                scans.append(self._finish(now_s, False, "target_count_exceeds_limit"))
+            elif self._expected == 0:
+                scans.append(self._finish(now_s, True, "zero_target_scan"))
+            return tuple(scans)
+
+        if self._expected is None:
+            self.statistics.orphan_target_frames += 1
+            self.statistics.incomplete_scans += 1
+            target = replace(
+                message,
+                radar_name=self.radar_name,
+                side=self.side,
+                measurement_count=int(self._last_measurement or 0),
+                timestamp=now_s,
+            )
+            return (
+                RadarScan(
+                    radar_name=self.radar_name,
+                    side=self.side,
+                    measurement_count=int(self._last_measurement or 0),
+                    captured_mono_s=now_s,
+                    targets=(target,),
+                    expected_target_count=0,
+                    received_target_count=1,
+                    unique_target_count=1,
+                    complete=False,
+                    completion_reason="orphan_target_frame",
+                    missing_target_count=0,
+                    duplicate_target_count=0,
+                    measurement_sequence_gap=0,
+                    started_mono_s=now_s,
+                ),
+            )
+        self._received += 1
+        if message.target_id in self._targets:
+            self._duplicates += 1
+            self.statistics.duplicate_targets += 1
+        else:
+            self._targets[message.target_id] = message
+        if len(self._targets) == self._expected:
+            scans.append(self._finish(now_s, True, "target_count_reached"))
+        return tuple(scans)
+
+    def flush_timeout(self, now_s: float) -> tuple[RadarScan, ...]:
+        if self._expected is None or now_s - self._started_s < self.timeout_s:
+            return ()
+        self.statistics.scan_timeouts += 1
+        return (self._finish(now_s, False, "scan_timeout"),)
+
+    def _finish(self, now_s: float, complete: bool, reason: str) -> RadarScan:
+        assert self._expected is not None
+        expected = self._expected
+        measurement = int(self._measurement or 0)
+        targets = tuple(
+            replace(
+                target,
+                radar_name=self.radar_name,
+                side=self.side,
+                measurement_count=measurement,
+                timestamp=now_s,
+            )
+            for target in self._targets.values()
+        )
+        unique = len(targets)
+        if complete and self._sequence_gap:
+            complete = False
+            reason = "measurement_sequence_gap"
+        complete = bool(complete and unique == expected)
+        if complete:
+            self.statistics.complete_scans += 1
+            self.statistics.latest_complete_scan_mono_s = now_s
+            if expected == 0:
+                self.statistics.zero_target_scans += 1
+        else:
+            self.statistics.incomplete_scans += 1
+        scan = RadarScan(
+            radar_name=self.radar_name,
+            side=self.side,
+            measurement_count=measurement,
+            captured_mono_s=now_s,
+            targets=targets,
+            expected_target_count=expected,
+            received_target_count=self._received,
+            unique_target_count=unique,
+            complete=complete,
+            completion_reason=reason,
+            missing_target_count=max(0, expected - unique),
+            duplicate_target_count=self._duplicates,
+            measurement_sequence_gap=self._sequence_gap,
+            started_mono_s=self._started_s,
+        )
+        self._expected = None
+        self._measurement = None
+        self._targets = {}
+        self._received = 0
+        self._duplicates = 0
+        self._sequence_gap = 0
+        return scan
+
+
 class MR20RadarWorker:
     """Receive complete MR20 measurements and expose every target in each scan."""
 
@@ -195,9 +377,12 @@ class MR20RadarWorker:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._socket: socket.socket | None = None
-        self._targets: list[MR20Target] = []
-        self._expected_targets: int | None = None
-        self._measurement_count: int | None = None
+        self.assembler = MR20ScanAssembler(
+            config.name,
+            config.side,
+            timeout_s=config.scan_timeout_ms / 1000.0,
+            max_targets=config.max_targets_per_scan,
+        )
         self._scan_queue: "queue.Queue[RadarScan]" = queue.Queue(maxsize=max(1, scan_queue_size))
 
     def start(self) -> None:
@@ -222,6 +407,8 @@ class MR20RadarWorker:
                 try:
                     payload, source = sock.recvfrom(2048)
                 except socket.timeout:
+                    for scan in self.assembler.flush_timeout(time.monotonic()):
+                        self._publish_scan(scan, self.config.radar_ip)
                     continue
                 except OSError:
                     break
@@ -237,23 +424,8 @@ class MR20RadarWorker:
             self._socket = None
 
     def _handle_message(self, message: MR20ObjectListStatus | MR20Target, source_ip: str) -> None:
-        if isinstance(message, MR20ObjectListStatus):
-            self._flush(source_ip)
-            self._expected_targets = message.target_count
-            self._measurement_count = message.measurement_count
-            self._targets = []
-            if message.target_count == 0:
-                self._flush(source_ip)
-                self._expected_targets = None
-                self._measurement_count = None
-            return
-        if self._expected_targets is None:
-            return
-        self._targets.append(message)
-        if len(self._targets) >= self._expected_targets:
-            self._flush(source_ip)
-            self._expected_targets = None
-            self._measurement_count = None
+        for scan in self.assembler.push(message, time.monotonic()):
+            self._publish_scan(scan, source_ip)
 
     def accepts_source(self, source_ip: str) -> bool:
         return source_ip == self.config.radar_ip
@@ -264,28 +436,9 @@ class MR20RadarWorker:
         except queue.Empty:
             return None
 
-    def _flush(self, source_ip: str) -> None:
-        if self._expected_targets is None:
-            return
-        captured_mono_s = time.monotonic()
-        measurement_count = int(self._measurement_count or 0)
-        targets = tuple(
-            replace(
-                target,
-                radar_name=self.config.name,
-                side=self.config.side,
-                measurement_count=measurement_count,
-                timestamp=captured_mono_s,
-            )
-            for target in self._targets
-        )
-        scan = RadarScan(
-            radar_name=self.config.name,
-            side=self.config.side,
-            measurement_count=measurement_count,
-            captured_mono_s=captured_mono_s,
-            targets=targets,
-        )
+    def _publish_scan(self, scan: RadarScan, source_ip: str) -> None:
+        captured_mono_s = scan.captured_mono_s
+        targets = scan.targets
         self._offer_scan(scan)
         if self.on_scan is not None:
             self.on_scan(scan)
@@ -336,6 +489,14 @@ class MR20RadarWorker:
             "radar": self.config.name,
             "side": self.config.side,
             "measurement_count": scan.measurement_count,
+            "expected_target_count": scan.expected_target_count,
+            "received_target_count": scan.received_target_count,
+            "unique_target_count": scan.unique_target_count,
+            "complete": scan.complete,
+            "completion_reason": scan.completion_reason,
+            "missing_target_count": scan.missing_target_count,
+            "duplicate_target_count": scan.duplicate_target_count,
+            "measurement_sequence_gap": scan.measurement_sequence_gap,
             "targets": [item.__dict__ for item in scan.targets],
             "legacy_evaluation_enabled": self.evaluator is not None,
             "legacy_level": level,

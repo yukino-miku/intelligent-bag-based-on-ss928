@@ -66,22 +66,24 @@ class RadarTrackManager:
 
         now_s = scan.captured_mono_s
         present_ids = {target.target_id for target in scan.targets}
-        for track in self._tracks.values():
-            if track.active and track.radar_name == scan.radar_name and track.target_id not in present_ids:
-                track.missed_scans += 1
+        if scan.complete:
+            for track in self._tracks.values():
+                if track.active and track.radar_name == scan.radar_name and track.target_id not in present_ids:
+                    track.missed_scans += 1
 
         for target in scan.targets:
             source_key = (scan.radar_name, target.target_id)
             track_key = self._current_key.get(source_key)
             track = self._tracks.get(track_key or "")
-            if track is None or not track.active or now_s - track.last_seen_mono_s > self.config.radar_track_timeout_s:
+            generation_expired = scan.complete and track is not None and now_s - track.last_seen_mono_s > self.config.radar_track_timeout_s
+            if track is None or not track.active or generation_expired:
                 if track is not None:
                     self._retire(track)
                 track = self._new_track(scan, target, radar_config)
             else:
                 self._update_track(track, scan, target, radar_config)
 
-        removed = self.prune(now_s)
+        removed = self.prune(now_s) if scan.complete else ()
         return self.active_tracks(scan.side), removed
 
     def prune(self, now_s: float) -> tuple[str, ...]:
@@ -106,6 +108,31 @@ class RadarTrackManager:
     def get(self, track_key: str) -> RadarTrack | None:
         track = self._tracks.get(track_key)
         return track if track is not None and track.active else None
+
+    def retune_mount(self, radar_name: str, old: RadarConfig, new: RadarConfig) -> None:
+        """Reproject active bag-frame tracks after a live x/z/yaw mount change."""
+        if (
+            old.mount_x_m == new.mount_x_m
+            and old.mount_z_m == new.mount_z_m
+            and old.mount_yaw_deg == new.mount_yaw_deg
+        ):
+            return
+        for track in self._tracks.values():
+            if not track.active or track.radar_name != radar_name:
+                continue
+            track.position_history = [
+                (timestamp, *_retune_position(x_m, z_m, old, new))
+                for timestamp, x_m, z_m in track.position_history
+            ]
+            track.velocity_history = [
+                (timestamp, *_retune_velocity(vx_mps, vz_mps, old, new))
+                for timestamp, vx_mps, vz_mps in track.velocity_history
+            ]
+            track.x_m, track.z_m = _retune_position(track.x_m, track.z_m, old, new)
+            track.vx_mps, track.vz_mps = _retune_velocity(track.vx_mps, track.vz_mps, old, new)
+            track.distance_m = math.hypot(track.x_m, track.z_m)
+            track.speed_mps = math.hypot(track.vx_mps, track.vz_mps)
+            self._refresh_quality(track)
 
     def _new_track(self, scan: RadarScan, target: MR20Target, radar_config: RadarConfig) -> RadarTrack:
         source_key = (scan.radar_name, target.target_id)
@@ -222,6 +249,40 @@ def transform_target(target: MR20Target, config: RadarConfig) -> tuple[float, fl
     vx_mps = cos_yaw * vx_local + sin_yaw * vz_local
     vz_mps = -sin_yaw * vx_local + cos_yaw * vz_local
     return x_m, z_m, vx_mps, vz_mps
+
+
+def _retune_position(
+    x_m: float,
+    z_m: float,
+    old: RadarConfig,
+    new: RadarConfig,
+) -> tuple[float, float]:
+    old_yaw = math.radians(old.mount_yaw_deg)
+    dx = x_m - old.mount_x_m
+    dz = z_m - old.mount_z_m
+    local_x = math.cos(old_yaw) * dx - math.sin(old_yaw) * dz
+    local_z = math.sin(old_yaw) * dx + math.cos(old_yaw) * dz
+    new_yaw = math.radians(new.mount_yaw_deg)
+    return (
+        new.mount_x_m + math.cos(new_yaw) * local_x + math.sin(new_yaw) * local_z,
+        new.mount_z_m - math.sin(new_yaw) * local_x + math.cos(new_yaw) * local_z,
+    )
+
+
+def _retune_velocity(
+    vx_mps: float,
+    vz_mps: float,
+    old: RadarConfig,
+    new: RadarConfig,
+) -> tuple[float, float]:
+    old_yaw = math.radians(old.mount_yaw_deg)
+    local_vx = math.cos(old_yaw) * vx_mps - math.sin(old_yaw) * vz_mps
+    local_vz = math.sin(old_yaw) * vx_mps + math.cos(old_yaw) * vz_mps
+    new_yaw = math.radians(new.mount_yaw_deg)
+    return (
+        math.cos(new_yaw) * local_vx + math.sin(new_yaw) * local_vz,
+        -math.sin(new_yaw) * local_vx + math.cos(new_yaw) * local_vz,
+    )
 
 
 def _enters_corridor(

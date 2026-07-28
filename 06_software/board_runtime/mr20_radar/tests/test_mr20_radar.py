@@ -20,6 +20,7 @@ from mr20_radar import (  # noqa: E402
     RadarScan,
     RiskConfig,
     MR20RadarWorker,
+    MR20ScanAssembler,
     load_radar_configs,
     parse_mr20_frame,
 )
@@ -139,6 +140,60 @@ class MR20RiskEvaluatorTest(unittest.TestCase):
             self.assertEqual(1, len(scans))
             self.assertEqual([0], [event.level for event in events])
             self.assertFalse(record["legacy_evaluation_enabled"])
+
+
+class MR20ScanAssemblerTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.assembler = MR20ScanAssembler("left_rear", "left", timeout_s=0.1, max_targets=4)
+
+    @staticmethod
+    def target(identifier: int) -> MR20Target:
+        return MR20Target(identifier, 5.0, 0.0, -1.0, 0.0, "oncoming")
+
+    def test_zero_target_scan_is_complete(self) -> None:
+        scans = self.assembler.push(MR20ObjectListStatus(0, 10), 1.0)
+        self.assertEqual(1, len(scans))
+        self.assertTrue(scans[0].complete)
+        self.assertEqual("zero_target_scan", scans[0].completion_reason)
+
+    def test_next_status_flushes_incomplete_scan_without_hiding_received_targets(self) -> None:
+        self.assembler.push(MR20ObjectListStatus(2, 20), 2.0)
+        self.assembler.push(self.target(1), 2.01)
+        scans = self.assembler.push(MR20ObjectListStatus(1, 21), 2.05)
+        self.assertEqual(1, len(scans))
+        self.assertFalse(scans[0].complete)
+        self.assertEqual(1, scans[0].unique_target_count)
+        self.assertEqual(1, scans[0].missing_target_count)
+
+    def test_duplicate_target_and_timeout_are_reported(self) -> None:
+        self.assembler.push(MR20ObjectListStatus(2, 30), 3.0)
+        self.assembler.push(self.target(1), 3.01)
+        self.assembler.push(self.target(1), 3.02)
+        scans = self.assembler.flush_timeout(3.11)
+        self.assertEqual(1, len(scans))
+        self.assertFalse(scans[0].complete)
+        self.assertEqual(2, scans[0].received_target_count)
+        self.assertEqual(1, scans[0].duplicate_target_count)
+        self.assertEqual(1, self.assembler.statistics.scan_timeouts)
+
+    def test_measurement_sequence_gap_is_recorded(self) -> None:
+        self.assembler.push(MR20ObjectListStatus(0, 40), 4.0)
+        scan = self.assembler.push(MR20ObjectListStatus(0, 43), 4.1)[0]
+        self.assertEqual(2, scan.measurement_sequence_gap)
+        self.assertFalse(scan.complete)
+        self.assertEqual("measurement_sequence_gap", scan.completion_reason)
+        self.assertEqual(2, self.assembler.statistics.sequence_gaps)
+
+    def test_orphan_and_excessive_target_count_are_not_normal_scans(self) -> None:
+        orphan = self.assembler.push(self.target(1), 5.0)
+        self.assertEqual(1, len(orphan))
+        self.assertFalse(orphan[0].complete)
+        self.assertEqual("orphan_target_frame", orphan[0].completion_reason)
+        self.assertEqual(1, orphan[0].unique_target_count)
+        scans = self.assembler.push(MR20ObjectListStatus(8, 50), 5.1)
+        self.assertFalse(scans[0].complete)
+        self.assertEqual("target_count_exceeds_limit", scans[0].completion_reason)
+        self.assertEqual(1, self.assembler.statistics.orphan_target_frames)
 
 
 class MR20DualRadarConfigTest(unittest.TestCase):
