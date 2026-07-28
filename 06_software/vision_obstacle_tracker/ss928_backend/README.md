@@ -1,14 +1,15 @@
 # SS928 OM 检测后端（实验性）
 
-本目录把来源仓库中可复用的 SS928 AscendCL/OM 模型描述、NV12 预处理和 YOLO 输出解码能力，收敛为目标仓库的“检测结果生产者”。它不会替换 `vision_obstacle_tracker.py` 的跟踪、单目测距、Future Conflict Gate、多帧稳定、visual/haptic 分层和自身前景过滤。
+本目录把来源仓库中可复用的 SS928 AscendCL/OM 模型描述、NV12 预处理和 YOLO 输出解码能力，收敛为“检测结果生产者”。PC 纯视觉回归仍使用 `vision_obstacle_tracker.py` 的完整链；正式雷达主导模式则只用本后端识别交替快照中的车辆类别，运动和风险数据来自 MR20。
 
 ## 当前验收边界
 
 来源提交 `59071297e5d8f339332a7234406429f94ffe2570` 的实板证据表明：固定输入的 1 帧/100 帧 ACL 执行成功，100 帧平均推理约 25.112 ms、后处理约 16.292 ms、整体约 23.348 FPS。但工厂 `yolov8n.om` 对两张已知图像没有产生有效目标候选，类别最大值也异常偏低。因此：
 
-- 已具备：模型 I/O 合约校验、NV12 letterbox、YOLO 解码/NMS、目标类别过滤、离线 raw-NV12 runner、单行 detections JSONL。
-- 未验收：工厂 OM 的真实检测正确性、双 USB 实时采集、检测 JSONL 到 Python tracker/risk 的实时桥接、长时间双路 NPU 性能。
-- 不得声称“USB -> SS928 NPU -> 跟踪/风险 -> overlay”已完成，也不得用 OpenVINO 冒充 SS928 NPU。
+- 已具备：模型 I/O 合约校验、固定 640x640 NV12 letterbox、YOLO 解码/NMS、目标类别过滤、离线 raw-NV12 runner、持久 stdin 服务模式、单行 detections JSONL，以及 Python BGR 快照桥接和超时重启。
+- 已接入：`radar_vision_fusion` 共享一个 `Ss928OmBackend`，左右相机交替请求同一 runner；检测结果只用于雷达轨迹车型绑定，不创建视觉 tracker。
+- 未验收：工厂 OM 的真实检测正确性、真实双 USB 切换频率、雷达-相机标定/关联正确性和长时间 NPU 性能。
+- 不得声称正式板端链已通过硬件验收，也不得用 OpenVINO 冒充 SS928 NPU。
 
 详细失败证据见 [diagnostics/STAGE_G_EVIDENCE.md](diagnostics/STAGE_G_EVIDENCE.md)。模型和输出二进制不进入 Git。
 
@@ -48,9 +49,9 @@ cd /root/smartbag/vision/ss928_backend
 
 stdout 只输出单行 `type=detections` JSON；模型信息和诊断进入 stderr。输出协议由 `detection_protocol.py` 解析并有 Python 单元测试。
 
-## 正式接入待办
+## 雷达融合接入与待办
 
 1. 使用与模型转换配置匹配的已验证 OM，通过真实目标图像验收类别、坐标和置信度。
-2. 为固定左/右 USB 设备分别提供无积压的最新帧 NV12 输入，不恢复交替采集。
-3. 把 detections JSONL 接入现有 Python `TrackState`/`RiskModel`，确保震动只使用稳定后的 `haptic_level`。
-4. 实板验证双路 FPS、内存、温度、退出清零和 systemd 重启行为。
+2. 在当前 UVC by-path 上验证任意时刻最多一路 STREAMON、无积压最新帧和失败后下一侧继续运行。
+3. 使用真实左右外参验证雷达投影、一一关联和车型持久绑定；风险始终由共享 RiskModel 处理雷达运动数据。
+4. 实板验证每侧快照频率、NPU/CPU、RSS、温度、退出清零、systemd 重启和 30 分钟稳定性。

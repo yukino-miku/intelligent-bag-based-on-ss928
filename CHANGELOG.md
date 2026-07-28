@@ -1,5 +1,17 @@
 # 更新记录
 
+## 2026-07-28
+
+- 从 `agent/full-sanda-integration@c3ef9c012543cdc02c708449572e8645b98dcf48` 创建 `agent/radar-primary-vision-class-fusion`，实现 MR20 主导、视觉只提供车型的目标级融合架构。
+- MR20 worker 新增完整 `RadarScan`、有界队列和目标元数据；保留旧最高告警接口作为兼容，不再用于新正式模式。
+- 新增持久雷达轨迹、安装坐标变换、ID generation、时间同步投影、Hungarian 一一关联、车型确认/缓存/切换/解绑状态机和 JSONL 回放。
+- RiskModel 改为传感器无关 `KinematicRiskTarget` 输入，视觉与雷达调用相同 CPA、Future Conflict、TTC、DRAC、车型权重和 visual/haptic 公式；新增 base/weighted score 调试字段。
+- 新增单模型交替快照分类器；任意时刻最多一路 UVC STREAMON，不运行 BoT-SORT、视觉测距测速或视觉风险。OM runner 增加模型只初始化一次的 stdin 服务模式和 BGR-to-NV12 桥接。
+- Controller 新增 `radar_primary_visual_classification`，该模式不会并行启动旧双视觉 detector 或旧简单雷达 evaluator；无视觉时以 unknown=1.0 继续雷达风险判断。
+- 扩展融合告警、BLE 可选字段、调试 API、左右标定模板、部署配置和 preflight；旧双 detector 视频网关退出默认 systemd target，但保留手动回归。
+- 修复跨侧绑定清理、严格水平关联门限和 `R * P + T` 外参顺序；增加 runner 超时重启、相机异常隔离、heartbeat 语义、扩展 BLE/小程序字段，以及按运行模式/backend 检查且 OM 模式不强制 PyTorch 的 preflight。
+- 本地通过 335 项 Python、11 个 Node 测试文件、4 个 NPU native C++ tests、1 个 C 兼容核心测试、32 个 JavaScript、29 个 JSON、21 个 Shell 和 compileall。真实双 MR20、合法车辆 OM、外参、30 分钟、自启动和脱机运行因板端网络不可达仍为 `BLOCKED`。
+
 ## 2026-07-26
 
 - 完成 `sanda-tt/ss928@59071297e5d8f339332a7234406429f94ffe2570` 的 24,421 个 Git blob 全量审计；manifest 记录每个来源文件的 SHA-256、用途、目标落点、动作和测试状态，并由独立脚本重算校验。

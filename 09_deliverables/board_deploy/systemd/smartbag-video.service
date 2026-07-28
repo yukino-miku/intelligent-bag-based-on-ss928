@@ -9,6 +9,3 @@ WorkingDirectory=/root/smartbag/vision
 ExecStart=/usr/bin/python3 /root/smartbag/vision/dual_camera_gateway.py --config /etc/smartbag/config.json
 Restart=on-failure
 RestartSec=2
-
-[Install]
-WantedBy=smartbag.target

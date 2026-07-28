@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -16,6 +17,7 @@ from mr20_radar import (  # noqa: E402
     MR20Target,
     RadarConfig,
     RadarRiskEvaluator,
+    RadarScan,
     RiskConfig,
     MR20RadarWorker,
     load_radar_configs,
@@ -97,6 +99,46 @@ class MR20RiskEvaluatorTest(unittest.TestCase):
 
             self.assertEqual([event.level for event in events], [0, 3])
             self.assertTrue((Path(temp_dir) / "mr20.jsonl").exists())
+
+    def test_worker_exposes_every_target_in_complete_scan(self) -> None:
+        scans = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            worker = MR20RadarWorker(
+                replace(self.config, log_path=str(Path(temp_dir) / "mr20.jsonl")),
+                self.risk,
+                on_scan=scans.append,
+            )
+            worker._handle_message(MR20ObjectListStatus(target_count=2, measurement_count=44), "127.0.0.1")
+            worker._handle_message(self.target(8.0, -2.0), "127.0.0.1")
+            worker._handle_message(replace(self.target(5.0, -3.0), target_id=8), "127.0.0.1")
+
+            self.assertEqual(1, len(scans))
+            self.assertIsInstance(scans[0], RadarScan)
+            self.assertEqual(44, scans[0].measurement_count)
+            self.assertEqual({7, 8}, {target.target_id for target in scans[0].targets})
+            self.assertTrue(all(target.radar_name == "right_rear" for target in scans[0].targets))
+            self.assertEqual(scans[0], worker.get_scan())
+
+    def test_fusion_worker_can_disable_legacy_risk_evaluation(self) -> None:
+        scans = []
+        events = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "mr20.jsonl"
+            worker = MR20RadarWorker(
+                replace(self.config, log_path=str(log_path)),
+                self.risk,
+                events.append,
+                on_scan=scans.append,
+                evaluate_legacy_risk=False,
+            )
+            worker._handle_message(MR20ObjectListStatus(target_count=1, measurement_count=9), "127.0.0.1")
+            worker._handle_message(self.target(2.0, -6.0), "127.0.0.1")
+
+            record = json.loads(log_path.read_text(encoding="utf-8"))
+            self.assertIsNone(worker.evaluator)
+            self.assertEqual(1, len(scans))
+            self.assertEqual([0], [event.level for event in events])
+            self.assertFalse(record["legacy_evaluation_enabled"])
 
 
 class MR20DualRadarConfigTest(unittest.TestCase):

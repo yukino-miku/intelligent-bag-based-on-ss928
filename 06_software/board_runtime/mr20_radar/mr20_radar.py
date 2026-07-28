@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+import queue
 import socket
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
@@ -42,6 +43,19 @@ class MR20Target:
     longitudinal_velocity_mps: float
     lateral_velocity_mps: float
     status: str
+    radar_name: str = ""
+    side: str = ""
+    measurement_count: int = 0
+    timestamp: float = 0.0
+
+
+@dataclass(frozen=True)
+class RadarScan:
+    radar_name: str
+    side: str
+    measurement_count: int
+    captured_mono_s: float
+    targets: tuple[MR20Target, ...]
 
 
 @dataclass(frozen=True)
@@ -58,6 +72,13 @@ class RadarConfig:
     approaching_velocity_sign: int
     min_consecutive_frames: int
     log_path: str
+    mount_x_m: float = 0.0
+    mount_z_m: float = 0.0
+    mount_yaw_deg: float = 0.0
+    invert_lateral: bool = False
+    invert_longitudinal: bool = False
+    invert_lateral_velocity: bool = False
+    invert_longitudinal_velocity: bool = False
 
 
 @dataclass(frozen=True)
@@ -104,6 +125,13 @@ def load_radar_configs(path: str | Path) -> tuple[list[RadarConfig], RiskConfig]
             approaching_velocity_sign=int(item.get("approaching_velocity_sign", -1)),
             min_consecutive_frames=max(1, int(item.get("min_consecutive_frames", 2))),
             log_path=str(item.get("log_path", f"/var/log/smartbag/{item['name']}.jsonl")),
+            mount_x_m=float(item.get("mount_x_m", 0.0)),
+            mount_z_m=float(item.get("mount_z_m", 0.0)),
+            mount_yaw_deg=float(item.get("mount_yaw_deg", 0.0)),
+            invert_lateral=bool(item.get("invert_lateral", False)),
+            invert_longitudinal=bool(item.get("invert_longitudinal", False)),
+            invert_lateral_velocity=bool(item.get("invert_lateral_velocity", False)),
+            invert_longitudinal_velocity=bool(item.get("invert_longitudinal_velocity", False)),
         )
         for item in data.get("radars", []) if item.get("enabled", True)
     ]
@@ -148,17 +176,29 @@ class RadarRiskEvaluator:
 
 
 class MR20RadarWorker:
-    """Receive complete MR20 measurements and emit one source-scoped alert per scan."""
+    """Receive complete MR20 measurements and expose every target in each scan."""
 
-    def __init__(self, config: RadarConfig, risk: RiskConfig, emit: Callable[[AlertEvent], None]) -> None:
+    def __init__(
+        self,
+        config: RadarConfig,
+        risk: RiskConfig,
+        emit: Callable[[AlertEvent], None] | None = None,
+        *,
+        on_scan: Callable[[RadarScan], None] | None = None,
+        scan_queue_size: int = 4,
+        evaluate_legacy_risk: bool = True,
+    ) -> None:
         self.config = config
         self.emit = emit
-        self.evaluator = RadarRiskEvaluator(config, risk)
+        self.on_scan = on_scan
+        self.evaluator = RadarRiskEvaluator(config, risk) if evaluate_legacy_risk else None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._socket: socket.socket | None = None
         self._targets: list[MR20Target] = []
         self._expected_targets: int | None = None
+        self._measurement_count: int | None = None
+        self._scan_queue: "queue.Queue[RadarScan]" = queue.Queue(maxsize=max(1, scan_queue_size))
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, name=f"mr20-{self.config.name}", daemon=True)
@@ -200,10 +240,12 @@ class MR20RadarWorker:
         if isinstance(message, MR20ObjectListStatus):
             self._flush(source_ip)
             self._expected_targets = message.target_count
+            self._measurement_count = message.measurement_count
             self._targets = []
             if message.target_count == 0:
                 self._flush(source_ip)
                 self._expected_targets = None
+                self._measurement_count = None
             return
         if self._expected_targets is None:
             return
@@ -211,20 +253,94 @@ class MR20RadarWorker:
         if len(self._targets) >= self._expected_targets:
             self._flush(source_ip)
             self._expected_targets = None
+            self._measurement_count = None
 
     def accepts_source(self, source_ip: str) -> bool:
         return source_ip == self.config.radar_ip
 
+    def get_scan(self, timeout_s: float = 0.0) -> RadarScan | None:
+        try:
+            return self._scan_queue.get(timeout=max(0.0, timeout_s))
+        except queue.Empty:
+            return None
+
     def _flush(self, source_ip: str) -> None:
         if self._expected_targets is None:
             return
-        level, target, ttc_s = self.evaluator.evaluate(self._targets)
-        self._append_log(source_ip, level, target, ttc_s)
-        self.emit(AlertEvent(side=self.config.side, level=level, source=f"radar:{self.config.name}", track_id=target.target_id if target else None, ts=time.monotonic()))
+        captured_mono_s = time.monotonic()
+        measurement_count = int(self._measurement_count or 0)
+        targets = tuple(
+            replace(
+                target,
+                radar_name=self.config.name,
+                side=self.config.side,
+                measurement_count=measurement_count,
+                timestamp=captured_mono_s,
+            )
+            for target in self._targets
+        )
+        scan = RadarScan(
+            radar_name=self.config.name,
+            side=self.config.side,
+            measurement_count=measurement_count,
+            captured_mono_s=captured_mono_s,
+            targets=targets,
+        )
+        self._offer_scan(scan)
+        if self.on_scan is not None:
+            self.on_scan(scan)
 
-    def _append_log(self, source_ip: str, level: int, target: MR20Target | None, ttc_s: float | None) -> None:
+        if self.evaluator is None:
+            level, target, ttc_s = 0, None, None
+        else:
+            level, target, ttc_s = self.evaluator.evaluate(list(targets))
+        self._append_log(source_ip, scan, level, target, ttc_s)
+        if self.emit is not None:
+            self.emit(
+                AlertEvent(
+                    side=self.config.side,
+                    level=level,
+                    source=f"radar:{self.config.name}",
+                    track_id=target.target_id if target else None,
+                    ts=captured_mono_s,
+                )
+            )
+
+    def _offer_scan(self, scan: RadarScan) -> None:
+        try:
+            self._scan_queue.put_nowait(scan)
+            return
+        except queue.Full:
+            pass
+        try:
+            self._scan_queue.get_nowait()
+        except queue.Empty:
+            pass
+        self._scan_queue.put_nowait(scan)
+
+    def _append_log(
+        self,
+        source_ip: str,
+        scan: RadarScan,
+        level: int,
+        target: MR20Target | None,
+        ttc_s: float | None,
+    ) -> None:
         path = Path(self.config.log_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        record = {"ts": time.time(), "source_ip": source_ip, "radar": self.config.name, "level": level, "ttc_s": ttc_s, "target": target.__dict__ if target else None}
+        record = {
+            "type": "radar_scan",
+            "ts": time.time(),
+            "captured_mono_s": scan.captured_mono_s,
+            "source_ip": source_ip,
+            "radar": self.config.name,
+            "side": self.config.side,
+            "measurement_count": scan.measurement_count,
+            "targets": [item.__dict__ for item in scan.targets],
+            "legacy_evaluation_enabled": self.evaluator is not None,
+            "legacy_level": level,
+            "legacy_ttc_s": ttc_s,
+            "legacy_target": target.__dict__ if target else None,
+        }
         with path.open("a", encoding="utf-8") as file:
             file.write(json.dumps(record, ensure_ascii=False) + "\n")

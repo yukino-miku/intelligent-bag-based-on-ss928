@@ -1,5 +1,16 @@
 # Project Log
 
+## 2026-07-28
+
+- 重新 fetch `origin/agent/full-sanda-integration`，确认基线 HEAD 为 `c3ef9c012543cdc02c708449572e8645b98dcf48`，创建 `agent/radar-primary-vision-class-fusion`。
+- 审计 MR20、视觉 RiskModel、Controller、部署和集成测试，确认旧架构分别按 side 汇总雷达/视觉告警，缺少目标级关联，且旧 MR20 每轮只输出最高目标。
+- 实现完整 RadarScan、持久雷达轨迹和 generation；统一 x 向右、z 向后坐标，并把左右符号与安装 yaw 外置配置。
+- 实现单模型交替快照、标定投影、时间外推、一对一 Hungarian 关联和车型持久绑定；摄像头/模型失败时雷达 unknown 兜底。
+- 将原 RiskModel 抽象为传感器无关输入并复用原多帧 stabilizer；车型 multiplier 仅在 RiskModel 内乘一次。
+- 新增融合 JSONL、回放、调试 API、部署标定模板和测试。硬件结果严格保留为待验证，不把本地模拟写成 SS928 实测。
+- 收尾修复跨侧绑定误清、关联硬门限、外参平移顺序、runner 超时重启和相机故障隔离；heartbeat 维持 watchdog 但不重复写小程序历史，preflight 按正式融合/旧视觉/雷达-only 模式分别检查资源。
+- 本机通过 335 项 Python、11 个 Node 测试文件、4 个 NPU native C++ tests、1 个 C 兼容核心测试以及 compileall/JSON/JS/Shell 检查。物理以太网断开且已知板 IP 无响应，未执行上传、systemd、真实 OM、双 MR20、标定或 30 分钟实板验收。
+
 ## 2026-07-26
 
 - 从目标基线 `06c6cfd1dc11a0f92c54ce8aad5252d554ececa5` 创建 `agent/full-sanda-integration`，固定只读来源 `sanda-tt/ss928@59071297e5d8f339332a7234406429f94ffe2570`。

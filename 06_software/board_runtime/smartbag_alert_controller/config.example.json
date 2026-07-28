@@ -1,4 +1,5 @@
 {
+  "runtime_mode": "radar_primary_visual_classification",
   "paths": {
     "python": "/usr/bin/python3",
     "vision": "/root/smartbag/vision",
@@ -11,7 +12,7 @@
   },
   "cameras": {
     "left": {
-      "camera_device": "/dev/video0",
+      "camera_device": "/dev/v4l/by-path/REPLACE_LEFT_CAMERA-video-index0",
       "detector_profile": "board_dual_balanced",
       "calibration_file": "/etc/smartbag/calibration-left.json",
       "camera_height": 1.2,
@@ -32,7 +33,7 @@
       "pwm_channels": ["left_1", "left_2"]
     },
     "right": {
-      "camera_device": "/dev/video2",
+      "camera_device": "/dev/v4l/by-path/REPLACE_RIGHT_CAMERA-video-index0",
       "detector_profile": "board_dual_balanced",
       "calibration_file": "/etc/smartbag/calibration-right.json",
       "camera_height": 1.2,
@@ -58,6 +59,55 @@
     "port": 8080,
     "access_token": ""
   },
+  "snapshot_classifier": {
+    "enabled": true,
+    "backend": "ss928_om",
+    "model": "/root/smartbag/models/vehicle-classifier.om",
+    "runner": "/root/smartbag/vision/ss928_backend/bin/ss928_detection_runner",
+    "imgsz": 640,
+    "confidence": 0.25,
+    "max_det": 30,
+    "target_classes": ["bicycle", "motorcycle", "car", "truck", "bus"],
+    "warmup_frames": 2,
+    "capture_frames": 1,
+    "first_frame_timeout_ms": 1000,
+    "switch_timeout_ms": 1000,
+    "inference_timeout_ms": 5000,
+    "snapshot_interval_ms": 0,
+    "left_device": "/dev/v4l/by-path/REPLACE_LEFT_CAMERA-video-index0",
+    "right_device": "/dev/v4l/by-path/REPLACE_RIGHT_CAMERA-video-index0"
+  },
+  "fusion": {
+    "left_calibration": "/etc/smartbag/fusion-left.json",
+    "right_calibration": "/etc/smartbag/fusion-right.json",
+    "association_max_time_delta_s": 0.20,
+    "max_horizontal_error_px": 160,
+    "max_horizontal_error_ratio": 0.15,
+    "max_association_cost": 1.0,
+    "binding_min_confirmations": 2,
+    "binding_max_visual_misses": 3,
+    "visual_binding_timeout_s": 3.0,
+    "class_switch_confirmations": 3,
+    "class_vote_window": 5,
+    "radar_track_timeout_s": 0.8,
+    "radar_max_missed_scans": 3,
+    "event_rate_limit_s": 0.25,
+    "record_dir": "/var/log/smartbag/fusion",
+    "debug_http_enabled": true,
+    "debug_bind": "0.0.0.0",
+    "debug_port": 8080,
+    "debug_access_token": ""
+  },
+  "risk": {
+    "vehicle_risk_multipliers": {
+      "bicycle": 0.92,
+      "motorcycle": 0.96,
+      "car": 1.0,
+      "truck": 1.1,
+      "bus": 1.1,
+      "unknown": 1.0
+    }
+  },
   "pwm": {
     "period_ns": 1000000,
     "level_duty_percent": {
@@ -79,7 +129,7 @@
     "lights_enabled": true
   },
   "radar": {
-    "enabled": false,
+    "enabled": true,
     "config": "/etc/smartbag/mr20.json"
   },
   "modules": {

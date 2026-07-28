@@ -12,6 +12,8 @@ make MPP_SAMPLE_ROOT=/opt/ss928/mpp/sample
 
 ## 模型后端
 
-当前完整可用后端是 `UltralyticsBackend`，PC 可使用 PyTorch/OpenVINO，板端 `board_cpu` 只是一套低负载参数。OpenVINO 不是 SS928 NPU。`Ss928OmBackend` 目前只定义接口并给出明确未实现错误，不伪造推理结果。
+PC 完整后端是 `UltralyticsBackend`，可使用 PyTorch/OpenVINO；`board_cpu` 只是一套低负载参数，OpenVINO 不是 SS928 NPU。板端 `Ss928OmBackend` 已接入持久 native runner：模型只初始化一次，Python 将交替获取的最新 BGR 快照 letterbox 到固定 640x640、转换为 NV12，并通过 stdin/stdout 单行协议请求 OM 检测。runner 超时或退出时重启并只重试一次，失败帧明确返回 `MODEL_ERROR`，不会伪造检测框。
 
-后续 `.om` 工作需要：确定官方 ModelZoo/转换工具版本；固定输入尺寸、颜色空间、量化和 NMS 契约；实现 MPP/VPSS 零拷贝或受控拷贝；映射 detector 输出到现有 `Observation`；以录制视频对齐 PyTorch 基线；最后在真实板上测量 FPS、CPU/NPU 占用、端到端时延和温度。
+该桥接仅为“车辆类别快照分类”服务，不承担视觉测距、测速、跟踪或风险判断。正式融合模式由 MR20 连续提供运动数据，OM 结果只绑定 `bicycle/motorcycle/car/truck/bus` 类别；无视觉结果时仍以 `unknown=1.0` 运行共享 RiskModel。
+
+尚未验收的 `.om` 工作包括：取得许可明确且输出契约匹配的车辆模型；在真实板上验证类别、框坐标和置信度；校验 ModelZoo/转换工具、量化和 NMS 契约；评估 MPP/VPSS 零拷贝；最后测量每侧快照频率、切换时延、CPU/NPU 占用、RSS、温度和 30 分钟稳定性。仓库中的工厂 OM 历史证据未产生可信目标，不能作为模型正确性证明。

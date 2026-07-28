@@ -1,4 +1,33 @@
-# SS928 全量整合状态
+# SS928 全量整合与雷达视觉融合状态
+
+## 2026-07-28 当前分支
+
+- 开发基线：`agent/full-sanda-integration@c3ef9c012543cdc02c708449572e8645b98dcf48`。
+- 当前分支：`agent/radar-primary-vision-class-fusion`。
+- 正式候选数据流改为：双 MR20 完整扫描 -> 持久雷达轨迹 -> 单模型左右交替快照车型分类 -> 标定投影与一一关联 -> 持久车型绑定 -> 原视觉 RiskModel -> 逐轨迹稳定器 -> 每侧最高稳定 haptic -> Controller。
+- 新模式关闭旧 MR20 简单风险 evaluator，不启动两个完整视觉 detector，也不运行 BoT-SORT、视觉测距测速、光流或视觉 CPA。`legacy_dual_vision` 仅保留回归。
+- OM 后端已有持久 runner、BGR-to-NV12 快照桥接、5 秒默认响应超时、进程重启和一次重试；runner 或摄像头失败时雷达以 `unknown=1.0` 继续，不伪造检测结果。
+- 当前配置模板使用 `/dev/v4l/by-path/REPLACE_*` 占位符；左右外参与畸变模板不是实测标定值，部署前必须替换。
+
+## 本分支本机验证
+
+- 335 项 Python 测试通过：视觉 148、融合 29、MR20 9、Controller 17、跨模块集成 53，其余板端模块与录像工具 79。
+- 11 个小程序/CloudBase Node 测试文件通过；32 个 JavaScript 文件通过 `node --check`。
+- 4 个 SS928 NPU native C++ tests 和 1 个 C 兼容核心测试通过。
+- `compileall`、29 个 JSON、21 个 Shell、`git diff --check` 通过。
+- 模拟测试覆盖多目标扫描、generation、安装变换、跨侧绑定隔离、交替单 STREAMON、Hungarian 一一匹配、绑定保持/切换/解绑、共享 RiskModel、逐轨迹稳定、heartbeat、JSONL 记录回放和故障降级。
+
+## 当前硬件阻塞
+
+2026-07-28 收尾检查时，Windows 的物理“以太网”和“以太网 2”均为 `Disconnected`，没有 `192.168.1.0/24` 本机地址；`192.168.1.102` 和 `192.168.1.168` 均无 ICMP/SSH 响应。因此没有执行本分支上传、systemd 启动或重启验收，以下结果保持 `BLOCKED`：
+
+- 左右 MR20 实际配置、扫描频率、多目标数量、丢帧率和 30 分钟稳定性。
+- 当前左右 UVC by-path、单 STREAMON 切换时延、每侧分类频率和失败恢复。
+- 合法车辆 OM 的类别/框正确性、NPU 时延、CPU、RSS、温度和长期运行。
+- 左右雷达-相机内外参、投影误差、单车/多车关联成功率和错误绑定率。
+- 真实振动/灯/音频/BLE、systemd restart、reboot 自启和断网脱机运行。
+
+下列内容是 2026-07-26 基线审计记录，保留用于来源追溯，不代表当前分支已完成实板验收。
 
 ## 仓库与审计
 
@@ -7,7 +36,7 @@
 - 来源 24,421 个 Git blob 均进入 `sanda-full-file-manifest.csv`；路径、大小和 SHA-256 由校验器重新核对。
 - 5 个缺失 Git LFS 对象和 1 个含设备凭据 handoff 标为 `BLOCKED`，不伪造、不提交。
 
-## 已完成整合
+## 2026-07-26 已完成整合
 
 - 固定左右双 USB detector、独立 tracker/risk/stabilizer/risk CSV、latest-frame HTTP、双路 gateway 和统一 Controller 保持不变。
 - Controller 按 `(source, side)` 融合视觉和可选 MR20；单来源清零、超时或退出不会清除另一来源或另一侧。
@@ -17,14 +46,14 @@
 - DX-GP21、MT5710 NCM、Tsensor、WS73、CloudBase、小程序和硬件 profile 接入统一部署；可选模块故障不阻塞本地视觉和安全清零。
 - 云函数必需 `lib/*.js` 已纳入 Git；Cloud env、token、手机号和板端凭据不写死在公开配置。
 
-## SS928 NPU 状态
+## 2026-07-26 SS928 NPU 状态
 
 - 已完成：ACL I/O 合约、NV12 letterbox、YOLO decode/NMS、离线 raw runner、detections JSONL 协议和 4 项本机 native C++ tests。
 - 来源历史证据：固定输入 100 帧 ACL 平均推理约 25.112 ms、后处理约 16.292 ms、总吞吐约 23.348 FPS。
 - 未完成：工厂 OM 的真实目标正确性、USB 实时输入、双路 NPU 调度、detections 到现有 BoT-SORT/TrackState/RiskModel/overlay 的实时桥接。
 - 因此当前正式实时后端仍是 Python Ultralytics；不得宣称完整 NPU 避障链已可用。
 
-## 测试状态
+## 2026-07-26 测试状态
 
 整合前基线共 203 项 Python 测试通过。整合后本机验证结果：
 
@@ -41,7 +70,7 @@
 - 两台 `0bda:3035` UVC 当时分别枚举为 `/dev/video0`、`/dev/video2`，同序列号导致 by-id 冲突；共同位于 USB 2.0 hub 时双路出现 `ENOSPC`。
 - 这些是历史基线，不等于本分支已在当前接线完成部署、自启或端到端检测。
 
-## 仍需本轮真实硬件验收
+## 2026-07-26 当时未完成的硬件验收
 
 2026-07-26 本轮收尾时 Windows 物理以太网适配器状态为 `Disconnected`，已知板端地址均无 ICMP/SSH 响应，因此没有执行上传、服务启动或 reboot。以下项目保持未验证：
 

@@ -51,7 +51,7 @@
 
   <view class="auto-alert-panel">
     <view class="auto-alert-panel__header">
-      <view class="auto-alert-panel__title">自动视觉告警</view>
+      <view class="auto-alert-panel__title">雷达融合告警</view>
       <button class="auto-alert-panel__clear" bindtap="clearAlertHistory">清除历史</button>
     </view>
     <view class="auto-alert-panel__current">
@@ -62,6 +62,10 @@
       <view class="auto-alert-row" wx:for="{{alertHistory}}" wx:key="key">
         <text>{{item.receivedAt}}</text><text>{{item.side === 'left' ? '左' : '右'}}</text><text>{{item.name}}</text>
         <text>{{item.className || '目标'}}</text><text>{{item.distanceM === null ? '--' : item.distanceM + 'm'}}</text>
+        <text>{{item.speedText}}</text>
+        <text>TTC {{item.ttcText}}</text>
+        <text>雷达 {{item.radarTargetId === null ? '--' : item.radarTargetId}}</text>
+        <text>{{item.associationState || 'UNBOUND'}}</text>
       </view>
     </view>
   </view>

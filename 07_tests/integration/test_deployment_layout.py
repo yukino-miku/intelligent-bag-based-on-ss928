@@ -17,10 +17,10 @@ class DeploymentLayoutTest(unittest.TestCase):
         self.assertIn("ExecStopPost=/root/smartbag/safe-off.sh", unit)
         self.assertNotIn("/root/vision_obstacle_tracker", unit)
 
-    def test_target_starts_controller_which_owns_child_processes(self) -> None:
+    def test_target_starts_only_controller_as_camera_owner(self) -> None:
         target = (DEPLOY / "systemd" / "smartbag.target").read_text(encoding="utf-8")
         self.assertIn("Requires=smartbag-alert.service", target)
-        self.assertIn("smartbag-video.service", target)
+        self.assertNotIn("smartbag-video.service", target)
         self.assertNotIn("smartbag-gnss.service", target)
         self.assertNotIn("smartbag-imu.service", target)
         self.assertIn("smartbag-connectivity.service", target)
@@ -49,7 +49,8 @@ class DeploymentLayoutTest(unittest.TestCase):
     def test_optional_connectivity_failure_cannot_stop_local_alert_runtime(self) -> None:
         target = (DEPLOY / "systemd" / "smartbag.target").read_text(encoding="utf-8")
         alert = (DEPLOY / "systemd" / "smartbag-alert.service").read_text(encoding="utf-8")
-        self.assertIn("Requires=smartbag-alert.service smartbag-video.service", target)
+        self.assertIn("Requires=smartbag-alert.service", target)
+        self.assertNotIn("Requires=smartbag-video.service", target)
         self.assertIn("Wants=", target)
         self.assertNotIn("Requires=smartbag-connectivity.service", target)
         self.assertNotIn("Requires=smartbag-connectivity.service", alert)
@@ -67,6 +68,21 @@ class DeploymentLayoutTest(unittest.TestCase):
             self.assertIn(module, installer)
         self.assertIn("migrate_config.py", installer)
         self.assertIn("smartbag.env", installer)
+
+    def test_legacy_video_gateway_is_manual_only(self) -> None:
+        unit = (DEPLOY / "systemd" / "smartbag-video.service").read_text(encoding="utf-8")
+        installer = (DEPLOY / "install.sh").read_text(encoding="utf-8")
+        self.assertNotIn("WantedBy=smartbag.target", unit)
+        self.assertIn("systemctl disable smartbag-video.service", installer)
+
+    def test_om_fusion_dependency_check_does_not_require_torch_stack(self) -> None:
+        script = (DEPLOY / "check-runtime-deps.sh").read_text(encoding="utf-8")
+        self.assertIn('runtime_mode == "radar_primary_visual_classification"', script)
+        self.assertIn('if snapshot_backend == "ultralytics"', script)
+        self.assertIn('required += ["cv2", "numpy"]', script)
+        self.assertIn('required += ["cv2", "numpy", "torch", "ultralytics", "lap"]', script)
+        preflight = (DEPLOY / "preflight.sh").read_text(encoding="utf-8")
+        self.assertIn('"$SCRIPT_DIR/check-runtime-deps.sh" "$CONFIG"', preflight)
 
 
 if __name__ == "__main__":

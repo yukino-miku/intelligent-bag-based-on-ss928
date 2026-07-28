@@ -10,7 +10,7 @@
 - `handoff.md`：含设备 IP/密码，标为 `BLOCKED`，不复制原文。
 - `.om`/`.onnx`/`.pt`、BMI270 config blob、`.ko`/`.o`/可执行文件、raw output、NV12/图片样本、日志、校准 CSV：二进制许可不明、运行数据或可重建产物。
 - 小程序 quickstartFunctions、example、默认 CloudBase 图片/组件、private config：脚手架或本地配置；有效告警逻辑迁入正式 `pages/alarms`。
-- 旧 VOT live pipeline、交替采集入口和 controller dry-run shim：由现有固定双 detector、Python tracker/risk 和 `c_port` 覆盖，不恢复为正式入口。
+- 旧 VOT live pipeline 和 controller dry-run shim：在 2026-07-26 基线中由固定双 detector、Python tracker/risk 和 `c_port` 覆盖，没有直接恢复来源入口。2026-07-28 新增的交替采集是重新实现的“雷达持续跟踪、视觉只做车型快照分类”模块，不是旧视觉主导 tracker/risk 流程。
 - 来源旧 systemd/start 脚本：路径和硬件所有权与统一 `/root/smartbag` 冲突，功能合并进 `09_deliverables/board_deploy`。
 - 重复 MR20 parser、MT5710 supervisor、BMI service 和音频 build/deploy：只保留当前模块与单套最终 AAC；PCM 中间文件删除。
 - 来源提交自动生成的 DOCX：只保留 `build_submission_doc.py`。

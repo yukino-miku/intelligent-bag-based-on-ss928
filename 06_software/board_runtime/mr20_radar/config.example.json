@@ -8,7 +8,7 @@
     ]
   },
   "radars": [
-    {"name": "right_rear", "enabled": true, "side": "right", "bind_host": "0.0.0.0", "port": 2368, "radar_ip": "192.168.1.200", "lateral_min_m": -3.0, "lateral_max_m": 3.0, "longitudinal_min_m": 0.2, "longitudinal_max_m": 20.0, "approaching_velocity_sign": -1, "min_consecutive_frames": 2, "log_path": "/var/log/smartbag/mr20-right.jsonl"},
-    {"name": "left_rear", "enabled": true, "side": "left", "bind_host": "0.0.0.0", "port": 2378, "radar_ip": "192.168.1.201", "lateral_min_m": -3.0, "lateral_max_m": 3.0, "longitudinal_min_m": 0.2, "longitudinal_max_m": 20.0, "approaching_velocity_sign": -1, "min_consecutive_frames": 2, "log_path": "/var/log/smartbag/mr20-left.jsonl"}
+    {"name": "right_rear", "enabled": true, "side": "right", "bind_host": "0.0.0.0", "port": 2368, "radar_ip": "192.168.1.200", "lateral_min_m": -3.0, "lateral_max_m": 3.0, "longitudinal_min_m": 0.2, "longitudinal_max_m": 20.0, "approaching_velocity_sign": -1, "min_consecutive_frames": 2, "mount_x_m": 0.18, "mount_z_m": 0.0, "mount_yaw_deg": 0.0, "invert_lateral": false, "invert_longitudinal": false, "invert_lateral_velocity": false, "invert_longitudinal_velocity": false, "log_path": "/var/log/smartbag/mr20-right.jsonl"},
+    {"name": "left_rear", "enabled": true, "side": "left", "bind_host": "0.0.0.0", "port": 2378, "radar_ip": "192.168.1.201", "lateral_min_m": -3.0, "lateral_max_m": 3.0, "longitudinal_min_m": 0.2, "longitudinal_max_m": 20.0, "approaching_velocity_sign": -1, "min_consecutive_frames": 2, "mount_x_m": -0.18, "mount_z_m": 0.0, "mount_yaw_deg": 0.0, "invert_lateral": false, "invert_longitudinal": false, "invert_lateral_velocity": false, "invert_longitudinal_velocity": false, "log_path": "/var/log/smartbag/mr20-left.jsonl"}
   ]
 }

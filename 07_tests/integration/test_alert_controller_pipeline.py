@@ -18,6 +18,7 @@ from smartbag_alert_controller import (
     detector_commands_from_config,
     posture_reminder_from_module,
     validate_dual_camera_config,
+    validate_snapshot_camera_config,
 )
 
 
@@ -40,6 +41,17 @@ class AlertControllerPipelineTest(unittest.TestCase):
             parse_vision_alert_jsonl("not-json")
         with self.assertRaises(ValueError):
             parse_vision_alert_jsonl('{"type":"vision_alert","side":"left","level":5}')
+
+    def test_fused_alert_parser_keeps_string_track_and_kinematics(self) -> None:
+        event = parse_vision_alert_jsonl(
+            '{"type":"fused_alert","side":"right","level":2,'
+            '"track_id":"right_rear:7:2","radar_target_id":7,'
+            '"class":"car","class_weight":1.0,"speed_mps":3.2,'
+            '"ttc_s":2.5,"association_state":"BOUND","event_kind":"heartbeat"}'
+        )
+        self.assertEqual("right_rear:7:2", event.track_id)
+        self.assertEqual(3.2, event.speed_mps)
+        self.assertEqual("heartbeat", event.event_kind)
 
     def test_detector_exit_queues_clear_for_its_side(self) -> None:
         event_queue = queue.Queue()
@@ -157,14 +169,55 @@ class AlertControllerPipelineTest(unittest.TestCase):
         self.assertIn("--side right", right)
         self.assertNotIn("--side left", right)
 
+    def test_fusion_camera_validation_uses_snapshot_devices_not_stream_ports(self) -> None:
+        config = {
+            "snapshot_classifier": {
+                "enabled": True,
+                "left_device": "/dev/v4l/by-path/left",
+                "right_device": "/dev/v4l/by-path/right",
+            }
+        }
+        validate_snapshot_camera_config(config)
+        config["snapshot_classifier"]["right_device"] = "/dev/v4l/by-path/left"
+        with self.assertRaisesRegex(ValueError, "must be different"):
+            validate_snapshot_camera_config(config)
+
     def test_ble_alert_payload_keeps_optional_target_context(self) -> None:
         payload = alert_event_ble_payload(
-            AlertEvent("right", 3, score=0.78, track_id=123, ts=12.3, class_name="car", distance_m=4.2)
+            AlertEvent(
+                "right",
+                3,
+                score=0.78,
+                track_id="right_rear:12:3",
+                ts=12.3,
+                class_name="truck",
+                distance_m=4.2,
+                radar_name="right_rear",
+                radar_target_id=12,
+                radar_track_key="right_rear:12:3",
+                class_confidence=0.91,
+                class_weight=1.1,
+                class_source="vision_bound",
+                lateral_distance_m=0.8,
+                longitudinal_distance_m=4.1,
+                vx_mps=-0.2,
+                vz_mps=-2.0,
+                speed_mps=2.01,
+                ttc_s=2.1,
+                association_state="BOUND",
+                association_score=0.12,
+                event_kind="alert",
+            )
         )
         self.assertIn('"typ":"alert"', payload)
         self.assertIn('"name":"DANGER"', payload)
-        self.assertIn('"class":"car"', payload)
+        self.assertIn('"class":"truck"', payload)
         self.assertIn('"distance_m":4.2', payload)
+        self.assertIn('"radar_track_key":"right_rear:12:3"', payload)
+        self.assertIn('"class_weight":1.1', payload)
+        self.assertIn('"speed_mps":2.01', payload)
+        self.assertIn('"ttc_s":2.1', payload)
+        self.assertIn('"association_state":"BOUND"', payload)
 
     def test_hunch_reminder_uses_independent_bilateral_source(self) -> None:
         parsed = posture_reminder_from_module(

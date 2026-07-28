@@ -23,6 +23,7 @@ struct Options {
     float confidence = 0.25f;
     float nms = 0.45f;
     int max_detections = 50;
+    bool server = false;
 };
 
 bool parse_number(const char *text, int *value) {
@@ -44,6 +45,10 @@ bool parse_number(const char *text, float *value) {
 bool parse_options(int argc, char **argv, Options *options) {
     for (int index = 1; index < argc; ++index) {
         const std::string key = argv[index];
+        if (key == "--server") {
+            options->server = true;
+            continue;
+        }
         if (index + 1 >= argc) return false;
         const char *value = argv[++index];
         if (key == "--model") options->model = value;
@@ -93,13 +98,51 @@ void emit_detections(int frame_index, const std::vector<BackendDetection> &detec
     std::cout << "]}" << std::endl;
 }
 
+bool infer_file(
+    Ss928AclDetector *detector,
+    const Options &options,
+    const std::string &input_path,
+    int source_width,
+    int source_height,
+    int frame_index) {
+    std::vector<unsigned char> input;
+    if (!read_file(input_path, &input) || input.size() != detector->input_bytes()) {
+        std::cerr << "input must be an exact model-sized NV12 frame; expected " << detector->input_bytes() << " bytes\n";
+        return false;
+    }
+    LetterboxInfo letterbox;
+    std::string error;
+    if (!compute_letterbox(source_width, source_height, 640, 640, &letterbox, &error)) {
+        std::cerr << error << '\n';
+        return false;
+    }
+    AclInferenceResult inference;
+    if (!detector->infer(input.data(), input.size(), &inference, &error)) {
+        std::cerr << error << '\n';
+        return false;
+    }
+    const BackendTargetClassFilter filter = backend_parse_target_classes(options.target_classes);
+    std::vector<BackendDetection> detections;
+    YoloV8DecodeStats stats;
+    if (!decode_yolov8(inference.output, inference.output_elements, inference.output_dims, letterbox,
+                       filter, options.confidence, options.nms, options.max_detections,
+                       &detections, &stats, &error)) {
+        std::cerr << error << '\n';
+        return false;
+    }
+    emit_detections(frame_index, detections);
+    std::cerr << "frame=" << frame_index << " infer_ms=" << inference.inference_ms
+              << " candidates=" << stats.raw_candidate_count << " detections=" << detections.size() << '\n';
+    return true;
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
     Options options;
     if (!parse_options(argc, argv, &options)) {
         std::cerr << "usage: ss928_detection_runner --model MODEL.om --input FRAME.nv12 "
-                     "--source-width W --source-height H [--repeat N --conf F --nms F --max-det N]\n";
+                     "--source-width W --source-height H [--repeat N --conf F --nms F --max-det N --server]\n";
         return 2;
     }
     std::string error;
@@ -108,34 +151,28 @@ int main(int argc, char **argv) {
         std::cerr << error << '\n';
         return 1;
     }
-    std::vector<unsigned char> input;
-    if (!read_file(options.input, &input) || input.size() != detector.input_bytes()) {
-        std::cerr << "input must be an exact model-sized NV12 frame; expected " << detector.input_bytes() << " bytes\n";
-        return 1;
+    if (options.server) {
+        std::string line;
+        while (std::getline(std::cin, line)) {
+            std::istringstream request(line);
+            int frame_index = 0;
+            int source_width = 0;
+            int source_height = 0;
+            std::string input_path;
+            if (!(request >> frame_index >> input_path >> source_width >> source_height)) {
+                std::cerr << "invalid server request\n";
+                continue;
+            }
+            if (!infer_file(&detector, options, input_path, source_width, source_height, frame_index)) {
+                return 1;
+            }
+        }
+        return 0;
     }
-    LetterboxInfo letterbox;
-    if (!compute_letterbox(options.source_width, options.source_height, 640, 640, &letterbox, &error)) {
-        std::cerr << error << '\n';
-        return 1;
-    }
-    const BackendTargetClassFilter filter = backend_parse_target_classes(options.target_classes);
     for (int frame = 0; frame < options.repeat; ++frame) {
-        AclInferenceResult inference;
-        if (!detector.infer(input.data(), input.size(), &inference, &error)) {
-            std::cerr << error << '\n';
+        if (!infer_file(&detector, options, options.input, options.source_width, options.source_height, frame)) {
             return 1;
         }
-        std::vector<BackendDetection> detections;
-        YoloV8DecodeStats stats;
-        if (!decode_yolov8(inference.output, inference.output_elements, inference.output_dims, letterbox,
-                           filter, options.confidence, options.nms, options.max_detections,
-                           &detections, &stats, &error)) {
-            std::cerr << error << '\n';
-            return 1;
-        }
-        emit_detections(frame, detections);
-        std::cerr << "frame=" << frame << " infer_ms=" << inference.inference_ms
-                  << " candidates=" << stats.raw_candidate_count << " detections=" << detections.size() << '\n';
     }
     return 0;
 }

@@ -3,8 +3,50 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from enum import IntEnum
+from typing import Protocol
 
-from vision_core import TrackedObject
+from calibration import GroundPoint
+
+
+class RiskTarget(Protocol):
+    track_id: int | str
+    class_name: str
+    ground_point: GroundPoint | None
+    distance_m: float | None
+    vx_mps: float
+    vz_mps: float
+    speed_mps: float
+
+
+@dataclass(frozen=True)
+class KinematicRiskTarget:
+    """Sensor-neutral target consumed by the shared collision-risk model."""
+
+    track_id: int | str
+    class_name: str
+    x_m: float
+    z_m: float
+    vx_mps: float
+    vz_mps: float
+    distance_m: float
+    speed_mps: float
+    track_age_frames: int = 1
+    velocity_confidence: float = 1.0
+    distance_confidence: float = 1.0
+    observation_quality: float = 1.0
+    velocity_stability: float = 1.0
+    position_jitter_m: float = 0.0
+    distance_trend_mps: float = 0.0
+    approach_consistency: float = 0.0
+    path_conflict_consistency: float = 0.0
+    motion_quality_flags: tuple[str, ...] = ()
+    source: str = "unknown"
+    ignored_reason: str = ""
+    bbox_truncated_edges: str = ""
+
+    @property
+    def ground_point(self) -> GroundPoint:
+        return GroundPoint(x_m=self.x_m, z_m=self.z_m)
 
 
 DEFAULT_VEHICLE_RISK_MULTIPLIERS = {
@@ -203,7 +245,7 @@ class FutureConflict:
 
 @dataclass(frozen=True)
 class RiskAssessment:
-    track_id: int
+    track_id: int | str
     score: float
     level: RiskLevel
     ttc_s: float | None
@@ -238,6 +280,8 @@ class RiskAssessment:
     ttc_risk: float = 0.0
     drac_risk: float = 0.0
     closing_risk: float = 0.0
+    base_score: float = 0.0
+    weighted_score: float = 0.0
 
     def __post_init__(self) -> None:
         if self.visual_level is None:
@@ -417,7 +461,7 @@ def _time_to_enter_radius(
 
 
 def future_conflict_for_target(
-    target: TrackedObject,
+    target: RiskTarget,
     profile: SeverityProfile,
     cpa: CpaMetrics,
     config: RiskModelConfig,
@@ -545,7 +589,7 @@ def corridor_zone_name(zone: CorridorZone) -> str:
     }[zone]
 
 
-def classify_corridor_zone(target: TrackedObject, config: RiskModelConfig) -> CorridorZone:
+def classify_corridor_zone(target: RiskTarget, config: RiskModelConfig) -> CorridorZone:
     point = target.ground_point
     if point is None or point.z_m <= 0.0:
         return CorridorZone.UNKNOWN
@@ -577,7 +621,7 @@ def _cpa_enters_radius(cpa: CpaMetrics, radius_m: float, horizon_s: float) -> bo
     )
 
 
-def _target_motion_is_unstable(target: TrackedObject, config: RiskModelConfig) -> bool:
+def _target_motion_is_unstable(target: RiskTarget, config: RiskModelConfig) -> bool:
     flags = set(getattr(target, "motion_quality_flags", ()))
     return (
         getattr(target, "track_age_frames", 1) < config.min_stable_track_age_frames
@@ -588,7 +632,7 @@ def _target_motion_is_unstable(target: TrackedObject, config: RiskModelConfig) -
 
 
 def classify_motion_pattern(
-    target: TrackedObject,
+    target: RiskTarget,
     trajectory_distance: float,
     closing_speed_mps: float,
     config: RiskModelConfig,
@@ -728,7 +772,7 @@ def _max_level(current: RiskLevel, candidate: RiskLevel) -> RiskLevel:
 
 
 def _level_from_cpa_and_context(
-    target: TrackedObject,
+    target: RiskTarget,
     profile: SeverityProfile,
     cpa: CpaMetrics,
     corridor_zone: CorridorZone,
@@ -828,7 +872,7 @@ def _level_from_cpa_and_context(
 
 def _apply_motion_pattern_score_floor(
     score: float,
-    target: TrackedObject,
+    target: RiskTarget,
     motion_pattern: MotionPattern,
     cpa: CpaMetrics,
     corridor_zone: CorridorZone,
@@ -914,7 +958,7 @@ def _cap_score(score: float, cap_level: RiskLevel) -> float:
 
 
 def _contextual_risk_cap(
-    target: TrackedObject,
+    target: RiskTarget,
     corridor_zone: CorridorZone,
     cpa: CpaMetrics,
     future_conflict: FutureConflict,
@@ -1032,7 +1076,7 @@ def _apply_contextual_cap(score: float, cap_level: RiskLevel | None) -> float:
 
 def _haptic_level_for_context(
     level: RiskLevel,
-    target: TrackedObject,
+    target: RiskTarget,
     future_conflict: FutureConflict,
     profile: SeverityProfile,
     cap_reason: str,
@@ -1076,7 +1120,7 @@ def _haptic_level_for_context(
 
 
 def _empty_assessment(
-    target: TrackedObject,
+    target: RiskTarget,
     cpa: CpaMetrics | None = None,
     corridor_zone: CorridorZone = CorridorZone.UNKNOWN,
     risk_cap_reason: str = "none",
@@ -1121,7 +1165,7 @@ def _empty_assessment(
 
 
 def assess_collision_risk(
-    target: TrackedObject,
+    target: RiskTarget,
     config: RiskModelConfig | None = None,
 ) -> RiskAssessment:
     config = config or RiskModelConfig()
@@ -1295,7 +1339,8 @@ def assess_collision_risk(
         weighted_terms.append((weights.static_obstacle, static_obstacle_risk))
     total_weight = max(sum(weight for weight, _risk in weighted_terms), 1e-6)
     base_score = clamp(sum(weight * risk for weight, risk in weighted_terms) / total_weight)
-    score = clamp(base_score * vehicle_risk_multiplier(target.class_name, config))
+    weighted_score = clamp(base_score * vehicle_risk_multiplier(target.class_name, config))
+    score = weighted_score
     score = _apply_motion_pattern_score_floor(
         score,
         target,
@@ -1348,6 +1393,8 @@ def assess_collision_risk(
         ttc_risk=ttc_risk,
         drac_risk=drac_risk,
         closing_risk=closing_risk,
+        base_score=base_score,
+        weighted_score=weighted_score,
     )
 
 
@@ -1355,5 +1402,5 @@ class RiskModel:
     def __init__(self, config: RiskModelConfig | None = None) -> None:
         self.config = config or RiskModelConfig()
 
-    def assess(self, target: TrackedObject) -> RiskAssessment:
+    def assess(self, target: RiskTarget) -> RiskAssessment:
         return assess_collision_risk(target, self.config)

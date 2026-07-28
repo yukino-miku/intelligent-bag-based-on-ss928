@@ -21,6 +21,9 @@ if str(COMMON_DIR) not in sys.path:
 MR20_DIR = Path(__file__).resolve().parents[1] / "mr20_radar"
 if str(MR20_DIR) not in sys.path:
     sys.path.insert(0, str(MR20_DIR))
+BOARD_RUNTIME_DIR = Path(__file__).resolve().parents[1]
+if str(BOARD_RUNTIME_DIR) not in sys.path:
+    sys.path.insert(0, str(BOARD_RUNTIME_DIR))
 
 from ble_protocol import route_ble_command
 from runtime_metrics import ResourceSampler, atomic_write_json, status_timestamp
@@ -37,7 +40,9 @@ from alert_core import (
     parse_vision_alert_jsonl,
 )
 from ble_nus import BleNusServer
-from mr20_radar import MR20RadarWorker, load_radar_configs
+from mr20_radar.mr20_radar import MR20RadarWorker, load_radar_configs
+from radar_vision_fusion.fusion_runtime import RadarVisionFusionRuntime, build_fusion_runtime
+from radar_vision_fusion.fusion_debug_server import FusionDebugServer
 from pwm_lights import LinuxSysfsPwm, PwmLights
 from tm6605_haptics import LinuxI2cBus, Tm6605Haptics
 
@@ -453,6 +458,22 @@ def validate_dual_camera_config(config: dict[str, object]) -> None:
             raise ValueError(f"cameras.{side}.pwm_channels must stay on the {side} side")
 
 
+def validate_snapshot_camera_config(config: dict[str, object]) -> None:
+    snapshot = config.get("snapshot_classifier")
+    if not isinstance(snapshot, dict) or not bool(snapshot.get("enabled", True)):
+        return
+    cameras = config.get("cameras") if isinstance(config.get("cameras"), dict) else {}
+    devices: dict[str, str] = {}
+    for side in ("left", "right"):
+        camera = cameras.get(side) if isinstance(cameras.get(side), dict) else {}
+        device = str(snapshot.get(f"{side}_device") or camera.get("camera_device") or "").strip()
+        if not device:
+            raise ValueError(f"snapshot_classifier.{side}_device is required")
+        devices[side] = device
+    if devices["left"] == devices["right"] or os.path.realpath(devices["left"]) == os.path.realpath(devices["right"]):
+        raise ValueError("snapshot left and right camera devices must be different")
+
+
 def detector_commands_from_config(
     config: dict[str, object],
     *,
@@ -545,11 +566,38 @@ def alert_event_ble_payload(event: AlertEvent) -> str:
     if event.score is not None:
         payload["score"] = round(float(event.score), 4)
     if event.track_id is not None:
-        payload["track_id"] = int(event.track_id)
+        payload["track_id"] = event.track_id
     if event.class_name:
         payload["class"] = event.class_name
     if event.distance_m is not None:
         payload["distance_m"] = round(float(event.distance_m), 3)
+    optional_text = {
+        "radar_name": event.radar_name,
+        "radar_track_key": event.radar_track_key,
+        "class_source": event.class_source,
+        "association_state": event.association_state,
+        "clear_reason": event.clear_reason,
+        "event_kind": event.event_kind,
+    }
+    payload.update({key: value for key, value in optional_text.items() if value})
+    optional_numbers = {
+        "radar_target_id": event.radar_target_id,
+        "class_confidence": event.class_confidence,
+        "class_weight": event.class_weight,
+        "lateral_distance_m": event.lateral_distance_m,
+        "longitudinal_distance_m": event.longitudinal_distance_m,
+        "vx_mps": event.vx_mps,
+        "vz_mps": event.vz_mps,
+        "speed_mps": event.speed_mps,
+        "closing_speed_mps": event.closing_speed_mps,
+        "ttc_s": event.ttc_s,
+        "cpa_time_s": event.cpa_time_s,
+        "cpa_distance_m": event.cpa_distance_m,
+        "association_score": event.association_score,
+    }
+    for key, value in optional_numbers.items():
+        if value is not None:
+            payload[key] = round(float(value), 4)
     return json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
 
 
@@ -558,6 +606,7 @@ def controller_status_payload(
     detectors: list[DetectorProcess],
     modules: dict[str, "RoutedModuleProcess"],
     resource_sampler: ResourceSampler,
+    fusion: RadarVisionFusionRuntime | None = None,
 ) -> dict[str, object]:
     return {
         "typ": "sys",
@@ -573,6 +622,7 @@ def controller_status_payload(
         "resources": resource_sampler.sample(),
         "battery": None,
         "ble_video": False,
+        "fusion": fusion.status() if fusion is not None else None,
     }
 
 
@@ -760,7 +810,13 @@ def best_effort_stop_all(
 
 def run_controller(args: argparse.Namespace) -> int:
     config = load_controller_config(args.config)
-    validate_dual_camera_config(config)
+    runtime_mode = str(config.get("runtime_mode", "legacy_dual_vision"))
+    if runtime_mode not in {"legacy_dual_vision", "radar_only", "radar_primary_visual_classification"}:
+        raise ValueError(f"unsupported runtime_mode: {runtime_mode}")
+    if runtime_mode == "legacy_dual_vision":
+        validate_dual_camera_config(config)
+    elif runtime_mode == "radar_primary_visual_classification":
+        validate_snapshot_camera_config(config)
     pwm_config = config.get("pwm", {}) if isinstance(config.get("pwm", {}), dict) else {}
     audio_config = config.get("audio", {}) if isinstance(config.get("audio", {}), dict) else {}
     output_config = config.get("outputs", {}) if isinstance(config.get("outputs", {}), dict) else {}
@@ -822,6 +878,8 @@ def run_controller(args: argparse.Namespace) -> int:
     )
     detectors: list[DetectorProcess] = []
     radars: list[MR20RadarWorker] = []
+    fusion_runtime: RadarVisionFusionRuntime | None = None
+    fusion_debug_server: FusionDebugServer | None = None
     modules: dict[str, RoutedModuleProcess] = {}
     ble: BleNusServer | None = None
     resource_sampler = ResourceSampler()
@@ -859,33 +917,20 @@ def run_controller(args: argparse.Namespace) -> int:
                 eprint(f"WARN BLE disabled: {exc}")
 
         detector_cwd = Path(args.detector_cwd) if args.detector_cwd else None
-        configured_left, configured_right = detector_commands_from_config(
-            config,
-            left_video=args.left_video,
-            right_video=args.right_video,
-        )
-        left_detector_command = args.left_detector or configured_left
-        right_detector_command = args.right_detector or configured_right
-        if args.single_camera and not args.detector:
-            raise ValueError("--single-camera requires --detector COMMAND")
-        if args.detector:
-            detector = DetectorProcess(
-                None,
-                args.detector,
-                event_queue,
-                cwd=detector_cwd,
-                restart_limit=restart_limit,
-                restart_backoff_s=restart_backoff_s,
+        if runtime_mode == "legacy_dual_vision":
+            configured_left, configured_right = detector_commands_from_config(
+                config,
+                left_video=args.left_video,
+                right_video=args.right_video,
             )
-            detector.start()
-            detectors.append(detector)
-        else:
-            for side, command in (("left", left_detector_command), ("right", right_detector_command)):
-                if not command:
-                    continue
+            left_detector_command = args.left_detector or configured_left
+            right_detector_command = args.right_detector or configured_right
+            if args.single_camera and not args.detector:
+                raise ValueError("--single-camera requires --detector COMMAND")
+            if args.detector:
                 detector = DetectorProcess(
-                    side,
-                    command,
+                    None,
+                    args.detector,
                     event_queue,
                     cwd=detector_cwd,
                     restart_limit=restart_limit,
@@ -893,9 +938,42 @@ def run_controller(args: argparse.Namespace) -> int:
                 )
                 detector.start()
                 detectors.append(detector)
+            else:
+                for side, command in (("left", left_detector_command), ("right", right_detector_command)):
+                    if not command:
+                        continue
+                    detector = DetectorProcess(
+                        side,
+                        command,
+                        event_queue,
+                        cwd=detector_cwd,
+                        restart_limit=restart_limit,
+                        restart_backoff_s=restart_backoff_s,
+                    )
+                    detector.start()
+                    detectors.append(detector)
 
         radar_path = str(args.radar_config or radar_config.get("config", ""))
-        if bool(radar_config.get("enabled", False)) and radar_path:
+        if runtime_mode == "radar_primary_visual_classification":
+            if args.radar_config:
+                config = dict(config)
+                config["radar"] = {**radar_config, "config": args.radar_config, "enabled": True}
+            fusion_runtime = build_fusion_runtime(config, event_queue.put)
+            fusion_runtime.start()
+            eprint("started radar-primary visual-classification fusion runtime")
+            fusion_config = config.get("fusion", {}) if isinstance(config.get("fusion", {}), dict) else {}
+            if bool(fusion_config.get("debug_http_enabled", True)):
+                fusion_debug_server = FusionDebugServer(
+                    fusion_runtime,
+                    bind=str(fusion_config.get("debug_bind", "0.0.0.0")),
+                    port=int(fusion_config.get("debug_port", 8080)),
+                    access_token=str(fusion_config.get("debug_access_token", "")),
+                )
+                fusion_debug_server.start()
+                eprint(f"started fusion debug API on {fusion_config.get('debug_bind', '0.0.0.0')}:{fusion_config.get('debug_port', 8080)}")
+            if fusion_runtime.classifier is None:
+                eprint(f"WARN snapshot classification BLOCKED: {fusion_runtime.classifier_error}; radar unknown-class fallback remains active")
+        elif bool(radar_config.get("enabled", False)) and radar_path:
             radar_specs, radar_risk = load_radar_configs(radar_path)
             for spec in radar_specs:
                 radar = MR20RadarWorker(spec, radar_risk, event_queue.put)
@@ -972,7 +1050,7 @@ def run_controller(args: argparse.Namespace) -> int:
                         if ble is not None:
                             ble.send_line(
                                 json.dumps(
-                                    controller_status_payload(state, detectors, modules, resource_sampler),
+                                    controller_status_payload(state, detectors, modules, resource_sampler, fusion_runtime),
                                     separators=(",", ":"),
                                 )
                             )
@@ -1014,7 +1092,7 @@ def run_controller(args: argparse.Namespace) -> int:
                 try:
                     atomic_write_json(
                         status_file,
-                        controller_status_payload(state, detectors, modules, resource_sampler),
+                        controller_status_payload(state, detectors, modules, resource_sampler, fusion_runtime),
                     )
                 except OSError as exc:
                     eprint(f"WARN could not update controller status file: {exc}")
@@ -1027,6 +1105,10 @@ def run_controller(args: argparse.Namespace) -> int:
             detector.stop()
         for radar in radars:
             radar.stop()
+        if fusion_runtime is not None:
+            fusion_runtime.stop()
+        if fusion_debug_server is not None:
+            fusion_debug_server.stop()
         for module in modules.values():
             module.stop()
         if ble is not None:

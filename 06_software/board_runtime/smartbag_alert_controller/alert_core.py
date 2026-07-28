@@ -70,11 +70,30 @@ class AlertEvent:
     level: int
     source: str = "vision"
     score: float | None = None
-    track_id: int | None = None
+    track_id: int | str | None = None
     ts: float | None = None
     class_name: str | None = None
     distance_m: float | None = None
     timeout_s: float | None = None
+    radar_name: str | None = None
+    radar_target_id: int | None = None
+    radar_track_key: str | None = None
+    class_confidence: float | None = None
+    class_weight: float | None = None
+    class_source: str | None = None
+    lateral_distance_m: float | None = None
+    longitudinal_distance_m: float | None = None
+    vx_mps: float | None = None
+    vz_mps: float | None = None
+    speed_mps: float | None = None
+    closing_speed_mps: float | None = None
+    ttc_s: float | None = None
+    cpa_time_s: float | None = None
+    cpa_distance_m: float | None = None
+    association_state: str | None = None
+    association_score: float | None = None
+    clear_reason: str | None = None
+    event_kind: str = "alert"
 
 
 @dataclass(frozen=True)
@@ -176,17 +195,45 @@ def parse_alert_command(command: str) -> AlertCommand:
 
 def parse_vision_alert_jsonl(line: str) -> AlertEvent | None:
     data = json.loads(line)
-    if not isinstance(data, dict) or data.get("type") != "vision_alert":
+    if not isinstance(data, dict) or data.get("type") not in {"vision_alert", "fused_alert"}:
         return None
+    raw_track_id = data.get("track_id")
+    track_id: int | str | None
+    if raw_track_id is None:
+        track_id = None
+    else:
+        try:
+            track_id = int(raw_track_id)
+        except (TypeError, ValueError):
+            track_id = str(raw_track_id)
     return AlertEvent(
         side=normalize_side(str(data["side"])),
         level=normalize_level(data["level"]),
         source=str(data.get("source") or "vision"),
         score=float(data["score"]) if data.get("score") is not None else None,
-        track_id=int(data["track_id"]) if data.get("track_id") is not None else None,
+        track_id=track_id,
         ts=float(data["ts"]) if data.get("ts") is not None else None,
         class_name=str(data["class"]) if data.get("class") is not None else None,
         distance_m=float(data["distance_m"]) if data.get("distance_m") is not None else None,
+        radar_name=str(data["radar_name"]) if data.get("radar_name") is not None else None,
+        radar_target_id=int(data["radar_target_id"]) if data.get("radar_target_id") is not None else None,
+        radar_track_key=str(data["radar_track_key"]) if data.get("radar_track_key") is not None else None,
+        class_confidence=float(data["class_confidence"]) if data.get("class_confidence") is not None else None,
+        class_weight=float(data["class_weight"]) if data.get("class_weight") is not None else None,
+        class_source=str(data["class_source"]) if data.get("class_source") is not None else None,
+        lateral_distance_m=float(data["lateral_distance_m"]) if data.get("lateral_distance_m") is not None else None,
+        longitudinal_distance_m=float(data["longitudinal_distance_m"]) if data.get("longitudinal_distance_m") is not None else None,
+        vx_mps=float(data["vx_mps"]) if data.get("vx_mps") is not None else None,
+        vz_mps=float(data["vz_mps"]) if data.get("vz_mps") is not None else None,
+        speed_mps=float(data["speed_mps"]) if data.get("speed_mps") is not None else None,
+        closing_speed_mps=float(data["closing_speed_mps"]) if data.get("closing_speed_mps") is not None else None,
+        ttc_s=float(data["ttc_s"]) if data.get("ttc_s") is not None else None,
+        cpa_time_s=float(data["cpa_time_s"]) if data.get("cpa_time_s") is not None else None,
+        cpa_distance_m=float(data["cpa_distance_m"]) if data.get("cpa_distance_m") is not None else None,
+        association_state=str(data["association_state"]) if data.get("association_state") is not None else None,
+        association_score=float(data["association_score"]) if data.get("association_score") is not None else None,
+        clear_reason=str(data["clear_reason"]) if data.get("clear_reason") is not None else None,
+        event_kind=str(data.get("event_kind", "alert")),
     )
 
 

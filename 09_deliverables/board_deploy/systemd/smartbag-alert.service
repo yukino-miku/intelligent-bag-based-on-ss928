@@ -1,5 +1,5 @@
 [Unit]
-Description=SS928 SmartBag dual-camera alert and hardware controller
+Description=SS928 SmartBag radar-primary fusion and hardware controller
 After=smartbag-ws73.service bluetooth.service network.target smartbag-connectivity.service
 Wants=smartbag-ws73.service bluetooth.service network.target smartbag-connectivity.service
 Conflicts=smartbag-vision.service
