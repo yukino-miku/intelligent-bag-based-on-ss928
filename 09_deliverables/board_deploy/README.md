@@ -26,7 +26,8 @@ cd /path/to/intelligent-bag-based-on-ss928/09_deliverables/board_deploy
 sudo sh install-deps.sh                 # 只检查，不安装
 sudo sh install-deps.sh --install-system # 可选：安装 apt 中的系统包
 sudo sh install.sh /path/to/intelligent-bag-based-on-ss928
-sudo install -m 0644 /合法来源/vehicle-classifier.om /root/smartbag/models/vehicle-classifier.om
+sudo env SMARTBAG_MODEL_SOURCE=/合法来源/vehicle-detector.om \
+  sh install.sh /path/to/intelligent-bag-based-on-ss928
 ```
 
 首次安装可选硬件 profile；profile 只是对默认配置的递归覆盖，不包含 secret：
@@ -47,15 +48,24 @@ sudo env SMARTBAG_HARDWARE_PROFILE="$PWD/profiles/dual-usb-base.json" \
   "runtime_mode": "radar_primary_visual_classification",
   "snapshot_classifier": {
     "backend": "ss928_om",
-    "model": "/root/smartbag/models/vehicle-classifier.om",
+    "model": "/root/smartbag/models/vehicle-detector.om",
     "imgsz": 640,
     "inference_timeout_ms": 5000,
+    "target_switch_interval_s": 0.20,
+    "initial_warmup_frames": 2,
+    "switch_warmup_frames": 0,
+    "capture_timeout_ms": 1000,
+    "streamoff_timeout_ms": 1000,
     "left_device": "/dev/v4l/by-path/LEFT-video-index0",
     "right_device": "/dev/v4l/by-path/RIGHT-video-index0"
   },
   "fusion": {
     "left_calibration": "/etc/smartbag/fusion-left.json",
     "right_calibration": "/etc/smartbag/fusion-right.json",
+    "projection_half_width_px": 80,
+    "bbox_expand_ratio": 0.25,
+    "risk_window_s": 0.5,
+    "warning_sensitivity": 1.0,
     "debug_port": 8080
   },
   "radar": {"enabled": true, "config": "/etc/smartbag/mr20.json"}
@@ -74,7 +84,9 @@ sudo env SMARTBAG_HARDWARE_PROFILE="$PWD/profiles/dual-usb-base.json" \
 
 安装生成的 `fusion-left/right.json` 只是模板，不含实测内外参。必须分别填写相机内参/畸变、FOV、相机位姿、雷达位姿以及 `radar_to_camera_rotation/translation`。安装高度相近不能代替联合标定。
 
-融合模式默认按 640x480 请求每侧 UVC 快照，丢弃 2 帧预热后取最新 1 帧；当前 native OM runner 只接受固定 640x640 模型输入，`imgsz` 设为其他值会明确拒绝。`inference_timeout_ms` 到期后 Python 会重启 runner 并重试一次，仍失败则该帧标为 `MODEL_ERROR`，雷达继续 unknown 风险。摄像头描述符中的 30 FPS 不是持续性能保证；每侧实际快照频率和切换耗时必须从调试状态实测。
+融合模式默认按 640x480 请求每侧 UVC 快照。Linux 原生 V4L2 会预先打开两个 fd 并分配两套 mmap buffer，但任意时刻最多一路 STREAMON；首次丢弃 `initial_warmup_frames`，后续切换默认不丢帧。相邻侧开始时间目标为 0.20 秒，超时不排队而是立即切下一侧并记录 overrun。摄像头描述符中的 FPS 和 0.20 秒目标都不是持续性能保证，必须从状态接口实测。
+
+当前审计选中的 YOLO11n OM 与输出后处理兼容，但静态 AIPP 是 `RGB_PLANAR`，现有 runner 输入是 NV12，因此 manifest 会让 preflight 明确失败。先完成 runner 输入适配或重新转换并做 ACL 实板验证，再把 manifest 的兼容状态改为 true；不能仅因为 `.om` 存在就启动正式服务。
 
 ## 4. 部署前检查
 
@@ -105,7 +117,7 @@ sh logs.sh -f
 journalctl -u smartbag-alert.service -f
 ```
 
-`smartbag-alert.service` 在新模式中启动双 MR20 worker、一个交替快照分类器、关联/绑定、共享 RiskModel 和逐轨迹 stabilizer，不启动两条旧 detector 命令。视觉失败时保留雷达 unknown 风险；雷达轨迹消失会清除绑定和对应稳定状态。事件过期、level=0、SIGTERM、异常和 `ExecStopPost` safe-off 都会清振/灯。
+`smartbag-alert.service` 在新模式中启动双 MR20 worker、一个交替快照分类器、当前图片关联、共享 RiskModel 和每轨迹 0.5 秒中位数窗口，不启动两条旧 detector 命令。视觉失败或映射过期时保留雷达并使用 unknown；每张新图都会替换本侧全部车型映射，不使用长期绑定。事件过期、level=0、SIGTERM、异常和 `ExecStopPost` safe-off 都会清振/灯。
 
 `smartbag.target` 默认只必需 alert；旧 `smartbag-video.service` 不再默认启动，避免与融合调试 API 冲突。WS73、MT5710 connectivity 和 temperature 仍按条件启动。
 
@@ -116,13 +128,16 @@ curl http://127.0.0.1:8080/api/v1/fusion/status
 curl http://127.0.0.1:8080/api/v1/fusion/targets
 curl -o left.jpg http://127.0.0.1:8080/api/v1/fusion/left/snapshot.jpg
 curl -o right.jpg http://127.0.0.1:8080/api/v1/fusion/right/snapshot.jpg
+curl http://127.0.0.1:8080/api/v1/settings/runtime
+curl -X PATCH -H 'Content-Type: application/json' -d '{"risk":{"warning_sensitivity":1.2}}' http://127.0.0.1:8080/api/v1/settings/runtime
+curl 'http://127.0.0.1:8080/api/v1/alerts/history?limit=20&min_level=3'
 ```
 
-快照会显示 YOLO bbox、雷达投影列、radar target ID、绑定状态、association cost、x/z、vx/vz、TTC 和最终 haptic 等级，并标记 LIVE/CACHED/OFFLINE/MODEL_ERROR/SWITCH_TIMEOUT。接口是只读调试工具，不参与风险计算，也不提供连续 MJPEG。访问令牌可在 fusion 配置中设置；正式公网仍需 HTTPS、认证和防火墙。
+快照会显示 YOLO bbox、扩展框、雷达投影容差区间、重合段、radar target ID、matched/unknown/ambiguous、association cost、中位数和最终 haptic 等级。HTTP 还提供运行参数白名单 PATCH/reset 和三级/四级事件详情/图片；这些接口不参与风险计算，也不提供连续 MJPEG。访问令牌可在 fusion 配置中设置；正式公网仍需 HTTPS、认证和防火墙。
 
 ## 8. 微信小程序
 
-在微信开发者工具导入 `06_software/mobile/ssminiprogram`。BLE 告警历史会保存车辆类型/权重、雷达目标 ID、距离、速度、TTC、绑定状态、关联代价、风险分数和等级；`heartbeat` 只刷新当前状态，不进入历史。
+在微信开发者工具导入 `06_software/mobile/ssminiprogram`。“系统参数”页实时读写安装参数、关联范围、灵敏度和车型权重；“交通危险事件”页读取板端三级/四级事件并把同侧 JPEG 保存到手机本地。按 `event_id` 去重，离线时先存 BLE 元数据，之后可重试图片；CloudBase 上传失败不会影响本地记录或板端保存。
 
 现有“**双摄实时画面**”页面使用旧 `smartbag-video.service` 的连续画面 API，只适用于手动启动的 legacy gateway。新融合调试快照使用 `/api/v1/fusion/...`，默认不启动旧 gateway，也不会同时打开两个摄像头。手机设置通过 `wx.setStorageSync` 保存，不写死设备 IP。
 
@@ -132,15 +147,15 @@ curl -o right.jpg http://127.0.0.1:8080/api/v1/fusion/right/snapshot.jpg
 
 先查看 `/api/v1/fusion/status`，记录每侧 `capture_latency_ms`、`inference_latency_ms`、快照年龄、模型错误、雷达频率和 unknown 比例，再逐项调整：
 
-1. 将 `warmup_frames` 从 2 降到 1，并确认首帧不是旧图或黑帧。
-2. 适当增加 `snapshot_interval_ms`，降低相机切换和 NPU 调用频率；这不会降低雷达扫描频率。
+1. 将 `initial_warmup_frames` 从 2 降到 1，并确认首次快照不是旧图或黑帧。
+2. 若 `switch_interval_ms` 持续 overrun，适当增加 `target_switch_interval_s`；这不会降低雷达扫描频率。
 3. 保持 `capture_frames=1`，不要建立旧帧队列。
-4. 在真实车辆数据上调 `confidence`、关联水平门限和绑定确认次数，不以牺牲一一关联正确率换取表面命中率。
+4. 在真实车辆数据上调 `confidence`、投影区间、bbox 扩展和歧义间隔，不以强行匹配换取表面命中率。
 5. 若 OM 延迟异常，检查 runner stderr、模型 I/O 合约和 NPU 温度；不要自动退回两个 Torch 进程。
 
 2026-07-16 历史镜像只有约 952 MiB 内存且缺少视觉依赖；部署时必须重新检查当前镜像。PC 的 Ultralytics/BoT-SORT profile 仍在视觉 README 中，仅用于纯视觉回归，不是本模式性能参数。
 
-`vision/ss928_backend` 现在支持持久 runner：模型初始化一次，逐快照读取 NV12 并输出 detections JSON。Python 端已实现 BGR letterbox 到 NV12 桥接，但仓库没有合法且已验收的车辆 OM；必须在真实板端验证类别正确率、推理时延和长期稳定性。新模式不再把 detections 接入 BoT-SORT，而是与持续雷达轨迹关联。
+`vision/ss928_backend` 支持持久 runner：模型初始化一次，逐快照读取 NV12 并输出 detections JSON。仓库外本地已找到一个候选车辆 OM，但它是 RGB_PLANAR AIPP，不能直接喂给当前 NV12 runner；模型和 runner 合约统一前，状态仍是 BLOCKED。新模式不把 detections 接入 BoT-SORT，而是仅与持续雷达轨迹做当前图片的一一关联。
 
 ## 10. 停止和卸载
 

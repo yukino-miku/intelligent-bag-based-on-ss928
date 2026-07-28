@@ -9,12 +9,12 @@
 | `board_runtime/bmi270_backpack` | `/root/smartbag/imu` | controller 子进程，默认 no-BLE |
 | `board_runtime/imu_fall_detector` | `/root/smartbag/imu_fall_detector` | BMI 事件链调用，不映射为交通等级 |
 | `board_runtime/mr20_radar` | `/root/smartbag/mr20_radar` | Controller 内双 worker，输出每轮完整 RadarScan |
-| `board_runtime/radar_vision_fusion` | `/root/smartbag/radar_vision_fusion` | 轨迹、交替快照、投影、关联、绑定、共享风险、回放和调试 API |
+| `board_runtime/radar_vision_fusion` | `/root/smartbag/radar_vision_fusion` | MR20 组包/轨迹、原生 V4L2 交替快照、当前图关联、0.5 秒中位数风险、运行设置、事件历史、回放和调试 API |
 | `board_runtime/cloud_uploader` | `/root/smartbag/cloud_uploader` | BMI/GNSS 异步调用，失败不阻塞 |
 | `board_runtime/mt5710_connectivity` | `/root/smartbag/connectivity` | `smartbag-connectivity.service`，只管理 NCM |
 | `board_runtime/temperature` | `/root/smartbag/temperature` | `smartbag-temperature.service`，可选 |
 | audio assets | `/root/smartbag/audio` | 可选，默认关闭 |
-| 模型 | `/root/smartbag/models` | 用户单独提供，不进入 Git |
+| 模型 | `/root/smartbag/models/vehicle-detector.om` | 用户单独提供，不进入 Git；manifest/preflight 必须确认 runner 输入契约兼容 |
 | 双摄配置 | `/etc/smartbag/config.json` | 左右设备、profile、流、TM6605/灯、MR20、模块、超时和 BLE |
 | root-only 环境 | `/etc/smartbag/smartbag.env` | MT5710、WS73 路径、Cloud token、告警号码 |
 | 视觉标定 | `/etc/smartbag/calibration-left.json`、`calibration-right.json` | 旧纯视觉回归使用 |

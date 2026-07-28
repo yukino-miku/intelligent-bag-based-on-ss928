@@ -2,6 +2,16 @@
 
 ## 2026-07-28
 
+- 在 `agent/radar-primary-vision-class-fusion` 和 Draft PR #7 上继续开发，没有创建新分支或 PR；本轮只执行电脑端代码与离线验证，没有连接开发板。
+- 完成本地 PT/ONNX/OM、ignored/LFS、历史分支、备份和旧结果审计。选定 YOLO11n OM 候选 SHA256 `9e3c448ab7309428ea78cfdc509926404220fa74dd56c89e4995366f5f16af95`，但确认 RGB_PLANAR AIPP 与当前 NV12 runner 不兼容，正式部署仍待 runner/转换和 ACL 实板验证。
+- 完成原生 V4L2 双 fd/mmap 交替调度、MR20 扫描完整性、无融合混合队列、逐图原子车型映射、区间重合 Hungarian/歧义拒绝、500 ms 每轨迹中位数风险。
+- 完成运行参数白名单 HTTP、小程序系统参数页、三级/四级事件及同侧快照、手机本地历史/图片清理/离线重试和 CloudBase 非阻塞上传路径。
+- 新增/调整离线单元与集成测试；真实 0.20 秒切换、摄像头时延、OM 识别、雷达完整率、投影/多车关联、资源温度、30 分钟、systemd 和独立供电仍待实板。
+- 5.25 秒纯模拟调度得到相邻快照启动 p50/p95 约 200.56/201.24 ms、左/右约 2.38/2.49 FPS、最大并发 STREAMON=1；首次启动出现一次 437.40 ms 峰值和一次 overrun，不作为实板性能证据。
+- 本机通过 367 项 Python、12 个 Node 测试文件、4 个 NPU native C++ tests、1 个 C 兼容核心测试以及 compileall、37 个 JavaScript、33 个 JSON、21 个 Shell 和 `git diff --check` 检查。本轮未连接开发板，未执行上传、systemd、真实 OM、双 MR20、标定或 30 分钟实板验收。
+
+以下条目记录本分支早期方案和迭代过程；其中“车型持久绑定”和“新模式复用帧数 stabilizer”已被上面的逐图车型映射与 500 ms 中位数正式方案替代。
+
 - 重新 fetch `origin/agent/full-sanda-integration`，确认基线 HEAD 为 `c3ef9c012543cdc02c708449572e8645b98dcf48`，创建 `agent/radar-primary-vision-class-fusion`。
 - 审计 MR20、视觉 RiskModel、Controller、部署和集成测试，确认旧架构分别按 side 汇总雷达/视觉告警，缺少目标级关联，且旧 MR20 每轮只输出最高目标。
 - 实现完整 RadarScan、持久雷达轨迹和 generation；统一 x 向右、z 向后坐标，并把左右符号与安装 yaw 外置配置。
@@ -9,7 +19,6 @@
 - 将原 RiskModel 抽象为传感器无关输入并复用原多帧 stabilizer；车型 multiplier 仅在 RiskModel 内乘一次。
 - 新增融合 JSONL、回放、调试 API、部署标定模板和测试。硬件结果严格保留为待验证，不把本地模拟写成 SS928 实测。
 - 收尾修复跨侧绑定误清、关联硬门限、外参平移顺序、runner 超时重启和相机故障隔离；heartbeat 维持 watchdog 但不重复写小程序历史，preflight 按正式融合/旧视觉/雷达-only 模式分别检查资源。
-- 本机通过 335 项 Python、11 个 Node 测试文件、4 个 NPU native C++ tests、1 个 C 兼容核心测试以及 compileall/JSON/JS/Shell 检查。物理以太网断开且已知板 IP 无响应，未执行上传、systemd、真实 OM、双 MR20、标定或 30 分钟实板验收。
 
 ## 2026-07-26
 

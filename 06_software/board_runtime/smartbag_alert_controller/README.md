@@ -1,6 +1,6 @@
 # SmartBag Alert Controller
 
-板端统一控制器的正式候选模式是 `radar_primary_visual_classification`：双 MR20 持续输出目标运动，一个共享 YOLO/OM 实例交替识别左右快照车型，融合层复用原 RiskModel 和逐轨迹 stabilizer，再把每侧最高稳定 haptic 等级交给执行器。Controller 独占 `SS928-SmartBag` BLE NUS，同时路由 GNSS/IMU 命令。
+板端统一控制器的正式候选模式是 `radar_primary_visual_classification`：双 MR20 持续输出目标运动，一个共享 YOLO/OM 实例交替识别左右快照车型，融合层复用原 RiskModel，并按每条雷达轨迹的固定 0.5 秒风险中位数输出 haptic 等级。Controller 独占 `SS928-SmartBag` BLE NUS，同时路由 GNSS/IMU 命令。
 
 ## 雷达主导正式候选模式
 
@@ -26,14 +26,14 @@ python3 smartbag_alert_controller.py --dry-run --no-ble --skip-pinmux \
 
 ## 安全行为
 
-- 只接受 detector 多帧稳定后的 `haptic_level`，不使用 raw risk。
-- 融合模式同样逐雷达轨迹多帧确认；车型变化不能绕过 stabilizer。
+- `legacy_dual_vision` 只接受 detector 多帧稳定后的 `haptic_level`，不使用 raw risk。
+- 正式雷达主模式不使用旧帧数 stabilizer；它只接受每轨迹 0.5 秒中位数窗口的最终 haptic level，单个异常雷达样本不能直接驱动震动。
 - 未变化的定期保活事件标为 `heartbeat`：维持执行器超时状态，但小程序不重复写告警历史。
 - 固定侧子进程拒绝跨侧事件；一个 detector 退出只清本侧，另一侧保持运行。
 - level=0、事件超时、detector 退出、SIGINT/SIGTERM 和异常都会关闭对应 PWM。
 - 子进程只做有限次数、带退避的重启；错误 JSON 和过旧事件只记录并丢弃。
 - 启动和最终退出均清零四路 PWM；音频默认关闭并在独立线程播放。
-- BLE 保留旧字段，并可附带雷达 track、车型/权重、距离、速度、TTC/CPA、绑定状态和关联代价。
+- BLE 保留旧字段，并可附带 `event_id`、中位数/有效分数、参数版本、雷达 track、车型/权重、距离、速度、TTC/CPA、当前快照关联状态和关联代价。
 - `SYS STATUS` 返回左右等级、detector PID/重启数、模块、CPU、内存、温度和 `battery:null`；没有电池传感器时不伪造百分比。
 
 ## 无硬件协议测试

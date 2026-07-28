@@ -2,6 +2,14 @@
 
 ## 2026-07-28
 
+- 全量审计 Git、ignored/LFS、历史分支、父目录备份和旧实测产物，生成 `00_admin/local-model-inventory.md/.json`。选中 YOLO11n OM 候选并统一部署名 `vehicle-detector.om`；因 RGB_PLANAR AIPP 与当前 NV12 runner 不兼容，manifest/preflight 明确保持 BLOCKED。
+- 交替快照改为 Linux 原生 V4L2 持久 fd/mmap：两路预打开但最多一路 STREAMON，支持首次/切换预热、捕获/关流超时、单侧退避，以及 0.20 秒目标调度的 overrun、p50/p95/max 和每侧 FPS 统计。
+- 正式融合移除雷达/视觉混合 queue，改为锁保护的最新完整扫描、当前雷达轨迹、最新快照/检测/车型映射和风险窗口；视觉回调不阻塞雷达风险采样。
+- `VisualClassBindingManager` 退出正式路径。每张图片按水平区间重合、时间、中心距离和弱尺寸代价做 Hungarian 一一匹配，并原子替换本侧全部车型；未匹配、歧义或超时均为 unknown。
+- MR20 增加完整/不完整扫描组包与统计；零目标是合法完整扫描，不完整扫描保留已收目标但不会增加其他轨迹 miss 或触发删除。
+- 新正式模式以每轨迹固定 0.5 秒风险 score 中位数替换旧帧数 stabilizer，支持运行时 `warning_sensitivity`；旧 stabilizer 继续供 `legacy_dual_vision`。
+- 新增运行参数 GET/PATCH/reset API、小程序“系统参数”页、三级/四级事件 JSONL/同侧 JPEG、历史/详情/图片 API、小程序本地去重/图片保存/重试和 CloudBase 异步降级。
+- 扩展融合状态和调试快照，显示扫描完整率、窗口样本/中位数、车型映射、切换/YOLO/关联耗时，以及投影容差区间、bbox 扩展、重合段和 ambiguous。
 - 从 `agent/full-sanda-integration@c3ef9c012543cdc02c708449572e8645b98dcf48` 创建 `agent/radar-primary-vision-class-fusion`，实现 MR20 主导、视觉只提供车型的目标级融合架构。
 - MR20 worker 新增完整 `RadarScan`、有界队列和目标元数据；保留旧最高告警接口作为兼容，不再用于新正式模式。
 - 新增持久雷达轨迹、安装坐标变换、ID generation、时间同步投影、Hungarian 一一关联、车型确认/缓存/切换/解绑状态机和 JSONL 回放。
@@ -10,7 +18,7 @@
 - Controller 新增 `radar_primary_visual_classification`，该模式不会并行启动旧双视觉 detector 或旧简单雷达 evaluator；无视觉时以 unknown=1.0 继续雷达风险判断。
 - 扩展融合告警、BLE 可选字段、调试 API、左右标定模板、部署配置和 preflight；旧双 detector 视频网关退出默认 systemd target，但保留手动回归。
 - 修复跨侧绑定清理、严格水平关联门限和 `R * P + T` 外参顺序；增加 runner 超时重启、相机异常隔离、heartbeat 语义、扩展 BLE/小程序字段，以及按运行模式/backend 检查且 OM 模式不强制 PyTorch 的 preflight。
-- 本地通过 335 项 Python、11 个 Node 测试文件、4 个 NPU native C++ tests、1 个 C 兼容核心测试、32 个 JavaScript、29 个 JSON、21 个 Shell 和 compileall。真实双 MR20、合法车辆 OM、外参、30 分钟、自启动和脱机运行因板端网络不可达仍为 `BLOCKED`。
+- 本地通过 367 项 Python、12 个 Node 测试文件、4 个 NPU native C++ tests、1 个 C 兼容核心测试、37 个 JavaScript、33 个 JSON、21 个 Shell 和 compileall。5.25 秒纯模拟调度的相邻启动间隔 p50/p95 为 200.56/201.24 ms、左右约 2.38/2.49 FPS、最大并发流为 1；这不是实板性能。真实双 MR20、合法车辆 OM、外参、30 分钟、自启动和脱机运行仍为 `BLOCKED`。
 
 ## 2026-07-26
 
