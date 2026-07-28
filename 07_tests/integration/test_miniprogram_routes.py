@@ -34,11 +34,14 @@ class MiniProgramRouteTest(unittest.TestCase):
 
         self.assertIn("双摄实时画面", home)
         self.assertIn("pages/cameras/index", app["pages"])
+        self.assertIn("pages/system-settings/index", app["pages"])
+        self.assertIn("pages/traffic-alerts/index", app["pages"])
         self.assertNotIn("在线设备 1 台", home)
         self.assertNotIn("86%", home)
         monitor = (MINI / "pages" / "monitor" / "index.js").read_text(encoding="utf-8")
         self.assertIn("smartbagAlertHistory", monitor)
         self.assertIn("wx.removeStorageSync", monitor)
+        self.assertIn("syncTrafficAlert", monitor)
 
 
 if __name__ == "__main__":

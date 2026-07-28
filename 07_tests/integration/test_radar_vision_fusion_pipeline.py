@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -11,7 +12,7 @@ for path in (BOARD_RUNTIME, VISION):
     sys.path.insert(0, str(path))
 
 from mr20_radar.mr20_radar import MR20Target, RadarConfig, RadarScan, RiskConfig  # noqa: E402
-from radar_vision_fusion.fusion_runtime import RadarVisionFusionRuntime  # noqa: E402
+from radar_vision_fusion.fusion_runtime import FusionRuntimeSettings, RadarVisionFusionRuntime  # noqa: E402
 from radar_vision_fusion.models import ClassificationFrame, VehicleDetection  # noqa: E402
 from radar_vision_fusion.radar_camera_calibration import FusionCalibration  # noqa: E402
 
@@ -24,7 +25,7 @@ def config() -> RadarConfig:
     )
 
 
-def scan(count: int, timestamp: float, z_m: float, *, targets: int = 1) -> RadarScan:
+def scan(count: int, timestamp: float, z_m: float, *, targets: int = 1, complete: bool = True) -> RadarScan:
     items = tuple(
         MR20Target(
             target_id=index + 1,
@@ -36,7 +37,14 @@ def scan(count: int, timestamp: float, z_m: float, *, targets: int = 1) -> Radar
         )
         for index in range(targets)
     )
-    return RadarScan("left_rear", "left", count, timestamp, items)
+    return RadarScan(
+        "left_rear", "left", count, timestamp, items,
+        expected_target_count=targets,
+        received_target_count=targets,
+        unique_target_count=targets,
+        complete=complete,
+        completion_reason="target_count_reached" if complete else "scan_timeout",
+    )
 
 
 def visual_frame(frame_id: int, timestamp: float, class_name: str = "truck") -> ClassificationFrame:
@@ -50,6 +58,7 @@ def empty_visual_frame(frame_id: int, timestamp: float) -> ClassificationFrame:
 
 class RadarVisionFusionPipelineTest(unittest.TestCase):
     def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
         self.events = []
         radar = config()
         self.runtime = RadarVisionFusionRuntime(
@@ -57,75 +66,102 @@ class RadarVisionFusionPipelineTest(unittest.TestCase):
             RiskConfig(levels=((1, 8.0, 12.0, 1.0), (2, 5.0, 8.0, 2.0), (3, 3.0, 5.0, 3.0), (4, 1.5, 3.0, 4.0))),
             {"left": FusionCalibration(side="left", camera_horizontal_fov_deg=90.0, camera_mount_y_m=0.8)},
             self.events.append,
+            settings=FusionRuntimeSettings(
+                runtime_tuning_path=str(Path(self.temp.name) / "runtime.json"),
+                alert_history_root=str(Path(self.temp.name) / "alerts"),
+            ),
         )
 
-    def test_radar_risk_continues_with_unknown_class_when_camera_is_absent(self) -> None:
-        records = self.runtime.process_scan(scan(1, 1.0, 8.0))
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def test_no_internal_mixed_event_queue_exists(self) -> None:
+        self.assertFalse(hasattr(self.runtime, "_queue"))
+        self.assertFalse(hasattr(self.runtime, "_run"))
+
+    def test_radar_samples_continue_with_unknown_when_camera_is_absent(self) -> None:
+        self.assertEqual((), self.runtime.process_scan(scan(1, 1.01, 8.0)))
+        records = self.runtime.process_scan(scan(2, 1.51, 7.8))
         self.assertEqual(1, len(records))
         self.assertEqual("unknown", records[0].fused.class_name)
-        self.assertEqual("unknown", records[0].fused.class_source)
-        self.assertTrue(any(event.source == "radar_vision_fusion" for event in self.events))
+        self.assertEqual("median_500ms_window", records[0].stabilizer.reason)
 
-    def test_visual_class_binds_after_confirmation_and_is_cached_across_scan(self) -> None:
-        self.runtime.process_scan(scan(1, 1.0, 8.0))
-        self.runtime.process_classification(visual_frame(1, 1.0))
-        self.runtime.process_classification(visual_frame(2, 1.05))
-        records = self.runtime.process_scan(scan(2, 1.1, 7.8))
+    def test_each_visual_frame_atomically_replaces_the_whole_class_map(self) -> None:
+        self.runtime.process_scan(scan(1, 2.01, 8.0))
+        self.runtime.process_classification(visual_frame(1, 2.02))
+        first = self.runtime.latest_class_map("left")
+        self.assertIsNotNone(first)
+        assert first is not None
+        self.assertEqual("truck", next(iter(first.mapping.values())).class_name)
+
+        self.runtime.process_classification(empty_visual_frame(2, 2.04))
+        second = self.runtime.latest_class_map("left")
+        assert second is not None
+        self.assertEqual(2, second.frame_id)
+        self.assertEqual("unknown", next(iter(second.mapping.values())).class_name)
+
+    def test_single_visual_frame_is_immediately_used_without_binding_confirmation(self) -> None:
+        self.runtime.process_scan(scan(1, 3.01, 8.0))
+        self.runtime.process_classification(visual_frame(1, 3.02, "truck"))
+        self.runtime.process_scan(scan(2, 3.2, 7.9))
+        records = self.runtime.process_scan(scan(3, 3.51, 7.8))
         self.assertEqual("truck", records[0].fused.class_name)
-        self.assertIn(records[0].fused.class_source, {"vision_bound", "cached_binding"})
-        latest_left = next(event for event in reversed(self.events) if event.side == "left")
-        self.assertEqual(1.10, latest_left.class_weight)
+        self.assertEqual("vision_snapshot", records[0].fused.class_source)
 
-    def test_multiple_targets_keep_independent_track_keys(self) -> None:
-        records = self.runtime.process_scan(scan(1, 1.0, 7.0, targets=2))
-        self.assertEqual(2, len(records))
-        self.assertEqual(2, len({record.fused.track_key for record in records}))
+    def test_visual_mapping_expires_to_unknown_without_deleting_radar_track(self) -> None:
+        self.runtime.process_scan(scan(1, 4.01, 8.0))
+        self.runtime.process_classification(visual_frame(1, 4.02))
+        self.runtime.process_scan(scan(2, 4.51, 7.8))
+        self.runtime.process_scan(scan(3, 6.01, 7.5))
+        records = self.runtime.process_scan(scan(4, 6.51, 7.4))
+        self.assertTrue(records)
+        self.assertEqual("unknown", records[-1].fused.class_name)
+        self.assertEqual(1, len(self.runtime.track_manager.active_tracks("left")))
 
-    def test_single_visual_detection_never_binds_multiple_radar_targets(self) -> None:
-        self.runtime.process_scan(scan(1, 1.0, 7.0, targets=2))
-        result = self.runtime.process_classification(visual_frame(1, 1.02))
-        self.assertEqual(1, len(result.matches))
+    def test_incomplete_scan_updates_seen_target_without_pruning_missing_track(self) -> None:
+        self.runtime.process_scan(scan(1, 7.01, 7.0, targets=2))
+        incomplete = scan(2, 7.21, 6.8, targets=1, complete=False)
+        for _index in range(5):
+            self.runtime.process_scan(incomplete)
+        self.assertEqual(2, len(self.runtime.track_manager.active_tracks("left")))
 
-    def test_yolo_no_target_keeps_radar_unknown_risk_active(self) -> None:
-        self.runtime.process_scan(scan(1, 1.0, 7.0))
-        self.runtime.process_classification(empty_visual_frame(1, 1.02))
-        records = self.runtime.process_scan(scan(2, 1.1, 6.8))
-        self.assertEqual("unknown", records[0].fused.class_name)
-        self.assertTrue(any(event.source == "radar_vision_fusion" for event in self.events))
+    def test_status_reports_current_and_latest_scan_target_counts(self) -> None:
+        self.runtime.process_scan(scan(1, 7.51, 7.0, targets=2))
+        status = self.runtime.status()
+        radar = status["radars"]["left_rear"]
+        self.assertEqual(2, radar["current_target_count"])
+        self.assertEqual(2, radar["latest_scan_target_count"])
+        self.assertTrue(radar["latest_scan_complete"])
+        self.assertEqual("target_count_reached", radar["latest_scan_completion_reason"])
 
-    def test_visual_binding_expires_without_clearing_radar_target(self) -> None:
-        self.runtime.process_scan(scan(1, 1.0, 8.0))
-        self.runtime.process_classification(visual_frame(1, 1.0))
-        self.runtime.process_classification(visual_frame(2, 1.05))
-        bound = self.runtime.process_scan(scan(2, 1.1, 7.8))
-        self.assertEqual("truck", bound[0].fused.class_name)
-        expired = bound
-        for count, timestamp in enumerate((1.6, 2.2, 2.8, 3.4, 4.0, 4.2), start=3):
-            expired = self.runtime.process_scan(scan(count, timestamp, 7.8 - count * 0.05))
-        self.assertEqual("unknown", expired[0].fused.class_name)
-        self.assertEqual(1, len(expired))
-
-    def test_unchanged_rate_limited_event_is_marked_heartbeat(self) -> None:
-        empty = lambda count, timestamp: RadarScan("left_rear", "left", count, timestamp, ())
-        self.runtime.process_scan(empty(1, 1.0))
-        self.runtime.process_scan(empty(2, 1.3))
-        left_events = [event for event in self.events if event.side == "left"]
-        self.assertEqual("clear", left_events[0].event_kind)
-        self.assertEqual("heartbeat", left_events[-1].event_kind)
-
-    def test_same_level_targets_are_ranked_by_score_not_list_order(self) -> None:
-        records = self.runtime.process_scan(scan(1, 1.0, 4.0, targets=2))
-        selected = next(event for event in reversed(self.events) if event.side == "left")
-        expected = sorted(records, key=lambda item: (-item.stable.score, item.fused.distance_m))[0]
-        self.assertEqual(expected.fused.radar_target_id, selected.radar_target_id)
-
-    def test_repeated_empty_scans_clear_side_alert(self) -> None:
-        self.runtime.process_scan(scan(1, 1.0, 5.0))
-        empty = lambda count, timestamp: RadarScan("left_rear", "left", count, timestamp, ())
-        self.runtime.process_scan(empty(2, 1.1))
-        self.runtime.process_scan(empty(3, 1.2))
-        self.runtime.process_scan(empty(4, 1.3))
+    def test_complete_empty_window_clears_side(self) -> None:
+        self.runtime.process_scan(scan(1, 8.01, 5.0))
+        self.runtime.process_scan(scan(2, 8.51, 4.8))
+        empty = lambda count, timestamp: scan(count, timestamp, 0.0, targets=0)
+        self.runtime.process_scan(empty(3, 9.01))
+        self.runtime.process_scan(empty(4, 9.51))
         self.assertTrue(any(event.side == "left" and event.level == 0 for event in self.events))
+
+    def test_runtime_sensitivity_patch_applies_and_persists(self) -> None:
+        applied = self.runtime.patch_runtime_settings({"risk": {"warning_sensitivity": 1.4}})
+        self.assertEqual(1.4, applied["risk"]["warning_sensitivity"])
+        self.assertEqual(1.4, self.runtime.risk_windows.warning_sensitivity)
+        self.assertTrue((Path(self.temp.name) / "runtime.json").is_file())
+        with self.assertRaises(ValueError):
+            self.runtime.patch_runtime_settings({"risk": {"warning_sensitivity": 9.0}})
+        self.assertEqual(1.4, self.runtime.risk_windows.warning_sensitivity)
+
+    def test_runtime_radar_mount_patch_reprojects_active_track_and_clears_partial_window(self) -> None:
+        self.runtime.process_scan(scan(1, 10.01, 8.0))
+        track = self.runtime.track_manager.active_tracks("left")[0]
+        before_x = track.x_m
+        self.assertEqual(1, sum(self.runtime.risk_windows.sample_counts().values()))
+        self.runtime.patch_runtime_settings({"left": {"radar_mount_x_m": 1.0, "radar_yaw_deg": 10.0}})
+        updated = self.runtime.track_manager.get(track.track_key)
+        self.assertIsNotNone(updated)
+        self.assertNotAlmostEqual(before_x, updated.x_m)
+        self.assertEqual({}, self.runtime.risk_windows.sample_counts())
+        self.assertEqual(1.0, self.runtime.radar_configs["left_rear"].mount_x_m)
 
 
 if __name__ == "__main__":
