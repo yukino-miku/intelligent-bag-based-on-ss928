@@ -50,6 +50,10 @@ class ClassificationFrame:
     capture_latency_ms: float
     inference_latency_ms: float
     image: object | None = field(default=None, repr=False, compare=False)
+    streamon_latency_ms: float = 0.0
+    first_frame_latency_ms: float = 0.0
+    streamoff_latency_ms: float = 0.0
+    association_latency_ms: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -77,6 +81,36 @@ class AssociationMatch:
     projected_u_px: float
     horizontal_error_px: float
     time_delta_s: float
+    overlap_width_px: float = 0.0
+    horizontal_overlap_cost: float = 0.0
+    center_distance_cost: float = 0.0
+    time_delta_cost: float = 0.0
+    weak_size_cost: float = 0.0
+    radar_region: tuple[float, float] = (0.0, 0.0)
+    detection_region: tuple[float, float] = (0.0, 0.0)
+
+
+@dataclass(frozen=True)
+class VisualClassEntry:
+    class_name: str = "unknown"
+    confidence: float = 0.0
+    detection_id: int | None = None
+    association_score: float | None = None
+    association_state: str = "unknown"
+
+
+@dataclass(frozen=True)
+class LatestVisualClassMap:
+    side: str
+    frame_id: int
+    captured_mono_s: float
+    mapping: dict[str, VisualClassEntry]
+
+    def resolve(self, track_key: str, now_s: float, max_age_s: float) -> tuple[VisualClassEntry, float]:
+        age_s = max(0.0, float(now_s) - self.captured_mono_s)
+        if age_s > max(0.0, max_age_s):
+            return VisualClassEntry(association_state="stale"), age_s
+        return self.mapping.get(track_key, VisualClassEntry()), age_s
 
 
 @dataclass(frozen=True)
@@ -101,3 +135,4 @@ class FusedRadarTarget:
     association_score: float | None
     projected_u_px: float | None
     timestamp: float
+    detection_id: int | None = None
