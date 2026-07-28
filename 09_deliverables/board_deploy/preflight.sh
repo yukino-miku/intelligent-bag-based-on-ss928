@@ -85,6 +85,30 @@ if [ "$RUNTIME_MODE" = "radar_primary_visual_classification" ]; then
         check_path "$path"
     done
     check_path "$OM_RUNNER"
+    MODEL_MANIFEST=/root/smartbag/models/vehicle-detector.manifest.json
+    check_path "$MODEL_MANIFEST"
+    if [ -f "$MODEL" ] && [ -f "$MODEL_MANIFEST" ]; then
+        if python3 - "$MODEL" "$MODEL_MANIFEST" <<'PY'
+import hashlib
+import json
+import sys
+
+model_path, manifest_path = sys.argv[1:]
+manifest = json.load(open(manifest_path, encoding="utf-8"))
+expected = str(manifest.get("sha256", "")).lower()
+actual = hashlib.sha256(open(model_path, "rb").read()).hexdigest()
+if not expected or actual != expected:
+    raise SystemExit(f"model SHA256 mismatch: expected={expected or 'missing'} actual={actual}")
+if manifest.get("current_runner_compatible") is not True:
+    raise SystemExit("model manifest blocks deployment: current SS928 runner input contract is incompatible")
+print(f"OK   vehicle detector SHA256 {actual}")
+PY
+        then
+            :
+        else
+            fail=1
+        fi
+    fi
     check_path "$LEFT_FUSION_CALIBRATION"
     check_path "$RIGHT_FUSION_CALIBRATION"
 elif [ "$RUNTIME_MODE" = "legacy_dual_vision" ]; then

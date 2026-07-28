@@ -1,0 +1,17 @@
+{
+  "deployment_name": "vehicle-detector.om",
+  "candidate_source": "08_media/models/ss928_yolo11n/yolo11n_ss928.om",
+  "sha256": "9e3c448ab7309428ea78cfdc509926404220fa74dd56c89e4995366f5f16af95",
+  "size_bytes": 3426459,
+  "model_family": "Ultralytics YOLO11n detect, COCO 80 classes",
+  "target_classes": ["bicycle", "motorcycle", "car", "truck", "bus"],
+  "network_input": "FP32 1x3x640x640",
+  "aipp_input": "RGB_PLANAR static AIPP, scale 1/255",
+  "output": "FP32 1x84x8400",
+  "atc_compile": "PASS",
+  "current_runner_contract": "NV12/YUV420SP UINT8 [1,960,640,1] -> FP32 [1,84,8400]",
+  "current_runner_compatible": false,
+  "board_acl_validation": "PENDING",
+  "known_image_parity": "PENDING",
+  "direct_deployment": false
+}

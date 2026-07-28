@@ -13,7 +13,8 @@ DEST=/root/smartbag
 
 install -d "$DEST/vision" "$DEST/controller" "$DEST/gnss" "$DEST/imu" "$DEST/audio" "$DEST/models"
 install -d "$DEST/cloud_uploader" "$DEST/connectivity" "$DEST/mr20_radar" "$DEST/radar_vision_fusion" "$DEST/temperature"
-install -d /etc/smartbag /run/smartbag /var/lib/smartbag/tracks /var/lib/smartbag/calibration /var/log/smartbag
+install -d /etc/smartbag /run/smartbag /var/lib/smartbag/tracks /var/lib/smartbag/calibration
+install -d /var/lib/smartbag/alarm-events/images /var/log/smartbag /var/log/smartbag/fusion
 
 cp -a "$REPO_ROOT/06_software/vision_obstacle_tracker/." "$DEST/vision/"
 cp -a "$REPO_ROOT/06_software/board_runtime/smartbag_alert_controller/." "$DEST/controller/"
@@ -36,6 +37,19 @@ find "$DEST" -type d -name __pycache__ -prune -exec rm -rf {} +
 find "$DEST" -type f \( -name '*.pyc' -o -name 'risk_log*.csv' \) -delete
 find "$DEST/vision" -type d \( -name build -o -name dist -o -name dist_onefile -o -name third_party -o -name '*_openvino_model' -o -name .venv \) -prune -exec rm -rf {} +
 find "$DEST/vision" -type f \( -name 'yolo*.pt' -o -name 'yolo*.onnx' -o -name '*.om' \) -delete
+
+MODEL_DEST="$DEST/models/vehicle-detector.om"
+MODEL_SOURCE=${SMARTBAG_MODEL_SOURCE:-}
+if [ -n "$MODEL_SOURCE" ]; then
+    [ -f "$MODEL_SOURCE" ] || { echo "model source does not exist: $MODEL_SOURCE" >&2; exit 1; }
+    install -m 0644 "$MODEL_SOURCE" "$MODEL_DEST"
+    install -m 0644 "$SCRIPT_DIR/models/vehicle-detector.manifest.json" "$DEST/models/vehicle-detector.manifest.json"
+    echo "Installed explicit model source $MODEL_SOURCE -> $MODEL_DEST"
+elif [ -f "$MODEL_DEST" ]; then
+    echo "Keeping existing formal model: $MODEL_DEST"
+else
+    echo "WARN no vehicle model installed; set SMARTBAG_MODEL_SOURCE to an accepted .om file" >&2
+fi
 
 if [ ! -f /etc/smartbag/config.json ]; then
     cp "$SCRIPT_DIR/config.example.json" /etc/smartbag/config.json
@@ -60,6 +74,7 @@ systemctl daemon-reload
 systemctl disable smartbag-video.service 2>/dev/null || true
 systemctl enable smartbag.target
 
-echo "Installed under $DEST. Place the accepted OM model at $DEST/models/vehicle-classifier.om before starting."
+echo "Installed under $DEST. Formal OM path: $DEST/models/vehicle-detector.om."
+echo "The bundled candidate manifest currently blocks preflight until the runner input contract and board ACL output are validated."
 echo "Review /etc/smartbag/config.json, /etc/smartbag/smartbag.env and all visual/fusion calibration files before starting."
 echo "Then run: $SCRIPT_DIR/check-runtime-deps.sh && $SCRIPT_DIR/preflight.sh && systemctl start smartbag.target"
