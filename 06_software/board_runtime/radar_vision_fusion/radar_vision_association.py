@@ -16,15 +16,16 @@ except ImportError:
 
 @dataclass(frozen=True)
 class AssociationConfig:
-    max_time_delta_s: float = 0.20
-    max_horizontal_error_px: float = 160.0
-    max_horizontal_error_ratio: float = 0.15
+    projection_half_width_px: float = 80.0
+    projection_half_width_ratio: float = 0.04
+    bbox_expand_ratio: float = 0.25
+    association_max_time_delta_s: float = 0.20
+    max_center_distance_px: float = 180.0
     max_association_cost: float = 1.0
-    bbox_horizontal_margin_ratio: float = 0.25
-    weight_horizontal: float = 0.58
-    weight_time: float = 0.14
-    weight_history: float = 0.14
-    weight_motion: float = 0.09
+    ambiguity_cost_gap: float = 0.05
+    weight_overlap: float = 0.45
+    weight_center: float = 0.30
+    weight_time: float = 0.20
     weight_size: float = 0.05
 
 
@@ -34,12 +35,12 @@ class AssociationResult:
     projections: tuple[ProjectedRadarTarget, ...]
     unmatched_track_keys: tuple[str, ...]
     unmatched_detection_ids: tuple[int, ...]
+    ambiguous_track_keys: tuple[str, ...] = ()
 
 
 class RadarVisionAssociation:
     def __init__(self, config: AssociationConfig | None = None) -> None:
         self.config = config or AssociationConfig()
-        self._last_detection_u: dict[str, float] = {}
 
     def associate(
         self,
@@ -48,7 +49,9 @@ class RadarVisionAssociation:
         calibration: FusionCalibration,
         bound_classes: Mapping[str, str] | None = None,
     ) -> AssociationResult:
-        bound_classes = bound_classes or {}
+        # Kept only for source compatibility. Formal association never uses
+        # historical classes or previous visual positions.
+        del bound_classes
         side_tracks = [track for track in tracks if track.active and track.side == frame.side]
         projections = [
             project_radar_track(
@@ -62,7 +65,7 @@ class RadarVisionAssociation:
         ]
         eligible: list[tuple[RadarTrack, ProjectedRadarTarget]] = []
         for track, projection in zip(side_tracks, projections):
-            if abs(projection.time_delta_s) > self.config.max_time_delta_s:
+            if abs(projection.time_delta_s) > self.config.association_max_time_delta_s:
                 continue
             if not projection.projected_in_frame or projection.projected_u_px is None:
                 continue
@@ -79,36 +82,60 @@ class RadarVisionAssociation:
 
         invalid_cost = self.config.max_association_cost + 1000.0
         costs: list[list[float]] = []
-        details: dict[tuple[int, int], tuple[float, float]] = {}
+        details: dict[
+            tuple[int, int],
+            tuple[float, float, float, float, float, float, tuple[float, float], tuple[float, float]],
+        ] = {}
         for track_index, (track, projection) in enumerate(eligible):
             row: list[float] = []
             assert projection.projected_u_px is not None
             for detection_index, detection in enumerate(detections):
                 horizontal_error = abs(projection.projected_u_px - detection.bbox_center_x)
                 bbox_width = max(1.0, detection.bbox_xyxy[2] - detection.bbox_xyxy[0])
-                margin_px = bbox_width * self.config.bbox_horizontal_margin_ratio
-                inside_expanded_box = (
-                    detection.bbox_xyxy[0] - margin_px
-                    <= projection.projected_u_px
-                    <= detection.bbox_xyxy[2] + margin_px
+                radar_half_width = (
+                    self.config.projection_half_width_px
+                    + frame.image_width * self.config.projection_half_width_ratio
                 )
-                horizontal_limit = min(
-                    self.config.max_horizontal_error_px,
-                    frame.image_width * self.config.max_horizontal_error_ratio,
+                radar_region = (
+                    projection.projected_u_px - radar_half_width,
+                    projection.projected_u_px + radar_half_width,
                 )
-                if not inside_expanded_box and horizontal_error > horizontal_limit:
+                detection_margin = bbox_width * self.config.bbox_expand_ratio
+                detection_region = (
+                    detection.bbox_xyxy[0] - detection_margin,
+                    detection.bbox_xyxy[2] + detection_margin,
+                )
+                overlap_width = _interval_overlap_width(radar_region, detection_region)
+                if overlap_width <= 0.0 or horizontal_error > self.config.max_center_distance_px:
                     row.append(invalid_cost)
                     continue
-                cost = self._cost(
+                cost, overlap_cost, center_cost, time_cost, size_cost = self._cost(
                     track,
                     projection,
                     detection,
-                    frame.image_width,
-                    bound_classes.get(track.track_key),
+                    overlap_width,
+                    radar_region,
+                    detection_region,
                 )
                 row.append(cost)
-                details[(track_index, detection_index)] = (horizontal_error, projection.time_delta_s)
+                details[(track_index, detection_index)] = (
+                    horizontal_error,
+                    overlap_width,
+                    overlap_cost,
+                    center_cost,
+                    time_cost,
+                    size_cost,
+                    radar_region,
+                    detection_region,
+                )
             costs.append(row)
+
+        ambiguous_indices: set[int] = set()
+        for track_index, row in enumerate(costs):
+            valid = sorted(value for value in row if value <= self.config.max_association_cost)
+            if len(valid) >= 2 and valid[1] - valid[0] < self.config.ambiguity_cost_gap:
+                ambiguous_indices.add(track_index)
+                costs[track_index] = [invalid_cost] * len(row)
 
         pairs = _hungarian_square(costs, unmatched_cost=self.config.max_association_cost)
         matches: list[AssociationMatch] = []
@@ -122,7 +149,16 @@ class RadarVisionAssociation:
                 continue
             track, projection = eligible[track_index]
             detection = detections[detection_index]
-            horizontal_error, time_delta = details[(track_index, detection_index)]
+            (
+                horizontal_error,
+                overlap_width,
+                overlap_cost,
+                center_cost,
+                time_cost,
+                size_cost,
+                radar_region,
+                detection_region,
+            ) = details[(track_index, detection_index)]
             assert projection.projected_u_px is not None
             matches.append(
                 AssociationMatch(
@@ -134,48 +170,66 @@ class RadarVisionAssociation:
                     association_score=cost,
                     projected_u_px=projection.projected_u_px,
                     horizontal_error_px=horizontal_error,
-                    time_delta_s=time_delta,
+                    time_delta_s=projection.time_delta_s,
+                    overlap_width_px=overlap_width,
+                    horizontal_overlap_cost=overlap_cost,
+                    center_distance_cost=center_cost,
+                    time_delta_cost=time_cost,
+                    weak_size_cost=size_cost,
+                    radar_region=radar_region,
+                    detection_region=detection_region,
                 )
             )
             matched_tracks.add(track.track_key)
             matched_detections.add(detection.detection_id)
-            self._last_detection_u[track.track_key] = detection.bbox_center_x
 
         return AssociationResult(
             matches=tuple(matches),
             projections=tuple(projections),
             unmatched_track_keys=tuple(track.track_key for track in side_tracks if track.track_key not in matched_tracks),
             unmatched_detection_ids=tuple(item.detection_id for item in detections if item.detection_id not in matched_detections),
+            ambiguous_track_keys=tuple(eligible[index][0].track_key for index in sorted(ambiguous_indices)),
         )
 
     def forget(self, track_keys: Sequence[str]) -> None:
-        for track_key in track_keys:
-            self._last_detection_u.pop(track_key, None)
+        del track_keys
 
     def _cost(
         self,
         track: RadarTrack,
         projection: ProjectedRadarTarget,
         detection: VehicleDetection,
-        image_width: int,
-        bound_class: str | None,
-    ) -> float:
+        overlap_width: float,
+        radar_region: tuple[float, float],
+        detection_region: tuple[float, float],
+    ) -> tuple[float, float, float, float, float]:
         assert projection.projected_u_px is not None
-        horizontal = abs(projection.projected_u_px - detection.bbox_center_x) / max(1.0, image_width)
-        time_cost = abs(projection.time_delta_s) / max(self.config.max_time_delta_s, 1e-6)
-        history_cost = 0.0 if not bound_class or bound_class == detection.class_name else 1.0
-        previous_u = self._last_detection_u.get(track.track_key)
-        motion_cost = 0.0 if previous_u is None else min(1.0, abs(previous_u - detection.bbox_center_x) / max(1.0, image_width))
-        bbox_width_ratio = max(0.0, detection.bbox_xyxy[2] - detection.bbox_xyxy[0]) / max(1.0, image_width)
-        expected_width_ratio = min(0.8, max(0.02, 0.7 / max(track.distance_m, 0.5)))
-        size_cost = min(1.0, abs(bbox_width_ratio - expected_width_ratio) / max(expected_width_ratio, 0.02))
-        return (
-            self.config.weight_horizontal * horizontal
+        radar_width = max(1.0, radar_region[1] - radar_region[0])
+        detection_width = max(1.0, detection_region[1] - detection_region[0])
+        overlap_cost = 1.0 - min(1.0, overlap_width / min(radar_width, detection_width))
+        center_cost = min(
+            1.0,
+            abs(projection.projected_u_px - detection.bbox_center_x)
+            / max(self.config.max_center_distance_px, 1.0),
+        )
+        time_cost = min(
+            1.0,
+            abs(projection.time_delta_s) / max(self.config.association_max_time_delta_s, 1e-6),
+        )
+        bbox_width = max(1.0, detection.bbox_xyxy[2] - detection.bbox_xyxy[0])
+        expected_width_px = max(8.0, 360.0 / max(track.distance_m, 0.5))
+        size_cost = min(1.0, abs(bbox_width - expected_width_px) / expected_width_px)
+        total = (
+            self.config.weight_overlap * overlap_cost
+            + self.config.weight_center * center_cost
             + self.config.weight_time * time_cost
-            + self.config.weight_history * history_cost
-            + self.config.weight_motion * motion_cost
             + self.config.weight_size * size_cost
         )
+        return total, overlap_cost, center_cost, time_cost, size_cost
+
+
+def _interval_overlap_width(left: tuple[float, float], right: tuple[float, float]) -> float:
+    return max(0.0, min(left[1], right[1]) - max(left[0], right[0]))
 
 
 def _hungarian_square(costs: Sequence[Sequence[float]], unmatched_cost: float) -> tuple[tuple[int, int], ...]:

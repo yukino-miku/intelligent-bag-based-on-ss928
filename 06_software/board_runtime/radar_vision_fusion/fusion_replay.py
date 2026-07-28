@@ -43,6 +43,15 @@ def load_replay_records(root: str | Path) -> tuple[tuple[float, str, object], ..
             measurement_count=int(payload["measurement_count"]),
             captured_mono_s=float(payload["captured_mono_s"]),
             targets=tuple(MR20Target(**item) for item in payload.get("targets", [])),
+            expected_target_count=int(payload.get("expected_target_count", len(payload.get("targets", [])))),
+            received_target_count=int(payload.get("received_target_count", len(payload.get("targets", [])))),
+            unique_target_count=int(payload.get("unique_target_count", len(payload.get("targets", [])))),
+            complete=bool(payload.get("complete", True)),
+            completion_reason=str(payload.get("completion_reason", "replay")),
+            missing_target_count=int(payload.get("missing_target_count", 0)),
+            duplicate_target_count=int(payload.get("duplicate_target_count", 0)),
+            measurement_sequence_gap=int(payload.get("measurement_sequence_gap", 0)),
+            started_mono_s=float(payload.get("started_mono_s", payload["captured_mono_s"])),
         )
         records.append((scan.captured_mono_s, "scan", scan))
     for payload in _read_jsonl(root / "classification_frames.jsonl"):
@@ -70,6 +79,10 @@ def load_replay_records(root: str | Path) -> tuple[tuple[float, str, object], ..
             camera_state=str(payload.get("camera_state", "REPLAY")),
             capture_latency_ms=float(payload.get("capture_latency_ms", 0.0)),
             inference_latency_ms=float(payload.get("inference_latency_ms", 0.0)),
+            streamon_latency_ms=float(payload.get("streamon_latency_ms", 0.0)),
+            first_frame_latency_ms=float(payload.get("first_frame_latency_ms", 0.0)),
+            streamoff_latency_ms=float(payload.get("streamoff_latency_ms", 0.0)),
+            association_latency_ms=float(payload.get("association_latency_ms", 0.0)),
         )
         records.append((frame.captured_mono_s, "classification", frame))
     return tuple(records)

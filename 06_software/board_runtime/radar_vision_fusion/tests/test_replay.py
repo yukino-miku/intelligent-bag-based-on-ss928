@@ -39,7 +39,10 @@ def radar_config() -> RadarConfig:
 
 def scan(count: int, timestamp: float, distance_m: float) -> RadarScan:
     target = MR20Target(7, distance_m, 0.0, -2.0, 0.0, "oncoming")
-    return RadarScan("left_rear", "left", count, timestamp, (target,))
+    return RadarScan(
+        "left_rear", "left", count, timestamp, (target,),
+        expected_target_count=1, received_target_count=1, unique_target_count=1,
+    )
 
 
 def classification(frame_id: int, timestamp: float) -> ClassificationFrame:
@@ -64,27 +67,28 @@ class FusionReplayTest(unittest.TestCase):
             source.process_scan(scan(1, 1.0, 8.0))
             source.process_classification(classification(1, 1.02))
             source.process_classification(classification(2, 1.06))
-            source.process_scan(scan(2, 1.1, 7.8))
+            source.process_scan(scan(2, 1.1, 7.9))
+            source.process_scan(scan(3, 1.51, 7.8))
 
             expected_streams = {
                 "radar_scans",
                 "classification_frames",
                 "yolo_detections",
                 "association_events",
-                "binding_events",
+                "visual_class_map",
                 "fused_targets",
                 "risk_events",
             }
             self.assertTrue(all((Path(temp_dir) / f"{name}.jsonl").is_file() for name in expected_streams))
 
             records = load_replay_records(temp_dir)
-            self.assertEqual(4, len(records))
+            self.assertEqual(5, len(records))
             replayed = runtime()
             FusionReplay(replayed).replay(records)
             latest = replayed.latest_risks()
             self.assertEqual(1, len(latest))
             self.assertEqual("car", latest[0].fused.class_name)
-            self.assertEqual("vision_bound", latest[0].fused.class_source)
+            self.assertEqual("vision_snapshot", latest[0].fused.class_source)
 
 
 if __name__ == "__main__":

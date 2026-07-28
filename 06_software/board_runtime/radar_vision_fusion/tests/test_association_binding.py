@@ -36,7 +36,14 @@ def frame(frame_id: int, side: str, *detections: VehicleDetection, timestamp: fl
 class AssociationTest(unittest.TestCase):
     def setUp(self) -> None:
         self.calibration = FusionCalibration(side="left", camera_horizontal_fov_deg=90.0, camera_mount_y_m=0.8)
-        self.association = RadarVisionAssociation(AssociationConfig(max_horizontal_error_px=120, max_association_cost=1.0))
+        self.association = RadarVisionAssociation(
+            AssociationConfig(
+                projection_half_width_px=80,
+                projection_half_width_ratio=0.0,
+                max_center_distance_px=120,
+                max_association_cost=1.0,
+            )
+        )
 
     def test_two_tracks_match_one_to_one_when_bbox_order_is_reversed(self) -> None:
         tracks = [track("left:1", "left", -1.0, 5.0), track("left:2", "left", 1.0, 5.0)]
@@ -61,9 +68,14 @@ class AssociationTest(unittest.TestCase):
         self.assertEqual(1, len(result.matches))
         self.assertEqual(1, len({item.detection_id for item in result.matches}))
 
-    def test_horizontal_ratio_gate_is_a_hard_limit(self) -> None:
+    def test_horizontal_interval_overlap_is_a_hard_gate(self) -> None:
         strict = RadarVisionAssociation(
-            AssociationConfig(max_horizontal_error_px=160, max_horizontal_error_ratio=0.15)
+            AssociationConfig(
+                projection_half_width_px=20,
+                projection_half_width_ratio=0.0,
+                bbox_expand_ratio=0.0,
+                max_center_distance_px=300,
+            )
         )
         result = strict.associate(
             frame(1, "left", detection(1, "car", 430)),
@@ -71,6 +83,23 @@ class AssociationTest(unittest.TestCase):
             self.calibration,
         )
         self.assertEqual((), result.matches)
+
+    def test_overlapping_candidates_with_near_equal_cost_are_ambiguous(self) -> None:
+        ambiguous = RadarVisionAssociation(
+            AssociationConfig(
+                projection_half_width_px=100,
+                projection_half_width_ratio=0.0,
+                ambiguity_cost_gap=0.20,
+            )
+        )
+        target = track("left:1", "left", 0.0, 5.0)
+        result = ambiguous.associate(
+            frame(1, "left", detection(1, "car", 300), detection(2, "truck", 340)),
+            [target],
+            self.calibration,
+        )
+        self.assertEqual((), result.matches)
+        self.assertEqual((target.track_key,), result.ambiguous_track_keys)
 
     def test_explicit_extrinsic_uses_rotation_then_translation(self) -> None:
         calibration = FusionCalibration(
