@@ -572,6 +572,7 @@ def alert_event_ble_payload(event: AlertEvent) -> str:
     if event.distance_m is not None:
         payload["distance_m"] = round(float(event.distance_m), 3)
     optional_text = {
+        "event_id": event.event_id,
         "radar_name": event.radar_name,
         "radar_track_key": event.radar_track_key,
         "class_source": event.class_source,
@@ -594,10 +595,15 @@ def alert_event_ble_payload(event: AlertEvent) -> str:
         "cpa_time_s": event.cpa_time_s,
         "cpa_distance_m": event.cpa_distance_m,
         "association_score": event.association_score,
+        "score_median": event.score_median,
+        "effective_score": event.effective_score,
+        "warning_sensitivity": event.warning_sensitivity,
     }
     for key, value in optional_numbers.items():
         if value is not None:
             payload[key] = round(float(value), 4)
+    if event.settings_version is not None:
+        payload["settings_version"] = int(event.settings_version)
     return json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
 
 

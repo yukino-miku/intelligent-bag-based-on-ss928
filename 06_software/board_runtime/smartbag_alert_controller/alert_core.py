@@ -94,6 +94,11 @@ class AlertEvent:
     association_score: float | None = None
     clear_reason: str | None = None
     event_kind: str = "alert"
+    event_id: str | None = None
+    score_median: float | None = None
+    effective_score: float | None = None
+    warning_sensitivity: float | None = None
+    settings_version: int | None = None
 
 
 @dataclass(frozen=True)
