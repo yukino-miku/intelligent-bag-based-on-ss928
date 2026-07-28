@@ -31,6 +31,13 @@ const createAppApi = ({ repository }) => {
         if (action === "getAlarmHistory") {
           return success({ items: await repository.listAlarmHistory(DEVICE_ID, HISTORY_LIMIT) });
         }
+        if (action === "saveTrafficAlert") {
+          const alert = event && event.alert;
+          if (!validTrafficAlert(alert)) {
+            return failure("INVALID_TRAFFIC_ALERT");
+          }
+          return success({ eventId: await repository.upsertTrafficAlert(DEVICE_ID, alert) });
+        }
         return failure("UNSUPPORTED_ACTION");
       } catch (error) {
         return failure("INTERNAL_ERROR");
@@ -39,4 +46,10 @@ const createAppApi = ({ repository }) => {
   };
 };
 
-module.exports = { DEVICE_ID, HISTORY_LIMIT, createAppApi };
+const validTrafficAlert = (alert) => (
+  alert && typeof alert === "object" &&
+  /^[A-Za-z0-9:_-]{3,128}$/.test(String(alert.event_id || alert.eventId || "")) &&
+  Number.isInteger(Number(alert.level)) && Number(alert.level) >= 3 && Number(alert.level) <= 4
+);
+
+module.exports = { DEVICE_ID, HISTORY_LIMIT, createAppApi, validTrafficAlert };

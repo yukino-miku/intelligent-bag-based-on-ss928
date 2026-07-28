@@ -1,5 +1,8 @@
 const SMARTBAG_DEVICE_NAME = "SS928-SmartBag";
 const { createAlertState, applyAlertFrame } = require("../../utils/alert-state");
+const { BoardApi } = require("../../utils/board-api");
+const { syncTrafficAlert } = require("../../utils/traffic-alert-history");
+const cloudDataSource = require("../../services/cloud-data-source");
 const ALERT_HISTORY_STORAGE_KEY = "smartbagAlertHistory";
 const TARGET_DEVICE_NAMES = [SMARTBAG_DEVICE_NAME];
 const TARGET_DEVICE_NAME = TARGET_DEVICE_NAMES.join(" / ");
@@ -76,6 +79,7 @@ Page({
     rightRisk: createAlertState().current.right,
     alertHistory: [],
     systemStatus: null,
+    fusionSummary: null,
     horizonStyle: "",
     bodyStyle: ""
   },
@@ -89,6 +93,7 @@ Page({
     this.receiveText = "";
     this.sampleTimes = [];
     this.alertState = createAlertState();
+    this.boardApi = new BoardApi(wx.getStorageSync("smartbagCameraConfig") || {}, wx);
     const savedHistory = wx.getStorageSync(ALERT_HISTORY_STORAGE_KEY);
     if (Array.isArray(savedHistory)) {
       this.alertState.history = savedHistory.slice(0, 40);
@@ -343,10 +348,17 @@ Page({
       alertHistory: this.alertState.history
     });
     wx.setStorageSync(ALERT_HISTORY_STORAGE_KEY, this.alertState.history);
+    if (Number(frame.level) >= 3 && frame.event_id) {
+      const app = typeof getApp === "function" ? getApp() : null;
+      const cloudUploader = app && app.globalData && app.globalData.cloudEnabled
+        ? (item) => cloudDataSource.saveTrafficAlert(item)
+        : null;
+      syncTrafficAlert(wx, this.boardApi, frame, { cloudUploader }).catch(() => {});
+    }
   },
 
   applySystemStatus(frame) {
-    this.setData({ systemStatus: frame, commandResponse: "SYS STATUS 已更新" });
+    this.setData({ systemStatus: frame, fusionSummary: summarizeFusion(frame.fusion), commandResponse: "SYS STATUS 已更新" });
     wx.setStorageSync("smartbagSystemStatus", frame);
   },
 
@@ -481,3 +493,52 @@ Page({
     return buffer;
   }
 });
+
+const summarizeFusion = (fusion) => {
+  if (!fusion || typeof fusion !== "object") return null;
+  const counts = fusion.risk_window_sample_counts || {};
+  const sampleCount = Object.keys(counts).reduce((total, key) => total + (Number(counts[key]) || 0), 0);
+  const classifier = fusion.classifier || {};
+  const metrics = classifier.metrics || {};
+  const radars = fusion.radars || {};
+  const radarStatus = Object.keys(radars).sort().map((name) => {
+    const radar = radars[name] || {};
+    const ratio = Math.round((Number(radar.complete_scan_ratio) || 0) * 100);
+    return (radar.side || name) + ":" + (radar.online ? "在线" : "离线") + "/" + ratio + "%";
+  }).join(" · ") || "--";
+  const classMaps = fusion.visual_class_maps || {};
+  const classMapStatus = ["left", "right"].map((side) => {
+    const item = classMaps[side] || {};
+    const count = Object.keys(item.mapping || {}).length;
+    return side.charAt(0).toUpperCase() + ":" + count + "/" + formatNumber(item.age_s, 1) + "s";
+  }).join(" · ");
+  const medians = fusion.latest_median_risk || {};
+  const medianStatus = ["left", "right"].map((side) => {
+    const item = medians[side] || {};
+    return side.charAt(0).toUpperCase() + ":L" + (Number(item.final_level) || 0) + "/" + formatNumber(item.score_median, 2);
+  }).join(" · ");
+  const cameraSides = classifier.sides || {};
+  const snapshotStatus = ["left", "right"].map((side) => {
+    const item = cameraSides[side] || {};
+    return side.charAt(0).toUpperCase() + ":" + formatNumber(item.snapshot_fps, 2) + "fps/" + formatNumber((Number(item.age_ms) || 0) / 1000, 1) + "s";
+  }).join(" · ");
+  return {
+    mode: fusion.runtime_mode || "--",
+    activeTracks: Number(fusion.active_tracks) || 0,
+    sampleCount,
+    sensitivity: Number(fusion.warning_sensitivity || 1).toFixed(2),
+    version: fusion.settings_version || "--",
+    switchP50: metrics.switch_interval_ms ? metrics.switch_interval_ms.p50 : "--",
+    yoloP50: metrics.inference_ms ? metrics.inference_ms.p50 : "--",
+    associationP50: metrics.association_ms ? metrics.association_ms.p50 : "--",
+    radarStatus,
+    classMapStatus,
+    medianStatus,
+    snapshotStatus,
+    recentEvents: (fusion.recent_level_3_4_events || []).length
+  };
+};
+
+const formatNumber = (value, digits) => Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : "--";
+
+module.exports = { summarizeFusion };

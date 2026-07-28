@@ -28,6 +28,17 @@ const repository = {
   async listAlarmHistory(deviceId, limit) {
     const result = await db.collection("alarm_history").where({ deviceId }).orderBy("receivedAt", "desc").limit(limit).get();
     return result && result.data ? result.data : [];
+  },
+  async upsertTrafficAlert(deviceId, alert) {
+    const eventId = String(alert.event_id || alert.eventId);
+    const documentId = (deviceId + "_" + eventId).replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 128);
+    await db.collection("traffic_alerts").doc(documentId).set({
+      deviceId,
+      eventId,
+      alert,
+      receivedAt: db.serverDate()
+    });
+    return eventId;
   }
 };
 

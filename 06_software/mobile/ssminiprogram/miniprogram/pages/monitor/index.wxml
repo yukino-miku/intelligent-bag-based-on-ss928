@@ -70,6 +70,19 @@
     </view>
   </view>
 
+  <view class="data-panel" wx:if="{{fusionSummary}}">
+    <view class="data-row"><text class="data-row__label">融合模式</text><text class="data-row__value">{{fusionSummary.mode}}</text></view>
+    <view class="data-row"><text class="data-row__label">目标 / 窗口样本</text><text class="data-row__value">{{fusionSummary.activeTracks}} / {{fusionSummary.sampleCount}}</text></view>
+    <view class="data-row"><text class="data-row__label">灵敏度 / 参数版本</text><text class="data-row__value">{{fusionSummary.sensitivity}} / {{fusionSummary.version}}</text></view>
+    <view class="data-row"><text class="data-row__label">切换 p50 ms</text><text class="data-row__value">{{fusionSummary.switchP50}}</text></view>
+    <view class="data-row"><text class="data-row__label">YOLO / 关联 p50 ms</text><text class="data-row__value">{{fusionSummary.yoloP50}} / {{fusionSummary.associationP50}}</text></view>
+    <view class="data-row"><text class="data-row__label">雷达在线 / 完整率</text><text class="data-row__value">{{fusionSummary.radarStatus}}</text></view>
+    <view class="data-row"><text class="data-row__label">车型映射 / 图片年龄</text><text class="data-row__value">{{fusionSummary.classMapStatus}}</text></view>
+    <view class="data-row"><text class="data-row__label">中位风险</text><text class="data-row__value">{{fusionSummary.medianStatus}}</text></view>
+    <view class="data-row"><text class="data-row__label">每侧快照</text><text class="data-row__value">{{fusionSummary.snapshotStatus}}</text></view>
+    <view class="data-row"><text class="data-row__label">最近三级以上事件</text><text class="data-row__value">{{fusionSummary.recentEvents}}</text></view>
+  </view>
+
   <view class="attitude-panel">
     <view class="attitude-panel__visual">
       <view class="attitude-panel__sky"></view>

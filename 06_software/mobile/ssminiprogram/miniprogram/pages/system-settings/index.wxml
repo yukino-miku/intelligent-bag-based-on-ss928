@@ -1,0 +1,36 @@
+<view class="page">
+  <view class="header">
+    <view class="header__title">系统参数</view>
+    <view class="header__meta">版本 {{version}} · {{statusText}}</view>
+  </view>
+
+  <view class="section" wx:for="{{['left','right']}}" wx:key="*this" wx:for-item="side">
+    <view class="section__title">{{side === 'left' ? '左侧安装参数' : '右侧安装参数'}}</view>
+    <view class="field" wx:for="{{sideFields}}" wx:key="key">
+      <text class="field__label">{{item.label}}</text>
+      <input class="field__input" type="digit" value="{{settings[side][item.key]}}" data-section="{{side}}" data-key="{{item.key}}" bindinput="updateValue" />
+    </view>
+  </view>
+
+  <view class="section">
+    <view class="section__title">雷视区间关联</view>
+    <view class="field" wx:for="{{associationFields}}" wx:key="key">
+      <text class="field__label">{{item.label}}</text>
+      <input class="field__input" type="digit" value="{{settings.association[item.key]}}" data-section="association" data-key="{{item.key}}" bindinput="updateValue" />
+    </view>
+  </view>
+
+  <view class="section">
+    <view class="section__title">风险灵敏度</view>
+    <slider min="25" max="200" step="5" value="{{settings.risk.warning_sensitivity * 100}}" show-value bindchange="updateSensitivity" />
+    <view class="field" wx:for="{{riskFields}}" wx:key="key">
+      <text class="field__label">{{item.label}}</text>
+      <input class="field__input" type="digit" value="{{settings.risk[item.key]}}" data-section="risk" data-key="{{item.key}}" bindinput="updateValue" />
+    </view>
+  </view>
+
+  <view class="actions">
+    <button class="actions__primary" loading="{{loading}}" bindtap="saveSettings">保存并立即应用</button>
+    <button class="actions__secondary" disabled="{{loading}}" bindtap="resetSettings">恢复默认</button>
+  </view>
+</view>

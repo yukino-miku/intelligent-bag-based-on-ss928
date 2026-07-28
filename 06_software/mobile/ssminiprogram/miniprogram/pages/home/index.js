@@ -16,6 +16,22 @@ const FEATURE_ENTRIES = [
     route: "/pages/monitor/index"
   },
   {
+    key: "traffic-alerts",
+    title: "交通危险事件",
+    subtitle: "三级/四级雷视告警与图片",
+    icon: "险",
+    tone: "red",
+    route: "/pages/traffic-alerts/index"
+  },
+  {
+    key: "system-settings",
+    title: "系统参数",
+    subtitle: "安装标定 / 关联 / 风险权重",
+    icon: "参",
+    tone: "blue",
+    route: "/pages/system-settings/index"
+  },
+  {
     key: "tracks",
     title: "安全轨迹跟踪",
     subtitle: "GNSS 位置轨迹",

@@ -1,0 +1,17 @@
+<view class="page">
+  <view class="header">
+    <view class="header__title">交通危险事件</view>
+    <view class="header__meta">{{statusText}}</view>
+  </view>
+  <view class="empty" wx:if="{{!events.length && !loading}}">暂无三级或四级事件</view>
+  <view class="event" wx:for="{{events}}" wx:key="eventId">
+    <image wx:if="{{item.localImagePath}}" class="event__image" src="{{item.localImagePath}}" mode="aspectFill" data-path="{{item.localImagePath}}" bindtap="previewImage" />
+    <view class="event__main">
+      <view class="event__title">{{item.sideText}} · L{{item.level}} · {{item.className}}</view>
+      <view class="event__time">{{item.timeText}}</view>
+      <view class="event__metrics">距离 {{item.distanceText}} · 速度 {{item.speedText}} · TTC {{item.ttcText}}</view>
+      <view class="event__sync">{{item.syncStatus}} / {{item.imageStatus}}</view>
+      <button wx:if="{{item.syncStatus === 'retry_pending' || (!item.localImagePath && item.imageStatus === 'saved')}}" size="mini" data-id="{{item.eventId}}" bindtap="retrySync">重试同步</button>
+    </view>
+  </view>
+</view>

@@ -6,6 +6,8 @@
     "pages/index/index",
     "pages/monitor/index",
     "pages/remote/index",
+    "pages/system-settings/index",
+    "pages/traffic-alerts/index",
     "pages/alarms/index",
     "pages/posture-analysis/index",
     "pages/posture-live/index"

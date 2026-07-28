@@ -169,6 +169,24 @@ test("limits history reads to 100 records", async () => {
   assert.strictEqual(result.data.items[0].deviceId, "bag001");
 });
 
+test("validates and stores traffic alert metadata by event id", async () => {
+  const saved = [];
+  const api = appApi.createAppApi({
+    repository: {
+      async upsertTrafficAlert(deviceId, alert) {
+        saved.push({ deviceId, alert });
+        return alert.event_id;
+      }
+    }
+  });
+  const valid = await api.handle({ action: "saveTrafficAlert", alert: { event_id: "evt-123", level: 3 } });
+  const invalid = await api.handle({ action: "saveTrafficAlert", alert: { event_id: "evt-124", level: 2 } });
+  assert.deepStrictEqual(valid, { ok: true, data: { eventId: "evt-123" } });
+  assert.strictEqual(invalid.error.code, "INVALID_TRAFFIC_ALERT");
+  assert.strictEqual(saved.length, 1);
+  assert.strictEqual(saved[0].deviceId, "bag001");
+});
+
 const run = async () => {
   let failed = 0;
   for (let index = 0; index < tests.length; index += 1) {

@@ -17,11 +17,26 @@ const getRealtimePosture = () => call("getRealtimePosture");
 const getDailyPosture = (date) => call("getDailyPosture", { date });
 const getTrackPoints = () => call("getTrackPoints");
 const getAlarmHistory = () => call("getAlarmHistory");
+const saveTrafficAlert = (item) => {
+  const alert = Object.assign({}, item.raw || {}, {
+    event_id: item.eventId,
+    level: item.level,
+    local_image_uploaded: false
+  });
+  const upload = item.localImagePath && wx.cloud && wx.cloud.uploadFile
+    ? wx.cloud.uploadFile({
+      cloudPath: "traffic-alerts/" + encodeURIComponent(item.eventId) + ".jpg",
+      filePath: item.localImagePath
+    }).then((result) => { alert.image_file_id = result.fileID; alert.local_image_uploaded = true; })
+    : Promise.resolve();
+  return upload.then(() => call("saveTrafficAlert", { alert }));
+};
 
 module.exports = {
   getAlarmHistory,
   getDailyPosture,
   getLatestStatus,
   getRealtimePosture,
-  getTrackPoints
+  getTrackPoints,
+  saveTrafficAlert
 };

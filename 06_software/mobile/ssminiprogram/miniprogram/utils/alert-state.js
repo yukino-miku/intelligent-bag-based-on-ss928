@@ -17,7 +17,8 @@ const emptySide = (side) => ({
   associationState: "",
   associationScore: null,
   eventKind: "clear",
-  receivedAt: "--"
+  receivedAt: "--",
+  eventId: ""
 });
 
 const createAlertState = () => ({
@@ -43,6 +44,7 @@ const applyAlertFrame = (state, frame, maxHistory) => {
     ("0" + now.getMinutes()).slice(-2) + ":" + ("0" + now.getSeconds()).slice(-2);
   const item = {
     key: String(now.getTime()) + "-" + frame.side + "-" + (currentState.history || []).length,
+    eventId: frame.event_id || "",
     side: frame.side,
     level,
     name: frame.name || LEVEL_NAMES[level],
