@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "release": "smartbag-v1.0.0-rc1",
+  "bundled": [
+    {"name": "SmartBag Python/C/C++/Shell/miniprogram source", "source": "this repository"},
+    {"name": "ss928_detection_runner", "architecture": "AArch64", "license": "project has no root LICENSE"},
+    {"name": "om_inspect", "architecture": "AArch64", "license": "project has no root LICENSE"},
+    {"name": "alert audio assets", "source": "project integration history", "license": "distribution review retained in third-party notices"}
+  ],
+  "not_bundled": [
+    {"name": "libascendcl.so and SS928 NPU driver", "reason": "vendor board-image dependency"},
+    {"name": "SS928 SDK and cross toolchain", "reason": "build-only vendor assets; redistribution not established"},
+    {"name": "vehicle-detector.om", "reason": "LICENSE_BLOCKED and BOARD_VALIDATION_REQUIRED"},
+    {"name": "CloudBase/AppID/token/secrets", "reason": "deployment-specific secrets"},
+    {"name": "WS73 firmware and BMI270 vendor initialization data", "reason": "must come from matching board image/vendor"}
+  ],
+  "runtime_python": ["python3", "dbus-python", "PyGObject", "numpy", "opencv-python or python3-opencv"],
+  "runtime_system": ["systemd", "bluez", "v4l-utils", "iproute2", "i2c-tools"],
+  "optional": ["ffmpeg", "gstreamer1.0-tools", "curl", "usbutils"]
+}

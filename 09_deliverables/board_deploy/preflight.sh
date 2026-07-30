@@ -86,23 +86,13 @@ if [ "$RUNTIME_MODE" = "radar_primary_visual_classification" ]; then
     done
     check_path "$OM_RUNNER"
     MODEL_MANIFEST=/root/smartbag/models/vehicle-detector.manifest.json
+    RUNNER_MANIFEST=/root/smartbag/vision/ss928_backend/bin/runner-manifest.json
     check_path "$MODEL_MANIFEST"
-    if [ -f "$MODEL" ] && [ -f "$MODEL_MANIFEST" ]; then
-        if python3 - "$MODEL" "$MODEL_MANIFEST" <<'PY'
-import hashlib
-import json
-import sys
-
-model_path, manifest_path = sys.argv[1:]
-manifest = json.load(open(manifest_path, encoding="utf-8"))
-expected = str(manifest.get("sha256", "")).lower()
-actual = hashlib.sha256(open(model_path, "rb").read()).hexdigest()
-if not expected or actual != expected:
-    raise SystemExit(f"model SHA256 mismatch: expected={expected or 'missing'} actual={actual}")
-if manifest.get("current_runner_compatible") is not True:
-    raise SystemExit("model manifest blocks deployment: current SS928 runner input contract is incompatible")
-print(f"OK   vehicle detector SHA256 {actual}")
-PY
+    check_path "$RUNNER_MANIFEST"
+    if [ -f "$MODEL" ] && [ -f "$MODEL_MANIFEST" ] && [ -f "$OM_RUNNER" ] && [ -f "$RUNNER_MANIFEST" ]; then
+        if python3 "$SCRIPT_DIR/verify_release_assets.py" \
+            --model "$MODEL" --model-manifest "$MODEL_MANIFEST" \
+            --runner "$OM_RUNNER" --runner-manifest "$RUNNER_MANIFEST"
         then
             :
         else
@@ -111,6 +101,14 @@ PY
     fi
     check_path "$LEFT_FUSION_CALIBRATION"
     check_path "$RIGHT_FUSION_CALIBRATION"
+    if [ -f "$LEFT_FUSION_CALIBRATION" ]; then
+        python3 /root/smartbag/radar_vision_fusion/validate_radar_camera_calibration.py \
+            "$LEFT_FUSION_CALIBRATION" --require-measured || fail=1
+    fi
+    if [ -f "$RIGHT_FUSION_CALIBRATION" ]; then
+        python3 /root/smartbag/radar_vision_fusion/validate_radar_camera_calibration.py \
+            "$RIGHT_FUSION_CALIBRATION" --require-measured || fail=1
+    fi
 elif [ "$RUNTIME_MODE" = "legacy_dual_vision" ]; then
     for path in "$LEFT_DEVICE" "$RIGHT_DEVICE" "$LEFT_CALIBRATION" "$RIGHT_CALIBRATION" "$MODEL"; do
         check_path "$path"

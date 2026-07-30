@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "platform": {
+    "architecture": ["aarch64", "arm64"],
+    "observed_os": "Ubuntu 22.04.1 LTS",
+    "observed_kernel": "4.19.90",
+    "minimum_memory_mib": 768,
+    "minimum_free_disk_mib": 2048
+  },
+  "core_commands": ["python3", "systemctl", "ip", "ldconfig"],
+  "full_mode_commands": ["v4l2-ctl"],
+  "full_mode_external_dependencies": [
+    {
+      "name": "SS928 ACL runtime and NPU driver",
+      "probe": "ldconfig -p contains libascendcl.so and om_inspect can call aclInit/aclrtSetDevice",
+      "redistribution": "vendor board image dependency; not bundled"
+    },
+    {
+      "name": "vehicle detector OM",
+      "path": "/root/smartbag/models/vehicle-detector.om",
+      "probe": "SHA256, ACL descriptor and known-image result comparison",
+      "redistribution": "currently LICENSE_BLOCKED"
+    }
+  ],
+  "hardware": {
+    "i2c": "/dev/i2c-0",
+    "pwm": "/sys/class/pwm/pwmchip0",
+    "temperature_optional": "/proc/Tsensor",
+    "bluetooth": "bluetooth.service or bluetoothctl",
+    "cameras": ["/dev/smartbag-camera-left", "/dev/smartbag-camera-right"],
+    "gnss_optional": "/dev/ttyAMA4",
+    "radar_config": "/etc/smartbag/mr20.json",
+    "mt5710_optional": "discover from board networking/serial state"
+  },
+  "python": {
+    "common": ["dbus", "gi"],
+    "radar_primary_visual_classification": ["cv2", "numpy"],
+    "legacy_dual_vision": ["cv2", "numpy", "torch", "ultralytics", "lap"]
+  },
+  "notes": [
+    "OpenVINO is not an SS928 NPU runtime.",
+    "BMI270 initialization blob and WS73 firmware must come from the matching board image or hardware vendor.",
+    "Optional GNSS, MT5710, audio and Tsensor failures must not be reported as full-mode success."
+  ]
+}

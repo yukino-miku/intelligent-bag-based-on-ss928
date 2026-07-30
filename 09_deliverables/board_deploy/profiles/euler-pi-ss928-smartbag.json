@@ -1,0 +1,72 @@
+{
+  "name": "euler-pi-ss928-smartbag",
+  "board": {
+    "soc": "SS928V100",
+    "os_observed": "Ubuntu 22.04.1 LTS",
+    "kernel_observed": "Linux 4.19.90",
+    "architecture": "aarch64",
+    "observation_status": "historical board audit; recheck during installation"
+  },
+  "cameras": {
+    "mode": "alternating_single_stream",
+    "stable_left": "/dev/smartbag-camera-left",
+    "stable_right": "/dev/smartbag-camera-right",
+    "known_topology": {
+      "left_by_path": "/dev/v4l/by-path/platform-10320000.xhci_1-usb-0:1.3:1.0-video-index0",
+      "right_by_path": "/dev/v4l/by-path/platform-10320000.xhci_1-usb-0:1.4:1.0-video-index0",
+      "evidence": "08_media alternating-camera session records from 2026-07-19",
+      "revalidation_required": true
+    }
+  },
+  "mr20": {
+    "right": {"ip": "192.168.1.200", "udp_port": 2368, "mount_x_m": 0.18},
+    "left": {"ip": "192.168.1.201", "udp_port": 2378, "mount_x_m": -0.18},
+    "mount_calibration_status": "BOARD_VALIDATION_REQUIRED"
+  },
+  "i2c": {
+    "device": "/dev/i2c-0",
+    "tca9548a_address": "0x70",
+    "bmi270_channel": 0,
+    "left_tm6605_channel": 1,
+    "right_tm6605_channel": 2
+  },
+  "outputs": {
+    "left_light_pwm_pin": 7,
+    "right_light_pwm_pin": 32,
+    "audio": "MAX98357 optional",
+    "haptics": "TM6605/LRA"
+  },
+  "optional_devices": {
+    "gnss": "/dev/ttyAMA4",
+    "mt5710": "BOARD_DISCOVERY_REQUIRED",
+    "ws73": "board image dependency",
+    "temperature": "/proc/Tsensor when matching driver is loaded"
+  },
+  "fusion_calibration_status": "BOARD_DISCOVERY_REQUIRED",
+  "config_patch": {
+    "runtime_mode": "radar_primary_visual_classification",
+    "cameras": {
+      "left": {"camera_device": "/dev/smartbag-camera-left"},
+      "right": {"camera_device": "/dev/smartbag-camera-right"}
+    },
+    "snapshot_classifier": {
+      "left_device": "/dev/smartbag-camera-left",
+      "right_device": "/dev/smartbag-camera-right"
+    },
+    "radar": {"enabled": true, "config": "/etc/smartbag/mr20.json"},
+    "modules": {
+      "gnss": {"enabled": false},
+      "imu": {"enabled": true}
+    },
+    "outputs": {
+      "haptics_backend": "tm6605",
+      "i2c_device": "/dev/i2c-0",
+      "tm6605_mux_address": "0x70",
+      "bmi270_mux_channel": 0,
+      "left_tm6605_channel": 1,
+      "right_tm6605_channel": 2,
+      "lights_enabled": true
+    },
+    "audio": {"enabled": false}
+  }
+}

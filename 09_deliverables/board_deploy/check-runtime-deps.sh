@@ -24,6 +24,9 @@ PY
     )
 fi
 
+# The broader board checker owns architecture, disk, ACL and physical-device
+# validation. This file remains the Python dependency probe used by preflight.
+
 COMMANDS="python3 curl bluetoothctl"
 if [ "$RUNTIME_MODE" != "radar_only" ]; then
     COMMANDS="$COMMANDS v4l2-ctl"

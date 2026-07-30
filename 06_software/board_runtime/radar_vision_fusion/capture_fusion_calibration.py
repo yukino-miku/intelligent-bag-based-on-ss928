@@ -14,6 +14,9 @@ def main() -> None:
     parser.add_argument("--radar-z", type=float, required=True)
     parser.add_argument("--pixel-u", type=float, required=True)
     parser.add_argument("--pixel-v", type=float, required=True)
+    parser.add_argument("--image-width", type=int, required=True)
+    parser.add_argument("--image-height", type=int, required=True)
+    parser.add_argument("--target-id", default="manual")
     args = parser.parse_args()
     record = {
         "type": "fusion_calibration_observation",
@@ -23,6 +26,9 @@ def main() -> None:
         "radar_z_m": args.radar_z,
         "pixel_u": args.pixel_u,
         "pixel_v": args.pixel_v,
+        "image_width": args.image_width,
+        "image_height": args.image_height,
+        "target_id": args.target_id,
     }
     path = Path(args.output)
     path.parent.mkdir(parents=True, exist_ok=True)

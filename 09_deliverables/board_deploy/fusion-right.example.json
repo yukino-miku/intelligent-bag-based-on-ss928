@@ -1,4 +1,5 @@
 {
+  "calibration_status": "UNMEASURED_TEMPLATE",
   "side": "right",
   "camera_intrinsics": {"fx": null, "fy": null, "cx": null, "cy": null},
   "camera_distortion": [0.0, 0.0, 0.0, 0.0, 0.0],
