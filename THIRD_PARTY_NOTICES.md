@@ -8,4 +8,6 @@
 
 Ultralytics、OpenCV、OpenVINO、BlueZ、CloudBase、微信小程序 SDK、Nordic UART Service、SS928 ACL/MPP/SVP 等依赖遵循各自上游许可与服务条款。本仓库不把 OpenVINO 视为 SS928 NPU，也不附带厂商运行库。
 
+当前 YOLO11n PT/ONNX/OM 候选来自 Ultralytics 生态，上游声明 AGPL-3.0 或 Enterprise 许可。由于本仓库自身没有经权利人确认的根许可证，也没有记录可覆盖该候选模型的独立商业授权，候选模型状态为 `LICENSE_BLOCKED`，不进入 Git 或 RC Release。仓库内 AArch64 runner/inspector 由本项目源码构建，但构建所用 SS928 SDK 头文件/stub 和板端 `libascendcl.so` 不随仓库再分发。
+
 更细的依赖登记见 `02_research/third-party-notices.md`。本文件是工程清单，不构成法律意见。

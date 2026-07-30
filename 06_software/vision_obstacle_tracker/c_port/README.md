@@ -101,7 +101,7 @@ powershell -ExecutionPolicy Bypass -File .\export_yolo_onnx.ps1
 Live camera:
 
 ```powershell
-cd D:\mywork\code\embedded-contest-project\06_software\vision_obstacle_tracker\c_port
+cd .\06_software\vision_obstacle_tracker\c_port
 .\build\vision_obstacle_tracker_live.exe --source camera --runtime-profile realtime --camera-index 1
 ```
 
@@ -174,7 +174,7 @@ Main backend flow:
 Run the core tests:
 
 ```powershell
-cd D:\mywork\code\embedded-contest-project\06_software\vision_obstacle_tracker\c_port
+cd .\06_software\vision_obstacle_tracker\c_port
 gcc -std=c99 -Wall -Wextra -Werror -Iinclude tests\test_core.c src\vot.c -lm -o build\test_core.exe
 .\build\test_core.exe
 ```
@@ -191,6 +191,6 @@ powershell -ExecutionPolicy Bypass -File .\build_live_msvc.ps1
 Run the original Python tests to ensure the Python version still works:
 
 ```powershell
-cd D:\mywork\code\embedded-contest-project\06_software\vision_obstacle_tracker
+cd .\06_software\vision_obstacle_tracker
 py -m unittest discover -s tests -v
 ```

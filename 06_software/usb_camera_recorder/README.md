@@ -9,7 +9,7 @@ Clicking **Start Recording** opens a live preview window and starts saving the M
 Recordings are saved by default to:
 
 ```text
-D:\mywork\code\embedded-contest-project\08_media\camera_data
+<仓库目录>\08_media\camera_data
 ```
 
 File names use the local start timestamp:
@@ -27,7 +27,7 @@ usbcam_YYYYMMDD_HHMMSS.ffmpeg.log
 ## Run From Source
 
 ```powershell
-cd D:\mywork\code\embedded-contest-project\06_software\usb_camera_recorder
+cd .\06_software\usb_camera_recorder
 py usb_camera_recorder.py
 ```
 
@@ -48,7 +48,7 @@ Keep the preview window open while recording. Use the recorder's **Stop Recordin
 ## Build EXE
 
 ```powershell
-cd D:\mywork\code\embedded-contest-project\06_software\usb_camera_recorder
+cd .\06_software\usb_camera_recorder
 py -m PyInstaller --noconfirm --clean --noconsole --name "USB Camera Recorder" usb_camera_recorder.py
 ```
 
@@ -61,7 +61,7 @@ py -m PyInstaller --noconfirm --clean --noconsole --onefile --distpath dist_onef
 The single-file executable is created at:
 
 ```text
-D:\mywork\code\embedded-contest-project\06_software\usb_camera_recorder\dist_onefile\USB Camera Recorder.exe
+<仓库目录>\06_software\usb_camera_recorder\dist_onefile\USB Camera Recorder.exe
 ```
 
 Note: this tool requests the selected resolution at `30` FPS from the camera. The actual saved FPS can be lower if the camera/driver reduces frame delivery, for example because of long exposure in dim light.
@@ -69,6 +69,6 @@ Note: this tool requests the selected resolution at `30` FPS from the camera. Th
 ## Tests
 
 ```powershell
-cd D:\mywork\code\embedded-contest-project\06_software\usb_camera_recorder
+cd .\06_software\usb_camera_recorder
 py -m unittest discover -s tests -v
 ```

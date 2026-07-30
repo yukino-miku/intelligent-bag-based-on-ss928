@@ -19,16 +19,26 @@ v4l2-ctl --device /dev/video2 --list-formats-ext
 
 2026-07-16 的历史实板基线中，两台 `0bda:3035` 序列号相同且共用 USB 2.0 hub，并发时出现 `VIDIOC_STREAMON: ENOSPC`。更换端口后必须重新运行 `camera-list.sh` 和 preflight；历史节点和拓扑不能当作当前接线事实。
 
+正式安装使用以下脚本逐路采集并生成稳定链接，不使用临时 `/dev/video0`、`/dev/video2`：
+
+```sh
+sudo ./camera-discover.sh
+sudo ./camera-assign.sh --left /dev/v4l/by-path/...1.3...-video-index0 \
+  --right /dev/v4l/by-path/...1.4...-video-index0
+ls -l /dev/smartbag-camera-left /dev/smartbag-camera-right
+```
+
 ## 2. 依赖和安装
 
 ```sh
-cd /path/to/intelligent-bag-based-on-ss928/09_deliverables/board_deploy
-sudo sh install-deps.sh                 # 只检查，不安装
-sudo sh install-deps.sh --install-system # 可选：安装 apt 中的系统包
-sudo sh install.sh /path/to/intelligent-bag-based-on-ss928
-sudo env SMARTBAG_MODEL_SOURCE=/合法来源/vehicle-detector.om \
-  sh install.sh /path/to/intelligent-bag-based-on-ss928
+cd /path/to/intelligent-bag-based-on-ss928
+sudo ./install-on-ss928.sh --radar-only --yes
+
+# 完整模式必须提供 manifest 接受的模型；当前本地候选仍会被拒绝
+# sudo ./install-on-ss928.sh --model-source /合法来源/vehicle-detector.om --yes
 ```
+
+入口支持 `--profile`、`--model-source`、`--runner-source`、`--no-start`、`--radar-only`、`--skip-optional`、`--offline` 和 `--yes`。安装失败返回非零并请求 safe-off；重复安装保留 `/etc/smartbag`、`/var/lib/smartbag` 和告警历史。
 
 首次安装可选硬件 profile；profile 只是对默认配置的递归覆盖，不包含 secret：
 
@@ -86,7 +96,9 @@ sudo env SMARTBAG_HARDWARE_PROFILE="$PWD/profiles/dual-usb-base.json" \
 
 融合模式默认按 640x480 请求每侧 UVC 快照。Linux 原生 V4L2 会预先打开两个 fd 并分配两套 mmap buffer，但任意时刻最多一路 STREAMON；首次丢弃 `initial_warmup_frames`，后续切换默认不丢帧。相邻侧开始时间目标为 0.20 秒，超时不排队而是立即切下一侧并记录 overrun。摄像头描述符中的 FPS 和 0.20 秒目标都不是持续性能保证，必须从状态接口实测。
 
-当前审计选中的 YOLO11n OM 与输出后处理兼容，但静态 AIPP 是 `RGB_PLANAR`，现有 runner 输入是 NV12，因此 manifest 会让 preflight 明确失败。先完成 runner 输入适配或重新转换并做 ACL 实板验证，再把 manifest 的兼容状态改为 true；不能仅因为 `.om` 存在就启动正式服务。
+当前 runner 源码已按 ACL descriptor 自动选择 NV12、RGB_PLANAR UINT8 或 RGB_PLANAR FP32 预处理，AArch64 二进制和 SHA manifest 已进入部署目录。候选 YOLO11n OM 仍因板端 descriptor/同图检测和许可未验收而被 manifest 拒绝；不能仅因为 `.om` 存在就把 `runner_compatible` 改为 true。板端验证使用 `validate-board-model.sh`，结果应写入 `09_deliverables/board_validation` 后再更新正式 manifest。
+
+安装生成的融合 JSON 带 `calibration_status=UNMEASURED_TEMPLATE`。使用 `capture_fusion_calibration.py` 记录已知位置目标，再运行 `smartbag-calibrate-fusion.sh` 拟合水平投影并检查 RMSE；完整外参和实际关联仍须现场验证。未完成时使用 `--radar-only`。
 
 ## 4. 部署前检查
 
@@ -137,7 +149,7 @@ curl 'http://127.0.0.1:8080/api/v1/alerts/history?limit=20&min_level=3'
 
 ## 8. 微信小程序
 
-在微信开发者工具导入 `06_software/mobile/ssminiprogram`。“系统参数”页实时读写安装参数、关联范围、灵敏度和车型权重；“交通危险事件”页读取板端三级/四级事件并把同侧 JPEG 保存到手机本地。按 `event_id` 去重，离线时先存 BLE 元数据，之后可重试图片；CloudBase 上传失败不会影响本地记录或板端保存。
+在微信开发者工具导入 `06_software/mobile/ssminiprogram`，AppID、局域网/BLE、CloudBase 和云函数步骤见 `06_software/mobile/ssminiprogram/DEPLOYMENT.md`。“系统参数”页实时读写安装参数、关联范围、灵敏度和车型权重；“交通危险事件”页读取板端三级/四级事件并把同侧 JPEG 保存到手机本地。按 `event_id` 去重，离线时先存 BLE 元数据，之后可重试图片；CloudBase 上传失败不会影响本地记录或板端保存。
 
 现有“**双摄实时画面**”页面使用旧 `smartbag-video.service` 的连续画面 API，只适用于手动启动的 legacy gateway。新融合调试快照使用 `/api/v1/fusion/...`，默认不启动旧 gateway，也不会同时打开两个摄像头。手机设置通过 `wx.setStorageSync` 保存，不写死设备 IP。
 
@@ -155,9 +167,13 @@ curl 'http://127.0.0.1:8080/api/v1/alerts/history?limit=20&min_level=3'
 
 2026-07-16 历史镜像只有约 952 MiB 内存且缺少视觉依赖；部署时必须重新检查当前镜像。PC 的 Ultralytics/BoT-SORT profile 仍在视觉 README 中，仅用于纯视觉回归，不是本模式性能参数。
 
-`vision/ss928_backend` 支持持久 runner：模型初始化一次，逐快照读取 NV12 并输出 detections JSON。仓库外本地已找到一个候选车辆 OM，但它是 RGB_PLANAR AIPP，不能直接喂给当前 NV12 runner；模型和 runner 合约统一前，状态仍是 BLOCKED。新模式不把 detections 接入 BoT-SORT，而是仅与持续雷达轨迹做当前图片的一一关联。
+`vision/ss928_backend` 支持持久 runner：模型初始化一次，Python 逐快照写 BGR24，runner 根据模型 descriptor 生成对应输入并输出 detections JSON。模型发布/实板验收前状态仍是 `LICENSE_BLOCKED` 与 `BOARD_VALIDATION_REQUIRED`。新模式不把 detections 接入 BoT-SORT，而是仅与持续雷达轨迹做当前图片的一一关联。
 
-## 10. 停止和卸载
+## 10. 离线包
+
+候选 tag 上可运行 `09_deliverables/releases/build-release.sh` 生成 tar.gz 和 `SHA256SUMS`。当前包明确为 `full_install_ready=false`，只允许 `--offline --radar-only`，不会暗中携带 `08_media` 模型、厂商 SDK 或 secret。
+
+## 11. 停止和卸载
 
 ```sh
 sudo sh stop-all.sh

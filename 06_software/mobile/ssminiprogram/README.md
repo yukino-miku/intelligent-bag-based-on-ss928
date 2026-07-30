@@ -6,6 +6,8 @@
 
 用微信开发者工具导入本目录。`miniprogram/envList.js` 默认不写 CloudBase 环境；在自己的项目中配置合法 env/AppID。两套函数分别位于：
 
+完整的 AppID、局域网/BLE、CloudBase、云函数和发布步骤见 [DEPLOYMENT.md](DEPLOYMENT.md)。仓库同时提供 `project.config.example.json` 和 `miniprogram/envList.example.js` 空模板。
+
 - `cloudfunctions/smartbag-device-ingest`：HTTP telemetry ingest，需要服务端 `CLOUDBASE_ENV_ID` 和上传 token。
 - `cloudfunctions/smartbag-app-api`：小程序读取 status、posture、track 和 alarm，并可异步保存已确认的三级/四级交通事件元数据。
 

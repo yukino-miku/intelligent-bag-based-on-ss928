@@ -22,10 +22,6 @@ def default_output_dir() -> Path:
     if env_dir:
         return Path(env_dir)
 
-    fixed_project_dir = Path(r"D:\mywork\code\embedded-contest-project\08_media\camera_data")
-    if fixed_project_dir.parent.exists():
-        return fixed_project_dir
-
     search_roots = [Path.cwd()]
     executable_or_source = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve()
     search_roots.append(executable_or_source.parent)

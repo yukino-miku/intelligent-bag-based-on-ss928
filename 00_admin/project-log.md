@@ -1,5 +1,14 @@
 # Project Log
 
+## 2026-07-30
+
+- 在 `agent/radar-primary-vision-class-fusion` 和 Draft PR #7 上继续，不新建重复分支。开始基线为 `e2c524b69b1613c47921923c7bf3f4dae68c5980`；审计时远程分支已同步，远程权限为 ADMIN，默认分支仍为 `agent/ss928-board-integration`。
+- 扫描当前 Git、所有分支/历史/stash/LFS、ignored、本地媒体/归档、同级目录、旧板端记录、模型转换目录、SDK、工具链和二进制，建立逐文件匿名资产清单与 18 项 clone-install readiness。
+- 选定本地 YOLO11n PT/ONNX/OM 候选并记录哈希。PT/ONNX 三帧检测比较通过；候选 OM 许可与 SS928 实板结果未通过，因此不上传，也不把完整模式标记为可安装。
+- 重构 SS928 runner 的 descriptor 驱动输入：支持 NV12 UINT8、RGB_PLANAR UINT8、RGB_PLANAR FP32，并打包由当前源码构建的 AArch64 runner/inspector。ACL runtime 仍是板端镜像外部依赖。
+- 完成一键安装、radar-only 降级、mock root、摄像头稳定映射、融合标定拟合/校验、依赖检查、离线包构建、小程序部署模板、secret 扫描和发布就绪状态。
+- 本机测试通过：Python 384 项、Node 12 个文件、NPU C++ 4 项、C 核心 1 项、C++ backend 1 项、JavaScript 38 个、JSON 42 个、Shell 30 个和 compileall。后续仍需干净远程克隆、最终 tag/Release 和真实 SS928 验收。
+
 ## 2026-07-28
 
 - 在 `agent/radar-primary-vision-class-fusion` 和 Draft PR #7 上继续开发，没有创建新分支或 PR；本轮只执行电脑端代码与离线验证，没有连接开发板。

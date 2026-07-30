@@ -1,5 +1,17 @@
 # 更新记录
 
+## 2026-07-30
+
+- 对当前仓库、Git 历史、ignored 目录、`08_media`、`10_archive`、同级目录、旧板端记录、模型、runner、SDK 和工具链执行部署资产审计；生成匿名路径的 CSV/JSON/Markdown 清单，共登记 1,495 个候选文件、21 个模型和 524 个 ELF，不复制厂商 SDK、镜像、日志或私密配置。
+- SS928 detection runner 改为读取 ACL 模型 descriptor 后自动选择 NV12 UINT8、RGB_PLANAR UINT8 或 RGB_PLANAR FP32 预处理，严格校验 `[1,84,8400]` FP32 输出；Python 后端统一发送 BGR24。源代码契约测试通过，但 OM 实板 descriptor/检测对齐仍为 `PENDING`。
+- 使用本地合法工具链输入构建并打包 AArch64 `ss928_detection_runner` 和 `om_inspect`，记录架构、动态依赖、构建来源和 SHA256；ACL runtime 继续由匹配的板端镜像提供，不复制厂商 `libascendcl.so`。
+- 本地 YOLO11n PT/ONNX 在三张私有视频帧上完成同图框/类别比较；候选 OM 因 Ultralytics/仓库根许可未解决且缺少 SS928 实测，不进入 Git/Release，完整视觉安装保持阻塞。
+- 新增根目录一键安装入口、radar-only 安全降级、mock root 重复安装、配置/事件保留升级、卸载保留用户数据、失败 safe-off、runner/model SHA/架构/契约校验和板端依赖检查。
+- 新增左右 UVC 物理端口发现/顺序抓帧/udev 稳定链接流程，新增双 MR20 硬件 profile；历史端口仅作候选，安装时必须重新确认。
+- 融合标定模板明确标为 `UNMEASURED_TEMPLATE`，新增采样字段、水平 yaw/fx/cx 拟合、RMSE 校验和板端脚本；没有把占位外参冒充当前安装位姿。
+- 新增小程序部署说明、空 AppID/CloudBase 模板、离线 radar-only 发布包构建、依赖 manifest、发布就绪 JSON、凭据扫描器和克隆安装缺口清单。
+- 本机通过 384 项 Python、12 个 Node 测试文件、4 个 NPU native C++、C 核心与 C++ backend 测试，以及 compileall、38 个 JavaScript、42 个 JSON、30 个 Shell 和 `git diff --check`。真实板端安装、模型识别、标定、reboot 和独立供电仍未验证。
+
 ## 2026-07-28
 
 - 全量审计 Git、ignored/LFS、历史分支、父目录备份和旧实测产物，生成 `00_admin/local-model-inventory.md/.json`。选中 YOLO11n OM 候选并统一部署名 `vehicle-detector.om`；因 RGB_PLANAR AIPP 与当前 NV12 runner 不兼容，manifest/preflight 明确保持 BLOCKED。

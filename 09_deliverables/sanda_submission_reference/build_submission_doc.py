@@ -11,7 +11,7 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
 
-OUT = Path(r"C:\Users\ASUS\Downloads\智能背包作品信息_已补全草稿_交通避险版.docx")
+OUT = Path(__file__).resolve().parent / "build" / "智能背包作品信息_已补全草稿_交通避险版.docx"
 
 
 FONT_BODY = "Microsoft YaHei"
@@ -598,6 +598,7 @@ def build():
         [1200, 2600, 5560],
     )
 
+    OUT.parent.mkdir(parents=True, exist_ok=True)
     doc.save(OUT)
     print(OUT)
 

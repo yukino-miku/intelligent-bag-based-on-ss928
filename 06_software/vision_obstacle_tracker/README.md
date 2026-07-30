@@ -12,7 +12,7 @@ PC-side prototype for USB-camera or recorded-video testing:
 ## Install
 
 ```powershell
-cd D:\mywork\code\embedded-contest-project\06_software\vision_obstacle_tracker
+cd .\06_software\vision_obstacle_tracker
 py -m pip install -r requirements.txt
 ```
 
@@ -30,7 +30,7 @@ The code has a simple YAML fallback for calibration files, so PyYAML is optional
 ## Run USB Camera
 
 ```powershell
-cd D:\mywork\code\embedded-contest-project\06_software\vision_obstacle_tracker
+cd .\06_software\vision_obstacle_tracker
 py vision_obstacle_tracker.py --source camera
 ```
 
@@ -118,8 +118,8 @@ py vision_obstacle_tracker.py --source camera --camera-index 0
 ## Run A Recorded Video
 
 ```powershell
-cd D:\mywork\code\embedded-contest-project\06_software\vision_obstacle_tracker
-py vision_obstacle_tracker.py --source video --video D:\mywork\code\embedded-contest-project\08_media\camera_data\your_video.mp4
+cd .\06_software\vision_obstacle_tracker
+py vision_obstacle_tracker.py --source video --video ..\..\08_media\camera_data\your_video.mp4
 ```
 
 Recorded-video preview defaults to realtime mode. A background reader decodes the MP4 sequentially at the video's original FPS and keeps only the newest frame. If YOLO inference is slower than the video's original FPS, stale video frames are dropped without doing expensive H.264 random seeks.
@@ -556,7 +556,7 @@ The numbers are useful for early algorithm testing, but they are not final safet
 ## Tests
 
 ```powershell
-cd D:\mywork\code\embedded-contest-project\06_software\vision_obstacle_tracker
+cd .\06_software\vision_obstacle_tracker
 py -m unittest discover -s tests -v
 ```
 

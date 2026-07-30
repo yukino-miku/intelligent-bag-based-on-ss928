@@ -27,12 +27,15 @@
 | 当前完成/未验证项 | [integration-status](00_admin/integration-status.md) |
 | 雷达主导融合设计与边界 | [设计审计](02_research/radar-primary-vision-fusion-design.md)、[模块 README](06_software/board_runtime/radar_vision_fusion/README.md) |
 | 本地 PT/ONNX/OM 审计与部署阻塞 | [模型清单](00_admin/local-model-inventory.md)、[部署 manifest](09_deliverables/board_deploy/models/vehicle-detector.manifest.json) |
+| 克隆安装就绪度与本机资产 | [readiness](00_admin/clone-install-readiness.md)、[资产清单](00_admin/local-deployment-asset-inventory.md) |
+| 微信小程序导入与 CloudBase | [小程序部署](06_software/mobile/ssminiprogram/DEPLOYMENT.md) |
 | 第三方来源和许可边界 | [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES.md) |
+| 仓库根许可状态 | [LICENSE_STATUS](LICENSE_STATUS.md) |
 
 ## PC 快速运行
 
 ```powershell
-cd D:\mywork\code\embedded-contest-project\06_software\vision_obstacle_tracker
+cd .\06_software\vision_obstacle_tracker
 py -m pip install -r requirements.txt
 
 # 摄像头实时检测
@@ -50,32 +53,28 @@ py vision_obstacle_tracker.py --source video --video D:\path\input.mp4 --save-ou
 ## SS928 快速部署
 
 ```sh
-cd /path/to/repo/09_deliverables/board_deploy
-sudo sh install.sh /path/to/repo
-# 仅在模型 manifest 与 runner 输入契约兼容后显式安装模型；当前候选 OM 仍为 BLOCKED
-# sudo env SMARTBAG_MODEL_SOURCE=/合法来源/vehicle-detector.om sh install.sh /path/to/repo
-sudoedit /etc/smartbag/config.json
-sudoedit /etc/smartbag/mr20.json
-sudoedit /etc/smartbag/fusion-left.json
-sudoedit /etc/smartbag/fusion-right.json
-sudo sh check-runtime-deps.sh
-sudo sh preflight.sh /etc/smartbag/config.json
-sudo systemctl enable --now smartbag.target
-sh status.sh
-sh logs.sh -f
+git clone --branch agent/radar-primary-vision-class-fusion --single-branch \
+  https://github.com/yukino-miku/intelligent-bag-based-on-ss928.git
+cd intelligent-bag-based-on-ss928
+
+# 当前可审计的安全降级安装；不启用未验收的视觉分类
+sudo ./install-on-ss928.sh --radar-only --yes
+
+# 完整模式只有在正式模型 manifest、实板 descriptor 和标定全部通过后才允许
+# sudo ./install-on-ss928.sh --model-source /合法来源/vehicle-detector.om --yes
 ```
 
 默认示例 profile 是 `radar_primary_visual_classification`：双 MR20 + 单模型交替快照 + BMI270 + TM6605/LRA + 灯。Controller 是 BLE、振动、灯、音频、雷达 worker 和融合运行时的唯一所有者；GNSS/BMI 默认 `--no-ble`。摄像头或 YOLO 失败不会清空雷达轨迹，只会让车型退化为 unknown；服务停止、空风险窗口、事件过期和异常仍由 clear/safe-off 清除输出。
 
 ## NPU/OM 当前状态
 
-本地完整审计找到 YOLO11n 的 `.pt`、`.onnx` 和已由 ATC 生成的 `.om`，详见 [模型清单](00_admin/local-model-inventory.md)。候选 OM SHA256 为 `9e3c448ab7309428ea78cfdc509926404220fa74dd56c89e4995366f5f16af95`，包含所需五类车辆；但它使用 RGB_PLANAR 静态 AIPP，现有持久 runner 输入是 NV12，所以当前仍不能直接部署。正式文件名统一为 `/root/smartbag/models/vehicle-detector.om`，manifest/preflight 会阻止错误兼容声明。OM runner 适配、ACL 实板识别、双 MR20、真实投影、每侧快照频率和 30 分钟稳定性仍是硬件验收项；OpenVINO 只代表 CPU 优化，不等于 SS928 NPU。
+本地完整审计找到 YOLO11n 的 `.pt`、`.onnx` 和已由 ATC 生成的 `.om`，详见 [模型清单](00_admin/local-model-inventory.md)。候选 OM SHA256 为 `9e3c448ab7309428ea78cfdc509926404220fa74dd56c89e4995366f5f16af95`。当前 AArch64 runner 已根据 ACL descriptor 支持 NV12 UINT8、RGB_PLANAR UINT8 和 RGB_PLANAR FP32，并由 Python 统一传 BGR24 帧；PT/ONNX 三帧同图车辆结果已通过。但候选 OM 的真实板端 descriptor、检测结果和 Ultralytics AGPL/仓库根许可兼容性仍未通过，因此模型不进 Git，`runner_compatible=false`。正式文件名统一为 `/root/smartbag/models/vehicle-detector.om`，manifest/preflight 会阻止错误兼容声明；OpenVINO 只代表 CPU 优化，不等于 SS928 NPU。
 
 ## 已验证与限制
 
-- Windows 本地已通过 367 项 Python、12 个小程序/CloudBase Node 测试文件、4 个 NPU native C++ tests 和 1 个 C 兼容核心测试，并完成 compileall、37 个 JavaScript、33 个 JSON、21 个 Shell 和 `git diff --check`；命令口径和限制见 [integration-status](00_admin/integration-status.md)。
+- Windows 本地已通过 384 项 Python、12 个小程序/CloudBase Node 测试文件、4 个 NPU native C++ tests、1 个 C 兼容核心测试和 1 个 C++ backend 测试，并完成 compileall、38 个 JavaScript、42 个 JSON、30 个 Shell、凭据扫描和 `git diff --check`；命令口径和限制见 [integration-status](00_admin/integration-status.md)。
 - 既有实板记录确认 SS928 Ubuntu/aarch64、两台 UVC 枚举和单路出帧；当时两相机共用 USB 2.0 hub，双路出现 `ENOSPC`。更换端口后的持续双路采集、正式 detector FPS/内存/温度仍须复测。
-- 本分支 2026-07-28 收尾时电脑“以太网”和“以太网 2”均为断开状态，没有 `192.168.1.0/24` 本机地址，`192.168.1.102`/`.168` 的 ICMP 与 SSH 均不可达，因此没有执行上传、服务启动或 reboot 验证。
+- 本分支 2026-07-28 收尾时电脑物理以太网接口断开，板端私网地址不可达，因此没有执行上传、服务启动或 reboot 验证。
 - TM6605、灯、MR20、BMI270、DX-GP21、MAX98357、MT5710、WS73、Tsensor 和 reboot 自启都必须以当前实际接线再验收，文档中的历史结果不能替代本轮实板测试。
 - 单目避障与跌倒判断不是安全认证系统；真实使用前必须做标定、硬件在环、误报/漏报、端到端时延、热稳定和断电恢复测试。
 - 模型、SDK、真实标定、设备密码/IP、Cloud token、手机号、`08_media` 和大体积来源归档不提交 Git。

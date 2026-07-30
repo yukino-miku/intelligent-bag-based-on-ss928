@@ -6,21 +6,21 @@
 - 当前分支：`agent/radar-primary-vision-class-fusion`。
 - 正式候选数据流改为：双 MR20 完整扫描 -> 持久雷达轨迹 -> 单模型左右交替快照车型分类 -> 水平重叠硬门限与 Hungarian 一一关联 -> 每张图片原子替换本侧车型映射 -> 原视觉 RiskModel -> 每轨迹固定 0.5 秒风险中位数窗口 -> 每侧最高 haptic -> Controller。
 - 新模式关闭旧 MR20 简单风险 evaluator，不启动两个完整视觉 detector，也不运行 BoT-SORT、视觉测距测速、光流或视觉 CPA。`legacy_dual_vision` 仅保留回归。
-- OM 后端已有持久 runner、BGR-to-NV12 快照桥接、5 秒默认响应超时、进程重启和一次重试；runner 或摄像头失败时雷达以 `unknown=1.0` 继续，不伪造检测结果。当前找到的候选 OM 使用 RGB_PLANAR 静态 AIPP，与现有 NV12 runner 输入不兼容，正式模型部署状态为 `BLOCKED`。
-- 当前配置模板使用 `/dev/v4l/by-path/REPLACE_*` 占位符；左右外参与畸变模板不是实测标定值，部署前必须替换。
+- OM 后端已有持久 runner、BGR24 传输、5 秒默认响应超时、进程重启和一次重试；runner 根据 ACL descriptor 自动选择 NV12 UINT8、RGB_PLANAR UINT8 或 RGB_PLANAR FP32 输入。源代码契约测试通过，但候选 OM 的真实板端 descriptor、车辆检测对齐和再分发许可仍未通过，正式模型部署状态保持 `BLOCKED`。
+- 默认 profile 使用安装时生成的 `/dev/smartbag-camera-left/right` 稳定链接；历史 by-path 只作发现提示。左右融合模板明确标记为 `UNMEASURED_TEMPLATE`，完整模式 preflight 要求实测标定。
 
 ## 本分支本机验证
 
-- 367 项 Python 测试通过：视觉 148、融合 50、MR20 14、Controller 17、跨模块集成 59，其余板端模块与录像工具 79。
-- 12 个小程序/CloudBase Node 测试文件通过；37 个 JavaScript 文件通过 `node --check`。
-- 4 个 SS928 NPU native C++ tests 和 1 个 C 兼容核心测试通过。
-- `compileall`、33 个 JSON、21 个 Shell、`git diff --check` 通过。
+- 384 项 Python 测试通过：视觉 148、板端模块与录像工具 160、跨模块集成 76。
+- 12 个小程序/CloudBase Node 测试文件通过；38 个 JavaScript 文件通过 `node --check`。
+- 4 个 SS928 NPU native C++ tests、1 个 C 兼容核心测试和 1 个 C++ backend 测试通过。
+- `compileall`、42 个 JSON、30 个 Shell、凭据扫描和 `git diff --check` 通过。
 - 模拟测试覆盖完整/不完整 MR20 组包、多目标 generation、安装变换、原生 V4L2 持久资源与交替单 STREAMON、水平重叠硬门限、Hungarian 一一匹配、歧义 unknown、每图原子车型映射、共享 RiskModel、0.5 秒中位数窗口、运行参数原子更新、三级/四级事件持久化、JSONL 回放和故障降级。
 - 5.25 秒纯模拟相机调度中，相邻快照启动间隔 p50 为 200.56 ms、p95 为 201.24 ms，左/右模拟快照频率约 2.38/2.49 FPS，最多一路 STREAMON；首次启动有一次 437.40 ms 峰值并记录 1 次 overrun。该结果不包含真实 USB、解码、OM/NPU 或板端资源开销。
 
 ## 当前硬件阻塞
 
-2026-07-28 收尾检查时，Windows 的物理“以太网”和“以太网 2”均为 `Disconnected`，没有 `192.168.1.0/24` 本机地址；`192.168.1.102` 和 `192.168.1.168` 均无 ICMP/SSH 响应。因此没有执行本分支上传、systemd 启动或重启验收，以下结果保持 `BLOCKED`：
+2026-07-28 收尾检查时，Windows 的物理以太网接口均为 `Disconnected`，板端私网地址无 ICMP/SSH 响应。因此没有执行本分支上传、systemd 启动或重启验收，以下结果保持 `BLOCKED`：
 
 - 左右 MR20 实际配置、扫描频率、多目标数量、丢帧率和 30 分钟稳定性。
 - 当前左右 UVC by-path、单 STREAMON 切换时延、每侧分类频率和失败恢复。
