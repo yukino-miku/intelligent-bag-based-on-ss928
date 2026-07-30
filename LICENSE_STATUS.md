@@ -1,7 +1,11 @@
 # 仓库许可状态
 
-截至 2026-07-30，本仓库没有经项目权利人确认、覆盖全部原创内容的根许可证。未经权利人另行授权，本仓库内容不能仅因能够从 GitHub 访问就被视为已授予复制、修改、再分发或商业使用许可。
+自 `smartbag-v1.0.0-rc2` 起，本仓库中由项目权利人发布的源码、文档和生成资产
+按 GNU Affero General Public License v3.0 only 分发，完整条款见根目录 `LICENSE`。
 
-这不是一个开源许可证。项目所有者需要在正式公开发布前选择并提交适当的根许可证，同时确认队友来源代码、CAD、音频和模型是否有权按该许可证再分发。
+该根许可不会覆盖或改变第三方组件自身的条款。SS928 SDK、ACL 运行库、板端系统
+镜像、厂商工具链和禁止再分发的二进制没有进入仓库。模型和音频的具体来源见
+`MODEL_LICENSES.md`、`AUDIO_LICENSES.md` 和 `THIRD_PARTY_NOTICES.md`。
 
-第三方内容仍受各自许可证或使用条款约束，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 和 [02_research/third-party-notices.md](02_research/third-party-notices.md)。SS928 SDK/ACL runtime、系统镜像和 BMI270 厂商初始化数据不随仓库分发。YOLO11n OM 候选已按项目所有者要求提交到 Git，但仍不包含在 RC 发布包中，也不代表上游许可兼容性或实板验收已经完成。
+来源仓库迁移内容、硬件厂商资料及可选依赖仍需使用者按对应通知核对。本文不是
+法律意见；闭源或商业交付尤其应重新审查 Ultralytics 和板卡厂商的许可条件。

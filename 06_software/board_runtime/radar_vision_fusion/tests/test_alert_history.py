@@ -29,7 +29,7 @@ class AlertHistoryStoreTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             calls = []
 
-            def provider(side):
+            def provider(side, frame_id=None):
                 calls.append(side)
                 return frame(side, 10.0)
 
@@ -57,7 +57,7 @@ class AlertHistoryStoreTest(unittest.TestCase):
 
     def test_level_upgrade_or_track_change_creates_new_event(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            store = AlertHistoryStore(temp_dir, snapshot_provider=lambda side: frame(side, 20.0))
+            store = AlertHistoryStore(temp_dir, snapshot_provider=lambda side, frame_id=None: frame(side, 20.0))
             first = store.apply("right", 3, {"radar_track_key": "r:1"}, now_mono_s=20.0, now_epoch_s=200.0)
             second = store.apply("right", 4, {"radar_track_key": "r:1"}, now_mono_s=20.1, now_epoch_s=201.0)
             third = store.apply("right", 4, {"radar_track_key": "r:2"}, now_mono_s=20.2, now_epoch_s=202.0)
@@ -67,7 +67,7 @@ class AlertHistoryStoreTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             requested = []
 
-            def provider(side):
+            def provider(side, frame_id=None):
                 requested.append(side)
                 return frame(side, 1.0)
 
@@ -76,6 +76,47 @@ class AlertHistoryStoreTest(unittest.TestCase):
             self.assertEqual(["right"], requested)
             self.assertEqual("stale", event["image_status"])
             self.assertEqual("", event["image_path"])
+
+    def test_expired_exact_frame_never_highlights_detection_on_new_frame(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            latest = frame("left", 30.0)
+            latest = ClassificationFrame(
+                latest.side, 101, latest.captured_mono_s, latest.image_width, latest.image_height,
+                (VehicleDetection.from_bbox(0, 2, "truck", 0.9, (100, 20, 150, 100)),),
+                latest.camera_state, latest.capture_latency_ms, latest.inference_latency_ms,
+                image=latest.image,
+            )
+            store = AlertHistoryStore(temp_dir, snapshot_provider=lambda side, frame_id=None: latest)
+            event = store.apply(
+                "left",
+                3,
+                {"radar_track_key": "left:1", "visual_frame_id": 100, "detection_id": 0},
+                now_mono_s=30.1,
+                now_epoch_s=400.0,
+            )
+            self.assertEqual("frame_mismatch", event["image_status"])
+            self.assertEqual(101, event["image_frame_id"])
+            self.assertFalse(event["association_relinked"])
+
+    def test_retention_prunes_old_inactive_events_and_images(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = AlertHistoryStore(
+                temp_dir,
+                snapshot_provider=lambda side, frame_id=None: frame(side, 40.0),
+                max_events=2,
+                max_images=1,
+            )
+            first = store.apply("left", 3, {"radar_track_key": "a"}, now_mono_s=40.0, now_epoch_s=500.0)
+            store.apply("left", 0, {}, now_mono_s=40.1, now_epoch_s=501.0)
+            second = store.apply("left", 3, {"radar_track_key": "b"}, now_mono_s=40.2, now_epoch_s=502.0)
+            store.apply("left", 0, {}, now_mono_s=40.3, now_epoch_s=503.0)
+            third = store.apply("left", 3, {"radar_track_key": "c"}, now_mono_s=40.4, now_epoch_s=504.0)
+            history = store.history(limit=10)["events"]
+            self.assertEqual(2, len(history))
+            self.assertIsNone(store.get(first["event_id"]))
+            self.assertIsNotNone(store.get(second["event_id"]))
+            self.assertEqual(1, store.storage_status()["image_count"])
+            self.assertEqual("saved", third["image_status"])
 
 
 if __name__ == "__main__":

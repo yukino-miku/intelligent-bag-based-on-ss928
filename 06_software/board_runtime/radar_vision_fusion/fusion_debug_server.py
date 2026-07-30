@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import hmac
+import ipaddress
 import threading
 import time
 from http import HTTPStatus
@@ -18,14 +20,17 @@ class FusionDebugServer:
     def __init__(
         self,
         runtime: RadarVisionFusionRuntime,
-        bind: str = "0.0.0.0",
+        bind: str = "127.0.0.1",
         port: int = 8080,
         access_token: str = "",
+        admin_token: str = "",
+        readonly_token: str = "",
     ) -> None:
         self.runtime = runtime
         self.bind = bind
         self.port = int(port)
-        self.access_token = access_token
+        self.admin_token = admin_token or access_token
+        self.readonly_token = readonly_token
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -34,6 +39,8 @@ class FusionDebugServer:
         return int(self._server.server_address[1]) if self._server is not None else self.port
 
     def start(self) -> None:
+        if not _is_loopback_bind(self.bind) and not (self.admin_token or self.readonly_token):
+            raise ValueError("non-loopback fusion API bind requires an API token")
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -65,7 +72,7 @@ class FusionDebugServer:
 
     def _handle_get(self, handler: BaseHTTPRequestHandler) -> None:
         parsed = urlparse(handler.path)
-        if not self._authorized(handler, parsed.query):
+        if not self._authorized(handler, write=False):
             self._json(handler, HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
             return
         if parsed.path == "/api/v1/fusion/status":
@@ -121,7 +128,7 @@ class FusionDebugServer:
 
     def _handle_patch(self, handler: BaseHTTPRequestHandler) -> None:
         parsed = urlparse(handler.path)
-        if not self._authorized(handler, parsed.query):
+        if not self._authorized(handler, write=True):
             self._json(handler, HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
             return
         if parsed.path != "/api/v1/settings/runtime":
@@ -137,7 +144,7 @@ class FusionDebugServer:
 
     def _handle_post(self, handler: BaseHTTPRequestHandler) -> None:
         parsed = urlparse(handler.path)
-        if not self._authorized(handler, parsed.query):
+        if not self._authorized(handler, write=True):
             self._json(handler, HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
             return
         if parsed.path != "/api/v1/settings/runtime/reset":
@@ -150,15 +157,19 @@ class FusionDebugServer:
             return
         self._json(handler, HTTPStatus.OK, result)
 
-    def _authorized(self, handler: BaseHTTPRequestHandler, query: str) -> bool:
-        if not self.access_token:
-            return True
-        token = parse_qs(query).get("token", [""])[0]
-        token = handler.headers.get("X-SmartBag-Token", token)
+    def _authorized(self, handler: BaseHTTPRequestHandler, *, write: bool) -> bool:
+        token = handler.headers.get("X-SmartBag-Token", "")
         authorization = handler.headers.get("Authorization", "")
         if authorization.startswith("Bearer "):
             token = authorization[7:]
-        return token == self.access_token
+        if write:
+            return bool(self.admin_token) and hmac.compare_digest(token, self.admin_token)
+        if not self.admin_token and not self.readonly_token and _is_loopback_bind(self.bind):
+            return True
+        return any(
+            expected and hmac.compare_digest(token, expected)
+            for expected in (self.admin_token, self.readonly_token)
+        )
 
     def _snapshot(self, side: str) -> bytes | None:
         import cv2
@@ -261,3 +272,12 @@ class FusionDebugServer:
         handler.send_header("Content-Length", str(len(body)))
         handler.end_headers()
         handler.wfile.write(body)
+
+
+def _is_loopback_bind(bind: str) -> bool:
+    if bind.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(bind).is_loopback
+    except ValueError:
+        return False

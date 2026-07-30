@@ -1,81 +1,94 @@
 # 基于 SS928 的智能背包
 
-本仓库是项目唯一正式代码库，覆盖 PC 视觉原型、SS928 板端运行时、硬件接线、统一告警 Controller、CloudBase 与微信小程序。新的板端正式候选架构以双 MR20 的位置/速度作为风险运动数据源，左右 USB 摄像头只交替快照识别车型；融合后复用原视觉 RiskModel。PC 纯视觉模式继续保留用于回归和视频调试。
+本仓库提供 PC 视觉避障原型和 SS928 板端正式运行时。板端主链路由双 MR20 持续提供目标位置与速度，左右 USB 摄像头交替抓取快照，单个 SS928 NPU/OM 模型只补充车辆类别，最终统一进入共享 `RiskModel`、每目标 0.5 秒风险中位数和 Controller。视觉不可用时，雷达轨迹以 `unknown` 类别继续使用同一风险核心，不退回旧阈值算法。
 
-## 系统能力
+> 这是工程原型，不是经过安全认证的防碰撞设备。真实使用前必须完成硬件标定、误报/漏报、端到端时延、热稳定、断电恢复和独立供电测试。
 
-- **视觉避障**：USB camera/视频输入、Ultralytics YOLO、BoT-SORT、单目测距/测速、CPA、有限前方走廊、Future Conflict Gate、多帧稳定、visual/haptic 分层、自身前景/边缘截断保护、risk CSV、overlay 与保存视频。
-- **雷达主导融合**：双 MR20 按 0x60A/0x60B 完整性组包；完整和不完整扫描明确区分，不完整扫描不会误删未上报轨迹。
-- **交替快照分类**：Linux 原生 V4L2 预开两路 fd/mmap，左右任意时刻最多一路 STREAMON，共用一个 YOLO/OM；0.20 秒是相邻侧启动调度目标，不是未经实板验证的承诺。
-- **当前图关联**：雷达投影容差区间与扩展 bbox 必须水平重合，再用 Hungarian 一一匹配；每张图原子替换本侧车型映射，未匹配、歧义或过期均为 unknown，不做历史车型绑定。
-- **目标级风险**：融合内部没有雷达/视觉混合队列。每次新雷达观测调用原 RiskModel，每个轨迹用固定 0.5 秒 score 中位数和可调灵敏度输出正式等级。
-- **告警输出**：Controller 按侧选择中位数窗口中最危险目标，驱动 TCA9548A 后的左右 TM6605/LRA、Pin7/Pin32 灯和可选 MAX98357 音频；legacy 视觉才继续使用旧多帧 stabilizer。
-- **姿态与跌倒**：BMI270 单进程采集，支持 IIO/用户态 I2C、姿态、驼背累计提醒、跌倒/撞击融合；最终严重跌倒可异步上云并按配置发送短信或电话。
-- **定位与通信**：DX-GP21 NMEA/WGS84/JSONL 轨迹可选；MT5710 正式服务只管理 5G NCM；GNSS 无效时不会伪造位置。
-- **云和移动端**：CloudBase telemetry/查询函数，统一 `SS928-SmartBag` BLE NUS，以及双摄、交通危险事件、运行参数、轨迹、姿态和远程命令页面。三级/四级事件按 event_id 去重并可保存同侧图片。
-- **板端运维**：统一 `/root/smartbag`、`/etc/smartbag`、`/var/lib/smartbag`、`/var/log/smartbag`，支持 install/upgrade/preflight/safe-off/status/logs/systemd target 和硬件 profile。
+## 一键部署
 
-## 关键文档
+在 SS928 Ubuntu 板端执行：
 
-| 内容 | 入口 |
-|---|---|
-| PC 视觉运行、参数与风险语义 | [视觉 README](06_software/vision_obstacle_tracker/README.md) |
-| SS928 安装、配置、自启和排障 | [部署 README](09_deliverables/board_deploy/README.md) |
-| 整合后的进程和硬件所有权 | [系统架构](03_design/integrated-system-architecture.md) |
-| 40Pin 唯一接线事实源 | [40Pin 表](04_hardware/ss928/40pin-usage.md) |
-| 来源逐文件审计 | [整合计划](00_admin/sanda-full-integration-plan.md)、[24,421 文件 manifest](00_admin/sanda-full-file-manifest.csv) |
-| 当前完成/未验证项 | [integration-status](00_admin/integration-status.md) |
-| 雷达主导融合设计与边界 | [设计审计](02_research/radar-primary-vision-fusion-design.md)、[模块 README](06_software/board_runtime/radar_vision_fusion/README.md) |
-| 本地 PT/ONNX/OM 审计与部署阻塞 | [已提交的 OM 候选](08_media/models/README.md)、[模型清单](00_admin/local-model-inventory.md)、[部署 manifest](09_deliverables/board_deploy/models/vehicle-detector.manifest.json) |
-| 克隆安装就绪度与本机资产 | [readiness](00_admin/clone-install-readiness.md)、[资产清单](00_admin/local-deployment-asset-inventory.md) |
-| RC1 发布审计 | [release-candidate-audit](00_admin/release-candidate-audit.md) |
-| 微信小程序导入与 CloudBase | [小程序部署](06_software/mobile/ssminiprogram/DEPLOYMENT.md) |
-| 第三方来源和许可边界 | [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES.md) |
-| 仓库根许可状态 | [LICENSE_STATUS](LICENSE_STATUS.md) |
+```sh
+git clone https://github.com/yukino-miku/intelligent-bag-based-on-ss928.git
+cd intelligent-bag-based-on-ss928
+sudo ./install-on-ss928.sh --interactive
+sudo reboot
+```
 
-## PC 快速运行
+交互安装会校验 AArch64 runner 和正式 OM、生成 API Token、发现并确认左右摄像头、安装 systemd，并引导融合标定。标定未完成时会保持安全的 `radar_only`；该模式仍走共享 RiskModel 和 0.5 秒窗口。完成标定后重新运行 `sudo ./install-on-ss928.sh --full`。
+
+```sh
+systemctl status smartbag.target
+journalctl -u smartbag-alert.service -f
+sudo ./validate-on-ss928.sh --full --duration 30m
+```
+
+详细步骤见 [板端部署说明](09_deliverables/board_deploy/README.md)。
+
+## 板端数据链
+
+```text
+双 MR20 UDP -> 完整扫描 -> RadarTrackManager -> 共享 RiskModel
+                                             ^
+左右 UVC 交替快照 -> vehicle-detector.om -> 当前帧一一关联
+
+共享 RiskModel -> 每目标 0.5 秒中位数/质量门 -> Controller
+               -> TM6605/LRA + 灯 + 可选音频 + BLE + L3/L4 本地事件
+```
+
+- `radar_primary_visual_classification`：正式 full 模式，雷达决定运动量，视觉只补充 `bicycle/motorcycle/car/truck/bus` 类别。
+- `radar_only`：视觉关闭，类别为 `unknown`、权重为 1.0，风险算法完全相同。
+- `legacy_mr20_threshold_test`：仅显式诊断旧硬件，不进入默认安装或 systemd。
+- `legacy_dual_vision`：保留 PC 视频回归，不是板端正式主链。
+
+风险输出区分 raw、visual、haptic 和实际执行器等级。正式震动只使用稳定后的 haptic 结果；L3/L4 快照按相同 `frame_id + detection_id` 绘制，原帧过期时不把旧框套到新图。
+
+## 正式交付资产
+
+| 内容 | 路径 | SHA256/状态 |
+|---|---|---|
+| SS928 车辆 OM | `09_deliverables/board_deploy/models/vehicle-detector.om` | `9e3c448ab7309428ea78cfdc509926404220fa74dd56c89e4995366f5f16af95` |
+| AArch64 runner | `09_deliverables/board_deploy/bin/aarch64/ss928_detection_runner` | `332c792dc7a64190e182f6260edb455668e1885e883a0e48c794728eed024737` |
+| OM inspector | `09_deliverables/board_deploy/bin/aarch64/om_inspect` | manifest 校验 |
+| 模型/runner 契约 | 同目录两个 manifest | 静态契约 PASS，板端 ACL 检测 PENDING |
+
+模型是 YOLO11n COCO80 的 SS928 转换产物，输入为 FP32 RGB_PLANAR `[1,3,640,640]`，输出为 FP32 `[1,84,8400]`。runner 根据 ACL descriptor 选择 NV12、RGB UINT8 或 RGB FP32 预处理并拒绝不匹配形状。`runner_compatible=true` 只表示静态契约匹配，不能替代真实板端检测证据。
+
+仓库按 AGPL-3.0-only 分发；模型、生成音频和第三方来源分别见 [MODEL_LICENSES](MODEL_LICENSES.md)、[AUDIO_LICENSES](AUDIO_LICENSES.md) 和 [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES.md)。厂商 SDK、ACL runtime、系统镜像、工具链、密钥和个人测试视频不进入 Git 或 Release。
+
+## PC 视觉回归
 
 ```powershell
 cd .\06_software\vision_obstacle_tracker
 py -m pip install -r requirements.txt
 
-# 摄像头实时检测
+# USB 摄像头
 py vision_obstacle_tracker.py --source camera --runtime-profile cpu_demo --profile
 
 # 视频检测
 py vision_obstacle_tracker.py --source video --video D:\path\input.mp4 --runtime-profile cpu_demo --roi-top-ratio 0.20 --profile
 
-# 保存完整带框视频
+# 保存完整带框录像
 py vision_obstacle_tracker.py --source video --video D:\path\input.mp4 --save-output D:\path\overlay.mp4 --no-display
 ```
 
-`--display-every-n` 只降低窗口刷新频率，不减少 YOLO、跟踪、测距或风险计算；`--max-frames` 限制实际处理帧数。详细参数以视觉 README 和 `--help` 为准。
+`--display-every-n` 只降低窗口刷新频率，不跳过 YOLO、跟踪、测距和风险计算；`--max-frames` 限制实际处理帧数。视觉风险语义和参数见 [视觉 README](06_software/vision_obstacle_tracker/README.md)。
 
-## SS928 快速部署
+## 目录入口
 
-```sh
-git clone --branch agent/radar-primary-vision-class-fusion --single-branch \
-  https://github.com/yukino-miku/intelligent-bag-based-on-ss928.git
-cd intelligent-bag-based-on-ss928
+| 内容 | 文档 |
+|---|---|
+| 板端安装、相机、MR20、API、标定与排障 | [board_deploy](09_deliverables/board_deploy/README.md) |
+| 系统进程与事件协议 | [03_design](03_design/board-process-architecture.md) |
+| 40Pin 唯一接线事实源 | [40pin-usage](04_hardware/ss928/40pin-usage.md) |
+| 微信小程序导入与本地/CloudBase 部署 | [小程序 DEPLOYMENT](06_software/mobile/ssminiprogram/DEPLOYMENT.md) |
+| 分支收敛与归档 tag | [final branch plan](00_admin/final-branch-consolidation-plan.md) |
+| 本地资产审计与 clone 就绪度 | [asset inventory](00_admin/local-deployment-asset-inventory.md)、[clone readiness](00_admin/clone-install-readiness.md) |
+| RC2 离线包 | [releases](09_deliverables/releases/README.md) |
 
-# 当前可审计的安全降级安装；不启用未验收的视觉分类
-sudo ./install-on-ss928.sh --radar-only --yes
+## 验证状态
 
-# 完整模式只有在正式模型 manifest、实板 descriptor 和标定全部通过后才允许
-# sudo ./install-on-ss928.sh --model-source /合法来源/vehicle-detector.om --yes
-```
-
-默认示例 profile 是 `radar_primary_visual_classification`：双 MR20 + 单模型交替快照 + BMI270 + TM6605/LRA + 灯。Controller 是 BLE、振动、灯、音频、雷达 worker 和融合运行时的唯一所有者；GNSS/BMI 默认 `--no-ble`。摄像头或 YOLO 失败不会清空雷达轨迹，只会让车型退化为 unknown；服务停止、空风险窗口、事件过期和异常仍由 clear/safe-off 清除输出。
-
-## NPU/OM 当前状态
-
-本地完整审计找到 YOLO11n 的 `.pt`、`.onnx` 和已由 ATC 生成的 `.om`，详见 [模型清单](00_admin/local-model-inventory.md)。候选 OM 已按项目所有者要求提交到 [08_media/models](08_media/models/README.md)，SHA256 为 `9e3c448ab7309428ea78cfdc509926404220fa74dd56c89e4995366f5f16af95`。当前 AArch64 runner 已根据 ACL descriptor 支持 NV12 UINT8、RGB_PLANAR UINT8 和 RGB_PLANAR FP32，并由 Python 统一传 BGR24 帧；PT/ONNX 三帧同图车辆结果已通过。但候选 OM 的真实板端 descriptor、检测结果和 Ultralytics AGPL/仓库根许可兼容性仍未通过，因此它仍不进入 RC Release，`runner_compatible=false`。正式文件名统一为 `/root/smartbag/models/vehicle-detector.om`，manifest/preflight 会阻止错误兼容声明；OpenVINO 只代表 CPU 优化，不等于 SS928 NPU。
-
-## 已验证与限制
-
-- Windows 本地已通过 385 项 Python、12 个小程序/CloudBase Node 测试文件、4 个 NPU native C++ tests、1 个 C 兼容核心测试和 1 个 C++ backend 测试，并完成 compileall、38 个 JavaScript、42 个 JSON、30 个 Shell、凭据扫描和 `git diff --check`；命令口径和限制见 [integration-status](00_admin/integration-status.md)。
-- 既有实板记录确认 SS928 Ubuntu/aarch64、两台 UVC 枚举和单路出帧；当时两相机共用 USB 2.0 hub，双路出现 `ENOSPC`。更换端口后的持续双路采集、正式 detector FPS/内存/温度仍须复测。
-- 本分支 2026-07-28 收尾时电脑物理以太网接口断开，板端私网地址不可达，因此没有执行上传、服务启动或 reboot 验证。
-- TM6605、灯、MR20、BMI270、DX-GP21、MAX98357、MT5710、WS73、Tsensor 和 reboot 自启都必须以当前实际接线再验收，文档中的历史结果不能替代本轮实板测试。
-- 单目避障与跌倒判断不是安全认证系统；真实使用前必须做标定、硬件在环、误报/漏报、端到端时延、热稳定和断电恢复测试。
-- `08_media` 不再整目录排除；其中经确认的 OM 候选、转换清单、校验文件和硬件参考图片可以提交。个人测试视频、检测输出、板端日志、SDK/runtime、工具链、构建缓存、真实标定、设备密码/IP、Cloud token、手机号和大体积来源归档仍不提交 Git。
+- `CLONE_INSTALL_READY=true` 仅在 GitHub 远程干净 clone、资产校验、full/radar-only mock 安装、重复安装、卸载保留数据和 RC2 包检查全部通过后成立。
+- `BOARD_INSTALL_VERIFIED=false`：本次发布没有把历史板端记录冒充当前 RC2 完整安装结果。
+- `POWER_ONLY_AUTOSTART_READY=false`：尚无 RC2 reboot 后拔除电脑、独立供电冷启动证据。
+- 真机验收统一执行 `sudo ./validate-on-ss928.sh --full --duration 30m`，并另做 reboot 与独立供电测试。

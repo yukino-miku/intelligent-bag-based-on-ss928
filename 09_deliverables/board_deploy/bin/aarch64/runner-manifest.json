@@ -2,8 +2,8 @@
   "schema_version": 1,
   "runner": {
     "name": "ss928_detection_runner",
-    "sha256": "0be03a9772e511a57885731c2d0570071077b638c263af5e0a39f680205e93af",
-    "size_bytes": 505464,
+    "sha256": "332c792dc7a64190e182f6260edb455668e1885e883a0e48c794728eed024737",
+    "size_bytes": 505624,
     "architecture": "AArch64",
     "elf_type": "PIE executable",
     "interpreter": "/lib/ld-linux-aarch64.so.1",
@@ -15,6 +15,7 @@
       "libdl.so.2"
     ],
     "protocol": "stdin request lines and stdout detections JSONL",
+    "contract_version": "smartbag-ss928-detection-jsonl-v2",
     "supported_inputs": [
       "NV12 UINT8 [1,960,640,1] 614400 bytes",
       "RGB_PLANAR UINT8 [1,3,640,640] 1228800 bytes",
@@ -35,6 +36,7 @@
     ]
   },
   "build": {
+    "build_commit": "RC2_SOURCE_COMMIT_RECORDED_IN_RELEASE_MANIFEST",
     "compiler": "Zig 0.16.0 c++",
     "target": "aarch64-linux-gnu",
     "script": "06_software/vision_obstacle_tracker/ss928_backend/scripts/build_aarch64_release.sh",

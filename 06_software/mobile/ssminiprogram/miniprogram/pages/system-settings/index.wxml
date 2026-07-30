@@ -8,7 +8,10 @@
     <view class="section__title">{{side === 'left' ? '左侧安装参数' : '右侧安装参数'}}</view>
     <view class="field" wx:for="{{sideFields}}" wx:key="key">
       <text class="field__label">{{item.label}}</text>
-      <input class="field__input" type="digit" value="{{settings[side][item.key]}}" data-section="{{side}}" data-key="{{item.key}}" bindinput="updateValue" />
+      <view class="field__control">
+        <input class="field__input" type="digit" value="{{settings[side][item.key]}}" disabled="{{settings.effective_parameters[side][item.key].editable === false}}" data-section="{{side}}" data-key="{{item.key}}" bindinput="updateValue" />
+        <text class="field__source">{{settings.effective_parameters[side][item.key].parameter_source || 'simplified_mount'}} · 生效值 {{settings.effective_parameters[side][item.key].effective_value}}</text>
+      </view>
     </view>
   </view>
 

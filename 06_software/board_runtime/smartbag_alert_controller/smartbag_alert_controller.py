@@ -817,7 +817,12 @@ def best_effort_stop_all(
 def run_controller(args: argparse.Namespace) -> int:
     config = load_controller_config(args.config)
     runtime_mode = str(config.get("runtime_mode", "legacy_dual_vision"))
-    if runtime_mode not in {"legacy_dual_vision", "radar_only", "radar_primary_visual_classification"}:
+    if runtime_mode not in {
+        "legacy_dual_vision",
+        "legacy_mr20_threshold_test",
+        "radar_only",
+        "radar_primary_visual_classification",
+    }:
         raise ValueError(f"unsupported runtime_mode: {runtime_mode}")
     if runtime_mode == "legacy_dual_vision":
         validate_dual_camera_config(config)
@@ -960,26 +965,37 @@ def run_controller(args: argparse.Namespace) -> int:
                     detectors.append(detector)
 
         radar_path = str(args.radar_config or radar_config.get("config", ""))
-        if runtime_mode == "radar_primary_visual_classification":
+        if runtime_mode in {"radar_only", "radar_primary_visual_classification"}:
             if args.radar_config:
                 config = dict(config)
                 config["radar"] = {**radar_config, "config": args.radar_config, "enabled": True}
-            fusion_runtime = build_fusion_runtime(config, event_queue.put)
+            fusion_runtime = build_fusion_runtime(
+                config,
+                event_queue.put,
+                enable_classifier=runtime_mode == "radar_primary_visual_classification",
+            )
             fusion_runtime.start()
-            eprint("started radar-primary visual-classification fusion runtime")
+            eprint(f"started shared radar fusion runtime mode={runtime_mode}")
             fusion_config = config.get("fusion", {}) if isinstance(config.get("fusion", {}), dict) else {}
             if bool(fusion_config.get("debug_http_enabled", True)):
                 fusion_debug_server = FusionDebugServer(
                     fusion_runtime,
-                    bind=str(fusion_config.get("debug_bind", "0.0.0.0")),
+                    bind=str(fusion_config.get("debug_bind", "127.0.0.1")),
                     port=int(fusion_config.get("debug_port", 8080)),
-                    access_token=str(fusion_config.get("debug_access_token", "")),
+                    admin_token=os.environ.get(
+                        "SMARTBAG_API_TOKEN",
+                        str(fusion_config.get("debug_access_token", "")),
+                    ),
+                    readonly_token=os.environ.get("SMARTBAG_API_READONLY_TOKEN", ""),
                 )
                 fusion_debug_server.start()
-                eprint(f"started fusion debug API on {fusion_config.get('debug_bind', '0.0.0.0')}:{fusion_config.get('debug_port', 8080)}")
+                eprint(
+                    f"started authenticated fusion debug API on "
+                    f"{fusion_config.get('debug_bind', '127.0.0.1')}:{fusion_config.get('debug_port', 8080)}"
+                )
             if fusion_runtime.classifier is None:
                 eprint(f"WARN snapshot classification BLOCKED: {fusion_runtime.classifier_error}; radar unknown-class fallback remains active")
-        elif bool(radar_config.get("enabled", False)) and radar_path:
+        elif runtime_mode == "legacy_mr20_threshold_test" and bool(radar_config.get("enabled", False)) and radar_path:
             radar_specs, radar_risk = load_radar_configs(radar_path)
             for spec in radar_specs:
                 radar = MR20RadarWorker(spec, radar_risk, event_queue.put)

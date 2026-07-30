@@ -1,2 +1,10 @@
-sleep_seconds=0.3
-timeout_seconds=2.0
+duration_seconds=0.200
+sleep_seconds=3
+timeout_seconds=11
+remote_dir=/root/smartbag/audio/L1
+remote_command:
+cd /root/smartbag/audio/L1 || exit 1
+bspmm 0x102F010C 0x1202
+bspmm 0x102F0108 0x1102
+bspmm 0x102F0104 0x1202
+{ sleep 3; printf '\n\n'; } | timeout 11 /opt/sample/audio/sample_audio 2

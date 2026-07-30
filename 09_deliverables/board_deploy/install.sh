@@ -57,9 +57,12 @@ install -m 0755 "$SCRIPT_DIR/bin/aarch64/om_inspect" "$DEST/vision/ss928_backend
 install -m 0644 "$RUNNER_MANIFEST" "$DEST/vision/ss928_backend/bin/runner-manifest.json"
 
 MODEL_DEST="$DEST/models/vehicle-detector.om"
-MODEL_SOURCE=${SMARTBAG_MODEL_SOURCE:-}
+MODEL_SOURCE=${SMARTBAG_MODEL_SOURCE:-$SCRIPT_DIR/models/vehicle-detector.om}
 if [ -n "$MODEL_SOURCE" ]; then
     [ -f "$MODEL_SOURCE" ] || { echo "model source does not exist: $MODEL_SOURCE" >&2; exit 1; }
+    python3 "$SCRIPT_DIR/verify_release_assets.py" \
+        --runner "$RUNNER_SOURCE" --runner-manifest "$RUNNER_MANIFEST" \
+        --model "$MODEL_SOURCE" --model-manifest "$SCRIPT_DIR/models/vehicle-detector.manifest.json"
     install -m 0644 "$MODEL_SOURCE" "$MODEL_DEST"
     install -m 0644 "$SCRIPT_DIR/models/vehicle-detector.manifest.json" "$DEST/models/vehicle-detector.manifest.json"
     echo "Installed explicit model source $MODEL_SOURCE -> $MODEL_DEST"
@@ -101,6 +104,36 @@ PY
 if [ ! -f "$ETC/smartbag.env" ]; then
     install -m 0600 "$SCRIPT_DIR/smartbag.env.example" "$ETC/smartbag.env"
 fi
+python3 - "$ETC/smartbag.env" <<'PY'
+import os
+import secrets
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+lines = path.read_text(encoding="utf-8").splitlines()
+required = ("SMARTBAG_API_TOKEN", "SMARTBAG_API_READONLY_TOKEN")
+values = {}
+for line in lines:
+    if "=" in line and not line.lstrip().startswith("#"):
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip()
+for key in required:
+    if not values.get(key):
+        replacement = secrets.token_urlsafe(32)
+        prefix = key + "="
+        for index, line in enumerate(lines):
+            if line.startswith(prefix):
+                lines[index] = prefix + replacement
+                break
+        else:
+            lines.append(prefix + replacement)
+temporary = path.with_suffix(path.suffix + ".tmp")
+temporary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+os.chmod(temporary, 0o600)
+os.replace(temporary, path)
+os.chmod(path, 0o600)
+PY
 cp "$SCRIPT_DIR/systemd/"*.service "$SCRIPT_DIR/systemd/smartbag.target" "$SYSTEMD_DIR/"
 
 if [ -z "$ROOT_PREFIX" ] && [ "${SMARTBAG_SKIP_SYSTEMD:-0}" != "1" ]; then

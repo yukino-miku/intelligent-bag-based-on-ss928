@@ -3,7 +3,7 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
-VERSION=${1:-smartbag-v1.0.0-rc1}
+VERSION=${1:-smartbag-v1.0.0-rc2}
 REF=${2:-HEAD}
 OUTPUT_DIR=${OUTPUT_DIR:-$SCRIPT_DIR}
 PACKAGE_NAME="smartbag-ss928-${VERSION#smartbag-}"
@@ -16,7 +16,9 @@ rm -rf "$STAGING/$PACKAGE_NAME/08_media" "$STAGING/$PACKAGE_NAME/10_archive"
 
 python3 "$STAGING/$PACKAGE_NAME/09_deliverables/board_deploy/verify_release_assets.py" \
     --runner "$STAGING/$PACKAGE_NAME/09_deliverables/board_deploy/bin/aarch64/ss928_detection_runner" \
-    --runner-manifest "$STAGING/$PACKAGE_NAME/09_deliverables/board_deploy/bin/aarch64/runner-manifest.json"
+    --runner-manifest "$STAGING/$PACKAGE_NAME/09_deliverables/board_deploy/bin/aarch64/runner-manifest.json" \
+    --model "$STAGING/$PACKAGE_NAME/09_deliverables/board_deploy/models/vehicle-detector.om" \
+    --model-manifest "$STAGING/$PACKAGE_NAME/09_deliverables/board_deploy/models/vehicle-detector.manifest.json"
 
 COMMIT=$(git -C "$REPO_ROOT" rev-parse "$REF^{commit}")
 python3 - "$STAGING/$PACKAGE_NAME" "$VERSION" "$COMMIT" <<'PY'
@@ -35,15 +37,22 @@ manifest = {
     "schema_version": 1,
     "version": sys.argv[2],
     "git_commit": sys.argv[3],
-    "full_install_ready": False,
+    "clone_install_ready": True,
+    "full_install_assets_ready": True,
+    "full_mode_requires_measured_calibration": True,
     "radar_only_static_ready": True,
-    "model_included": False,
+    "model_included": True,
     "runner_included": True,
-    "blocking_reason": "vehicle model license and SS928 board validation are unresolved",
+    "board_install_verified": False,
+    "power_only_autostart_ready": False,
+    "board_validation_status": "PENDING",
     "files": files,
 }
 (root / "release-manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 PY
+
+cp "$STAGING/$PACKAGE_NAME/release-manifest.json" "$OUTPUT_DIR/release-manifest.json"
+cp "$STAGING/$PACKAGE_NAME/09_deliverables/board_deploy/dependency-manifest.json" "$OUTPUT_DIR/dependency-manifest.json"
 
 tar -czf "$OUTPUT_DIR/$PACKAGE_NAME.tar.gz" -C "$STAGING" "$PACKAGE_NAME"
 python3 - "$OUTPUT_DIR/$PACKAGE_NAME.tar.gz" "$OUTPUT_DIR/SHA256SUMS" <<'PY'
@@ -55,4 +64,4 @@ digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
 Path(sys.argv[2]).write_text(f"{digest}  {artifact.name}\n", encoding="ascii")
 print(f"{digest}  {artifact}")
 PY
-echo "Release bundle created. It supports honest radar-only installation; full visual mode remains blocked."
+echo "Release bundle created with model and runner. Full mode still requires measured board calibration."

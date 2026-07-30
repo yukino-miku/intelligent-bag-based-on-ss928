@@ -39,7 +39,13 @@ class RuntimeApiTest(unittest.TestCase):
                 alert_history_root=str(Path(self.temp.name) / "alerts"),
             ),
         )
-        self.server = FusionDebugServer(self.runtime, bind="127.0.0.1", port=0, access_token="secret")
+        self.server = FusionDebugServer(
+            self.runtime,
+            bind="127.0.0.1",
+            port=0,
+            admin_token="secret",
+            readonly_token="read-only",
+        )
         self.server.start()
         self.base = f"http://127.0.0.1:{self.server.bound_port}"
 
@@ -96,6 +102,22 @@ class RuntimeApiTest(unittest.TestCase):
         history = self.request("/api/v1/alerts/history?limit=5")[1]
         self.assertEqual([], history["events"])
 
+    def test_readonly_token_can_read_but_cannot_patch(self) -> None:
+        self.assertEqual(200, self.request("/api/v1/fusion/status", token="read-only")[0])
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            self.request(
+                "/api/v1/settings/runtime",
+                "PATCH",
+                {"risk": {"warning_sensitivity": 1.1}},
+                token="read-only",
+            )
+        self.assertEqual(401, raised.exception.code)
+
+    def test_non_loopback_bind_without_token_is_rejected(self) -> None:
+        server = FusionDebugServer(self.runtime, bind="0.0.0.0", port=0)
+        with self.assertRaisesRegex(ValueError, "requires an API token"):
+            server.start()
+
     def test_alert_detail_and_saved_image_endpoints(self) -> None:
         detection = VehicleDetection.from_bbox(7, 2, "car", 0.9, (10, 10, 80, 90))
         frame = ClassificationFrame(
@@ -120,6 +142,31 @@ class RuntimeApiTest(unittest.TestCase):
         with urllib.request.urlopen(image_request, timeout=2.0) as response:
             self.assertEqual("image/jpeg", response.headers.get_content_type())
             self.assertGreater(len(response.read()), 100)
+
+    def test_fixed_fx_reports_derived_fov_and_rejects_fov_patch(self) -> None:
+        runtime = RadarVisionFusionRuntime(
+            list(self.runtime.radar_configs.values()),
+            self.runtime.legacy_risk_config,
+            {
+                "left": FusionCalibration(
+                    side="left",
+                    camera_fx=320.0,
+                    camera_image_width_px=640,
+                    camera_horizontal_fov_deg=70.0,
+                )
+            },
+            lambda _event: None,
+            settings=FusionRuntimeSettings(
+                runtime_tuning_path=str(Path(self.temp.name) / "fixed-fx.json"),
+                alert_history_root=str(Path(self.temp.name) / "fixed-fx-alerts"),
+            ),
+        )
+        metadata = runtime.runtime_settings()["effective_parameters"]["left"]["camera_horizontal_fov_deg"]
+        self.assertAlmostEqual(90.0, metadata["effective_value"])
+        self.assertEqual("camera_intrinsics.fx", metadata["parameter_source"])
+        self.assertFalse(metadata["editable"])
+        with self.assertRaisesRegex(ValueError, "read-only"):
+            runtime.patch_runtime_settings({"left": {"camera_horizontal_fov_deg": 100.0}})
 
 
 if __name__ == "__main__":

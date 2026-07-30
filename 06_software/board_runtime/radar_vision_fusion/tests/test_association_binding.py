@@ -112,6 +112,27 @@ class AssociationTest(unittest.TestCase):
         projection = project_radar_track(track("left:1", "left", 1.0, 5.0), calibration, 1.0, 640, 480)
         self.assertAlmostEqual(448.0, projection.projected_u_px, places=4)
 
+    def test_radar_and_camera_mount_height_change_vertical_projection(self) -> None:
+        target = track("left:1", "left", 0.0, 5.0)
+        base = FusionCalibration(
+            side="left",
+            camera_fx=320.0,
+            camera_fy=320.0,
+            camera_cx=320.0,
+            camera_cy=240.0,
+            camera_mount_y_m=1.2,
+            radar_mount_y_m=1.0,
+            nominal_target_height_m=-0.2,
+        )
+        raised_radar = replace(base, radar_mount_y_m=1.2)
+        raised_camera = replace(base, camera_mount_y_m=1.4)
+        base_v = project_radar_track(target, base, 1.0, 640, 480).projected_v_px
+        radar_v = project_radar_track(target, raised_radar, 1.0, 640, 480).projected_v_px
+        camera_v = project_radar_track(target, raised_camera, 1.0, 640, 480).projected_v_px
+        self.assertIsNotNone(base_v)
+        self.assertLess(radar_v, base_v)
+        self.assertGreater(camera_v, base_v)
+
 
 class BindingTest(unittest.TestCase):
     def setUp(self) -> None:

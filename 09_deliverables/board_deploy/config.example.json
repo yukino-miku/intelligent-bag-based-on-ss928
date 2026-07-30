@@ -12,7 +12,7 @@
   },
   "cameras": {
     "left": {
-      "camera_device": "/dev/v4l/by-path/REPLACE_LEFT_CAMERA-video-index0",
+      "camera_device": "/dev/smartbag-camera-left",
       "detector_profile": "board_dual_balanced",
       "calibration_file": "/etc/smartbag/calibration-left.json",
       "camera_height": 1.2,
@@ -33,7 +33,7 @@
       "pwm_channels": ["left_1", "left_2"]
     },
     "right": {
-      "camera_device": "/dev/v4l/by-path/REPLACE_RIGHT_CAMERA-video-index0",
+      "camera_device": "/dev/smartbag-camera-right",
       "detector_profile": "board_dual_balanced",
       "calibration_file": "/etc/smartbag/calibration-right.json",
       "camera_height": 1.2,
@@ -77,8 +77,8 @@
     "camera_reset_backoff_s": 1.0,
     "inference_timeout_ms": 5000,
     "snapshot_interval_ms": 0,
-    "left_device": "/dev/v4l/by-path/REPLACE_LEFT_CAMERA-video-index0",
-    "right_device": "/dev/v4l/by-path/REPLACE_RIGHT_CAMERA-video-index0"
+    "left_device": "/dev/smartbag-camera-left",
+    "right_device": "/dev/smartbag-camera-right"
   },
   "fusion": {
     "left_calibration": "/etc/smartbag/fusion-left.json",
@@ -93,6 +93,10 @@
     "visual_class_max_age_s": 1.5,
     "risk_window_s": 0.5,
     "warning_sensitivity": 1.0,
+    "min_samples_per_window": 3,
+    "min_observed_duration_s": 0.25,
+    "min_complete_scan_ratio": 0.67,
+    "min_radar_quality": 0.5,
     "radar_track_timeout_s": 0.8,
     "radar_max_missed_scans": 3,
     "event_rate_limit_s": 0.25,
@@ -100,8 +104,16 @@
     "runtime_tuning_path": "/etc/smartbag/runtime-tuning.json",
     "alert_history_root": "/var/lib/smartbag/alarm-events",
     "max_alarm_snapshot_age_s": 2.0,
+    "frame_cache_per_side": 12,
+    "max_board_events": 500,
+    "max_board_images": 200,
+    "max_board_storage_mb": 256,
+    "retention_days": 30,
+    "worker_monitor_interval_s": 0.5,
+    "worker_restart_initial_backoff_s": 0.5,
+    "worker_restart_max_backoff_s": 8.0,
     "debug_http_enabled": true,
-    "debug_bind": "0.0.0.0",
+    "debug_bind": "127.0.0.1",
     "debug_port": 8080,
     "debug_access_token": ""
   },

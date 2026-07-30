@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "agent/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test dependencies
+        run: python -m pip install --disable-pip-version-check numpy opencv-python-headless
+      - name: Python tests
+        run: python .github/scripts/run_python_tests.py
+      - name: Python compileall
+        run: python -m compileall -q 05_firmware 06_software 07_tests 09_deliverables .github/scripts
+      - name: Mini program Node tests
+        working-directory: 06_software/mobile/ssminiprogram
+        run: for test in tests/*.test.js; do node "$test"; done
+      - name: Native C and C++ tests
+        run: |
+          make -C 06_software/vision_obstacle_tracker/c_port test backend-test
+          make -C 06_software/vision_obstacle_tracker/ss928_backend native-tests
+      - name: Shell syntax
+        run: git ls-files '*.sh' | xargs -r -n1 sh -n
+      - name: JSON, placeholders, and tracked assets
+        run: python .github/scripts/validate_repository.py
+      - name: Secret scan
+        run: python 06_software/tools/deployment_audit/check_repository_secrets.py --repo-root .
+      - name: Model and runner manifests
+        run: |
+          python 09_deliverables/board_deploy/verify_release_assets.py \
+            --model 09_deliverables/board_deploy/models/vehicle-detector.om \
+            --model-manifest 09_deliverables/board_deploy/models/vehicle-detector.manifest.json \
+            --runner 09_deliverables/board_deploy/bin/aarch64/ss928_detection_runner \
+            --runner-manifest 09_deliverables/board_deploy/bin/aarch64/runner-manifest.json
+      - name: Clean clone and release acceptance
+        run: .github/scripts/clean_clone_acceptance.sh
+      - name: Whitespace check
+        run: git diff --check HEAD^

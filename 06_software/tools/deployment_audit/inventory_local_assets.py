@@ -22,6 +22,7 @@ CONFIG_EXTENSIONS = {".json", ".yaml", ".yml", ".service", ".sh"}
 KEYWORDS = {
     "yolo", "vehicle", "detector", "runner", "acl", "ascend", "ss928", "aarch64", "mpp", "model",
     "camera", "calibration", "mr20", "bmi270", "tm6605", "ws73", "cloudbase", "smartbag", "deploy",
+    "om_inspect",
 }
 
 
@@ -52,7 +53,8 @@ def candidate(path: Path) -> bool:
     if extension in BINARY_EXTENSIONS:
         return True
     lowered = path.as_posix().lower()
-    return extension in CONFIG_EXTENSIONS and any(keyword in lowered for keyword in KEYWORDS)
+    has_keyword = any(keyword in lowered for keyword in KEYWORDS)
+    return (extension in CONFIG_EXTENSIONS and has_keyword) or (not extension and has_keyword)
 
 
 def iter_files(root: Path) -> Iterable[Path]:
@@ -82,14 +84,22 @@ def git_paths(repository: Path) -> tuple[set[str], set[str]]:
 
 def classify(root_id: str, relative: str, tracked: bool) -> tuple[str, str, str, str]:
     lowered = relative.lower()
+    if lowered == "09_deliverables/board_deploy/models/vehicle-detector.om":
+        return (
+            "Ultralytics YOLO11n SS928 release conversion",
+            "AGPL-3.0-only; see MODEL_LICENSES.md",
+            "GIT",
+            "static model/runner contract PASS; board ACL PENDING",
+        )
     if "09_deliverables/board_deploy/bin/aarch64" in lowered:
-        return "project source build", "project has no root LICENSE", "GIT", "host ELF/native PASS; board ACL PENDING"
+        return "project source build", "AGPL-3.0-only", "GIT", "host ELF/native PASS; board ACL PENDING"
     if lowered.endswith("yolo11n_ss928.om") or lowered.endswith("yolo11n_640.pt") or lowered.endswith("yolo11n_640.onnx"):
-        return "Ultralytics YOLO11n local conversion set", "AGPL-3.0 or enterprise; repository compatibility unresolved", "LICENSE_BLOCKED", "PT/ONNX PASS; ATC PASS; board OM PENDING"
+        decision = "GIT" if tracked else "LOCAL_ONLY"
+        return "Ultralytics YOLO11n conversion set", "AGPL-3.0-only or separately licensed enterprise", decision, "PT/ONNX PASS; ATC PASS; board OM PENDING"
     if root_id in {"repo_archive", "parent_tmp", "parent_backup"} or "sdk" in lowered or "toolchain" in lowered:
         return "vendor/archive/local backup", "redistribution not established", "DO_NOT_DISTRIBUTE", "local discovery only"
     if tracked:
-        return "project repository", "project has no root LICENSE", "GIT", "covered by repository tests where applicable"
+        return "project repository", "AGPL-3.0-only or documented third-party terms", "GIT", "covered by repository tests where applicable"
     return "local generated or runtime asset", "unknown; manual review required", "LOCAL_ONLY", "no portable success claim"
 
 
@@ -191,10 +201,10 @@ def main() -> int:
         "> 由 `inventory_local_assets.py` 生成。路径使用匿名 root 标识，不写入电脑用户名或绝对路径；清单不复制资产内容。\n\n"
         + "\n".join(f"- `{key}`: {value}" for key, value in summary.items())
         + "\n\n## 处置结论\n\n"
-        "- `GIT`: 项目源码、配置或由项目源码构建的 AArch64 runner。\n"
-        "- `LICENSE_BLOCKED`: 本地 YOLO11n 转换资产；许可与仓库根许可尚未解决，不作为正式模型上传。\n"
+        "- `GIT`: 项目原创内容及按 AGPL-3.0-only 分发的正式 YOLO11n 转换资产。\n"
+        "- `LOCAL_ONLY`: 未被选为正式交付物的模型副本、板端日志和运行生成物。\n"
         "- `DO_NOT_DISTRIBUTE`: 厂商 SDK、工具链、系统镜像和备份，仅登记哈希。\n"
-        "- `LOCAL_ONLY`: 板端日志、配置或生成物，不进入公共仓库。\n\n"
+        "- 厂商许可和第三方归属仍以 `THIRD_PARTY_NOTICES.md` 为准。\n\n"
         "完整逐文件字段见同目录 CSV/JSON。自动许可分类是保守初筛，不能替代法律审查。\n",
         encoding="utf-8",
         newline="\n",

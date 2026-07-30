@@ -2,6 +2,14 @@
 
 ## 2026-07-30
 
+- 从远程候选 `3dc04d8fd4f6bd5cbd40fb54d6b0cb4e0497d1ee` 开始最终收尾，重新 fetch 后确认三个 agent 分支均为候选祖先、unique commits 为 0；PR #6/#7 和 rc1 Release 已登记，删除前将建立精确 tip archive tag。
+- 统一 radar-only/full 风险核心，补齐 API 双 Token 认证、投影有效参数、事件原帧缓存、风险窗口质量门、交互相机分配、MR20 live health/worker 恢复和事件保留策略。
+- 由当前源码重建 AArch64 runner，正式 OM SHA256 为 `9e3c448ab7309428ea78cfdc509926404220fa74dd56c89e4995366f5f16af95`，runner SHA256 为 `332c792dc7a64190e182f6260edb455668e1885e883a0e48c794728eed024737`；静态输入/输出契约通过，实板 ACL 仍为 `PENDING`。
+- 根 License 采用 AGPL-3.0-only；告警 AAC 改为确定性正弦波生成，厂商 SDK/runtime/镜像/工具链继续不分发。根和板端 README 已修复历史编码并更新为 rc2 实际流程。
+- 本机完成 395 项 Python、12 个 Node 测试文件、4 项 NPU C++、1 项 C 核心、1 项 C++ backend、compileall、44 个 JSON、33 个 Shell、secret 和静态 release 资产检查。GitHub CI、远程干净 clone、release 和单分支收敛结果在最终提交后继续记录。
+
+### 同日早期审计记录（已被上述 RC2 收尾替代）
+
 - 按项目所有者要求取消 `08_media/` 整目录屏蔽，改为逐项排除测试录像、检测输出、板端运行记录、SDK/runtime、工具链和构建树；将 YOLO11n SS928 OM 候选及转换校验元数据纳入当前分支。两个 OM 路径哈希相同，Git 只存储一个底层 blob。
 - 本次入库只改变 GitHub 可获取性，不把 `board_validation_status=PENDING` 或 `runner_compatible=false` 改成通过；RC 发布脚本继续排除 `08_media`，完整安装仍受 manifest/preflight 阻止。
 - 在 `agent/radar-primary-vision-class-fusion` 和 Draft PR #7 上继续，不新建重复分支。开始基线为 `e2c524b69b1613c47921923c7bf3f4dae68c5980`；审计时远程分支已同步，远程权限为 ADMIN，默认分支仍为 `agent/ss928-board-integration`。

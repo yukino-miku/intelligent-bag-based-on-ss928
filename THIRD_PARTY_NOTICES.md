@@ -1,13 +1,23 @@
 # 第三方来源与许可说明
 
-本仓库从 `sanda-tt/ss928@59071297e5d8f339332a7234406429f94ffe2570` 选择性迁移了项目代码、测试、硬件说明、CAD 和实板经验。来源仓库根目录未提供可覆盖全部内容的明确统一许可证，因此本次迁移不代表对厂商 SDK、sample、模型、音频、文档或二进制拥有再分发许可。
+本仓库原创代码、文档和生成资产按根目录 `LICENSE` 的 GNU AGPL-3.0-only 分发。该选择不会改变第三方材料自身许可，也不构成法律意见。
 
-未纳入 Git 的内容包括：SS928/HiSilicon SDK 与镜像、在线仓库镜像、厂商 PDF/压缩包、Git LFS 缺失对象、BMI270 配置 blob、编译产物、运行日志、原始校准数据和含设备密码/IP 的 handoff 原文。YOLO11n PT/ONNX 仍不提交；项目所用 SS928 OM 候选是单独记录的例外。完整文件级决定和 SHA-256 见 `00_admin/sanda-full-file-manifest.csv`。
+## 选择性迁移内容
 
-已迁移源码中的原作者文件头予以保留。`05_firmware/ss928/tsensor` 的源文件带原作者/站点标记，但未见独立许可证；对外再分发或产品使用前必须向权利人确认。部署音频包含来源项目的提示音，仅默认关闭；公开发布前同样需要确认音频素材许可，或使用 `06_software/tools/audio_prepare` 生成自有素材替换。
+项目从 `sanda-tt/ss928` 的 `codex/dx-gp21-tracker` 等历史分支选择性迁移过板端源码、测试、硬件说明和工程经验。来源仓库没有一个可覆盖全部内容的统一根许可证，因此只保留经文件级审计、与本项目硬件相关且无明显再分发限制的源码/说明；原文件头继续保留。完整决策见 `00_admin/sanda-full-file-manifest.csv` 和 `00_admin/merge-manifest.md`。
 
-Ultralytics、OpenCV、OpenVINO、BlueZ、CloudBase、微信小程序 SDK、Nordic UART Service、SS928 ACL/MPP/SVP 等依赖遵循各自上游许可与服务条款。本仓库不把 OpenVINO 视为 SS928 NPU，也不附带厂商运行库。
+未分发内容包括：SS928/HiSilicon SDK、MPP/ACL 二进制与系统镜像、交叉工具链、厂商 PDF/压缩包、在线仓库副本、BMI270 vendor blob、WS73 固件、板端备份、日志、真实标定、用户数据和凭据。`libascendcl.so` 由匹配板端镜像提供。
 
-当前 YOLO11n PT/ONNX/OM 候选来自 Ultralytics 生态，上游声明 AGPL-3.0 或 Enterprise 许可。项目所有者要求将两个内容相同的 SS928 OM 候选路径提交到 Git，具体哈希和状态见 `08_media/models/README.md`。本仓库没有经权利人确认的根许可证，也没有记录可覆盖该候选模型的独立商业授权，因此该提交不代表许可兼容性已经解决，OM 也不进入 RC Release 或自动启用。仓库内 AArch64 runner/inspector 由本项目源码构建，但构建所用 SS928 SDK 头文件/stub 和板端 `libascendcl.so` 不随仓库再分发。
+## 模型
 
-更细的依赖登记见 `02_research/third-party-notices.md`。本文件是工程清单，不构成法律意见。
+`vehicle-detector.om` 来源于 Ultralytics YOLO11n Detect/COCO80 转换链。本仓库及该转换产物按 AGPL-3.0-only 分发；使用者也可以自行取得适用的 Ultralytics Enterprise License。闭源/商业使用必须自行核对上游条款。来源、哈希和转换记录见 `MODEL_LICENSES.md` 与模型 manifest。
+
+## 音频
+
+部署 AAC 由仓库脚本使用正弦波确定性生成，不含录音、语音、音乐或第三方采样。详情见 `AUDIO_LICENSES.md`。
+
+## 可选依赖
+
+Python、OpenCV、NumPy、Ultralytics、BlueZ、dbus-python、PyGObject、FFmpeg、微信小程序/CloudBase、Nordic UART Service 约定及其他依赖遵循各自上游许可和服务条款。仓库不再分发这些依赖的二进制副本。
+
+`05_firmware/ss928/tsensor` 等保留原作者标记但缺少独立清晰许可证的厂商相关样例不进入正式安装主路径；对外产品化前应取得相应权利人确认。

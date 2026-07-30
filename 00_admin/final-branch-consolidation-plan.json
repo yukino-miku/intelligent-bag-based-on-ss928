@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "audit_date": "2026-07-30",
+  "initial_default_branch": "agent/ss928-board-integration",
+  "starting_candidate_head": "3dc04d8fd4f6bd5cbd40fb54d6b0cb4e0497d1ee",
+  "final_main_head": "PENDING_FINAL_COMMIT",
+  "branches": [
+    {
+      "branch": "agent/ss928-board-integration",
+      "tip_sha": "06c6cfd1dc11a0f92c54ce8aad5252d554ececa5",
+      "merged_into_final": true,
+      "unique_commits": 0,
+      "archive_tag": "archive/agent-ss928-board-integration-20260730",
+      "associated_pr": 6,
+      "deletion_status": "PENDING_ARCHIVE_AND_DELETE"
+    },
+    {
+      "branch": "agent/full-sanda-integration",
+      "tip_sha": "c3ef9c012543cdc02c708449572e8645b98dcf48",
+      "merged_into_final": true,
+      "unique_commits": 0,
+      "archive_tag": "archive/agent-full-sanda-integration-20260730",
+      "associated_pr": [6, 7],
+      "deletion_status": "PENDING_ARCHIVE_AND_DELETE"
+    },
+    {
+      "branch": "agent/radar-primary-vision-class-fusion",
+      "tip_sha": "PENDING_FINAL_COMMIT",
+      "merged_into_final": true,
+      "unique_commits": 0,
+      "archive_tag": "archive/agent-radar-primary-vision-class-fusion-20260730",
+      "associated_pr": 7,
+      "deletion_status": "PENDING_ARCHIVE_AND_DELETE"
+    }
+  ],
+  "initial_open_prs": [6, 7],
+  "initial_release_tags": ["smartbag-v1.0.0-rc1"],
+  "stash_empty": true,
+  "lfs_object_count": 0,
+  "fsck_unreachable_commits": 0,
+  "final_default_branch": "PENDING_MAIN",
+  "final_remote_branch_count": 3
+}

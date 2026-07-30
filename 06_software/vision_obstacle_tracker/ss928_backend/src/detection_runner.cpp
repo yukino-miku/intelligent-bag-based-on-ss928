@@ -25,7 +25,10 @@ struct Options {
     int max_detections = 50;
     bool server = false;
     std::string input_format = "model";
+    bool show_version = false;
 };
+
+constexpr const char *kRunnerVersion = "smartbag-ss928-detection-jsonl-v2";
 
 bool parse_number(const char *text, int *value) {
     char *end = nullptr;
@@ -50,6 +53,10 @@ bool parse_options(int argc, char **argv, Options *options) {
             options->server = true;
             continue;
         }
+        if (key == "--version") {
+            options->show_version = true;
+            continue;
+        }
         if (index + 1 >= argc) return false;
         const char *value = argv[++index];
         if (key == "--model") options->model = value;
@@ -64,8 +71,10 @@ bool parse_options(int argc, char **argv, Options *options) {
         else if (key == "--input-format") options->input_format = value;
         else return false;
     }
-    return !options->model.empty() && !options->input.empty() && options->repeat > 0
-        && (options->input_format == "model" || options->input_format == "bgr24");
+    return options->show_version || (
+        !options->model.empty() && !options->input.empty() && options->repeat > 0
+        && (options->input_format == "model" || options->input_format == "bgr24")
+    );
 }
 
 bool read_file(const std::string &path, std::vector<unsigned char> *data) {
@@ -191,6 +200,10 @@ int main(int argc, char **argv) {
                      "--source-width W --source-height H [--input-format model|bgr24 "
                      "--repeat N --conf F --nms F --max-det N --server]\n";
         return 2;
+    }
+    if (options.show_version) {
+        std::cout << kRunnerVersion << '\n';
+        return 0;
     }
     std::string error;
     Ss928AclDetector detector;

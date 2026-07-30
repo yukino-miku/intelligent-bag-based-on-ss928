@@ -20,11 +20,14 @@ class BoardApi {
     if (!base) return Promise.reject(new Error("boardHost is not configured"));
     return new Promise((resolve, reject) => {
       this.wxApi.request({
-        url: appendToken(base + path, this.config.accessToken),
+        url: base + path,
         method: method || "GET",
         data: data || undefined,
         timeout: 2500,
-        header: { "content-type": "application/json" },
+        header: Object.assign(
+          { "content-type": "application/json" },
+          this.config.accessToken ? { "X-SmartBag-Token": this.config.accessToken } : {}
+        ),
         success: (response) => {
           if (response.statusCode >= 200 && response.statusCode < 300) resolve(response.data || {});
           else reject(new Error((response.data && response.data.error) || ("HTTP " + response.statusCode)));
@@ -66,13 +69,11 @@ class BoardApi {
   downloadAlertImage(eventId) {
     const base = boardBaseUrl(this.config);
     if (!base) return Promise.reject(new Error("boardHost is not configured"));
-    const url = appendToken(
-      base + "/api/v1/alerts/" + encodeURIComponent(eventId) + "/image.jpg",
-      this.config.accessToken
-    );
+    const url = base + "/api/v1/alerts/" + encodeURIComponent(eventId) + "/image.jpg";
     return new Promise((resolve, reject) => {
       this.wxApi.downloadFile({
         url,
+        header: this.config.accessToken ? { "X-SmartBag-Token": this.config.accessToken } : {},
         timeout: 5000,
         success: (response) => response.statusCode === 200
           ? resolve(response.tempFilePath)

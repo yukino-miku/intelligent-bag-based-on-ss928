@@ -91,6 +91,41 @@ class MedianRiskWindowTest(unittest.TestCase):
         self.assertEqual(8.0, result.window_start)
         self.assertEqual(8.5, result.window_end)
 
+    def test_single_high_sample_cannot_create_l3_or_l4(self) -> None:
+        aggregator = MedianRiskWindowAggregator(0.5)
+        aggregator.add(sample(9.49, 0.99))
+        result = aggregator.flush_due(9.5)[0]
+        self.assertFalse(result.window_valid)
+        self.assertIn("insufficient_samples", result.invalid_reason)
+        self.assertLessEqual(result.final_level, RiskLevel.CAUTION)
+
+    def test_quality_fields_and_valid_window(self) -> None:
+        aggregator = MedianRiskWindowAggregator(0.5)
+        for timestamp in (10.01, 10.20, 10.40):
+            aggregator.add(sample(timestamp, 0.8))
+        result = aggregator.flush_due(10.5)[0]
+        self.assertTrue(result.window_valid)
+        self.assertAlmostEqual(0.39, result.observed_duration_s)
+        self.assertEqual(1.0, result.complete_scan_ratio)
+        self.assertEqual(1.0, result.radar_quality_median)
+
+    def test_fast_path_still_requires_two_close_quality_samples(self) -> None:
+        aggregator = MedianRiskWindowAggregator(0.5)
+        first = sample(11.10, 0.99)
+        aggregator.add(first)
+        one = aggregator.flush_due(11.5)[0]
+        self.assertEqual("", one.fast_path_reason)
+
+        aggregator = MedianRiskWindowAggregator(0.5)
+        for timestamp in (12.10, 12.20):
+            close = sample(timestamp, 0.99)
+            close = RadarRiskSample(**{**close.__dict__, "distance_m": 0.6, "closing_speed_mps": 2.0})
+            aggregator.add(close)
+        two = aggregator.flush_due(12.5)[0]
+        self.assertFalse(two.window_valid)
+        self.assertEqual("two_sample_close_high_quality_closing", two.fast_path_reason)
+        self.assertGreater(two.final_level, RiskLevel.CAUTION)
+
 
 if __name__ == "__main__":
     unittest.main()

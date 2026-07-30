@@ -94,16 +94,17 @@ class RuntimeTuningManager:
 
     def as_dict(self) -> dict[str, object]:
         with self._lock:
-            return self._serialize(self._state)
+            return self._serialize(self._state, include_metadata=True)
 
     def patch(self, patch: Mapping[str, object]) -> dict[str, object]:
         with self._lock:
+            self._validate_patch_semantics(patch)
             merged = _deep_merge(self._serialize(self._state), patch)
             candidate = self._build_state(merged, version=self._state.version + 1)
             self._persist(candidate)
             self._state = candidate
             self._publish()
-            return self._serialize(candidate)
+            return self._serialize(candidate, include_metadata=True)
 
     def reset(self) -> dict[str, object]:
         with self._lock:
@@ -111,7 +112,33 @@ class RuntimeTuningManager:
             self._persist(candidate)
             self._state = candidate
             self._publish()
-            return self._serialize(candidate)
+            return self._serialize(candidate, include_metadata=True)
+
+    def _validate_patch_semantics(self, patch: Mapping[str, object]) -> None:
+        for side in ("left", "right"):
+            values = patch.get(side)
+            calibration = self._state.calibrations.get(side)
+            if not isinstance(values, Mapping) or calibration is None:
+                continue
+            if "camera_horizontal_fov_deg" in values and calibration.camera_fx is not None:
+                raise ValueError(
+                    f"{side}.camera_horizontal_fov_deg is read-only because camera_intrinsics.fx is fixed"
+                )
+            if calibration.radar_to_camera_rotation is not None:
+                overridden = set(values) & {
+                    "camera_mount_y_m",
+                    "radar_mount_y_m",
+                    "camera_mount_x_m",
+                    "radar_mount_x_m",
+                    "camera_yaw_deg",
+                    "camera_pitch_deg",
+                    "radar_yaw_deg",
+                }
+                if overridden:
+                    raise ValueError(
+                        f"{side} full radar_to_camera extrinsic overrides runtime mount parameters: "
+                        f"{sorted(overridden)}"
+                    )
 
     def _build_state(self, data: Mapping[str, object], *, version: int) -> RuntimeTuningState:
         allowed_top = {"left", "right", "association", "risk", "version"}
@@ -191,7 +218,7 @@ class RuntimeTuningManager:
             self._on_apply(self._state)
 
     @staticmethod
-    def _serialize(state: RuntimeTuningState) -> dict[str, object]:
+    def _serialize(state: RuntimeTuningState, *, include_metadata: bool = False) -> dict[str, object]:
         payload: dict[str, object] = {"version": state.version}
         for side, calibration in state.calibrations.items():
             payload[side] = {name: getattr(calibration, name) for name in SIDE_FIELDS}
@@ -206,6 +233,11 @@ class RuntimeTuningManager:
                 for field_name, class_name in RISK_MULTIPLIER_FIELDS.items()
             },
         }
+        if include_metadata:
+            payload["effective_parameters"] = {
+                side: _effective_side_parameters(calibration)
+                for side, calibration in state.calibrations.items()
+            }
         return payload
 
 
@@ -229,4 +261,34 @@ def _deep_merge(base: Mapping[str, object], patch: Mapping[str, object]) -> dict
             result[key] = _deep_merge(current, value)
         else:
             result[key] = value
+    return result
+
+
+def _effective_side_parameters(calibration: FusionCalibration) -> dict[str, dict[str, object]]:
+    full_extrinsic = calibration.radar_to_camera_rotation is not None
+    result: dict[str, dict[str, object]] = {}
+    for name in SIDE_FIELDS:
+        requested = getattr(calibration, name)
+        effective: object = requested
+        source = "simplified_mount"
+        editable = True
+        if name == "camera_horizontal_fov_deg":
+            if calibration.camera_fx is not None:
+                effective = math.degrees(
+                    2.0 * math.atan(calibration.camera_image_width_px / (2.0 * calibration.camera_fx))
+                )
+                source = "camera_intrinsics.fx"
+                editable = False
+            else:
+                source = "camera_horizontal_fov_deg"
+        elif full_extrinsic:
+            effective = None
+            source = "radar_to_camera_extrinsic"
+            editable = False
+        result[name] = {
+            "requested_value": requested,
+            "effective_value": effective,
+            "parameter_source": source,
+            "editable": editable,
+        }
     return result

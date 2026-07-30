@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "name": "vehicle-detector.om",
   "deployment_name": "vehicle-detector.om",
   "candidate_source": "08_media/models/ss928_yolo11n/yolo11n_ss928.om",
@@ -11,12 +11,14 @@
   "target_classes": ["bicycle", "motorcycle", "car", "truck", "bus"],
   "class_table": "COCO80",
   "class_ids": {"bicycle": 1, "car": 2, "motorcycle": 3, "bus": 5, "truck": 7},
-  "input_dtype": "FLOAT32 network input; board descriptor pending static-AIPP inspection",
+  "input_dtype": "FLOAT32",
   "input_shape": [1, 3, 640, 640],
   "input_layout": "NCHW / RGB_PLANAR",
   "aipp_format": "static RGB_PLANAR, RGB, mean 0, var_reci 1/255",
   "output_dtype": "FLOAT32",
   "output_shape": [1, 84, 8400],
+  "runner_sha256": "332c792dc7a64190e182f6260edb455668e1885e883a0e48c794728eed024737",
+  "runner_contract_version": "smartbag-ss928-detection-jsonl-v2",
   "confidence_default": 0.25,
   "nms_iou_default": 0.45,
   "atc_version": "SVP_NNN_PC_V1.0.6.0 Mapper 1.0.0.0_B010",
@@ -31,22 +33,22 @@
     "python_transport": "raw BGR24 frame; runner selects preprocessing from ACL descriptor"
   },
   "runner_source_contract_compatible": true,
-  "runner_compatible": false,
-  "current_runner_compatible": false,
+  "runner_compatible": true,
+  "current_runner_compatible": true,
   "board_validation_status": "PENDING",
   "board_acl_validation": "PENDING",
   "known_image_parity": "PT_ONNX_PASS; OM_PENDING",
   "atc_compile": "PASS",
-  "direct_deployment": false,
+  "direct_deployment": true,
+  "license": "AGPL-3.0-only",
   "license_source": {
     "upstream": "https://github.com/ultralytics/ultralytics",
     "declared_license": "AGPL-3.0 or Ultralytics Enterprise License",
-    "repository_license_compatibility": "UNRESOLVED: this repository has no root LICENSE",
-    "distribution_status": "PUBLISHED_TO_GIT_AT_OWNER_REQUEST; FORMAL_RELEASE_LICENSE_REVIEW_PENDING"
+    "repository_license_compatibility": "Repository and model are distributed under AGPL-3.0-only; commercial use requires separately obtained upstream terms when applicable",
+    "distribution_status": "INCLUDED_IN_GIT_AND_RC2_UNDER_AGPL-3.0-ONLY"
   },
   "blocking_reasons": [
-    "Actual OM ACL input descriptor has not been captured on SS928",
-    "OM detections have not been compared with the accepted PT/ONNX reference on the board",
-    "Formal release and reuse terms remain unresolved because the repository has no root license"
+    "Actual OM ACL descriptor and detections still require SS928 board validation",
+    "OM detections have not yet been compared with the accepted PT/ONNX reference on the board"
   ]
 }

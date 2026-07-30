@@ -43,6 +43,12 @@ class RiskWindowResult:
     window_start: float
     window_end: float
     sample_count: int
+    observed_duration_s: float
+    complete_scan_ratio: float
+    radar_quality_median: float
+    window_valid: bool
+    invalid_reason: str
+    fast_path_reason: str
     score_min: float
     score_max: float
     score_median: float
@@ -61,11 +67,43 @@ class _Window:
 class MedianRiskWindowAggregator:
     """Independent, non-overlapping monotonic risk windows per radar track."""
 
-    def __init__(self, window_s: float = 0.5, warning_sensitivity: float = 1.0) -> None:
+    def __init__(
+        self,
+        window_s: float = 0.5,
+        warning_sensitivity: float = 1.0,
+        *,
+        min_samples_per_window: int = 3,
+        min_observed_duration_s: float = 0.25,
+        min_complete_scan_ratio: float = 0.67,
+        min_radar_quality: float = 0.5,
+        fast_path_min_samples: int = 2,
+        fast_path_max_distance_m: float = 0.8,
+        fast_path_min_closing_speed_mps: float = 1.5,
+        fast_path_min_radar_quality: float = 0.75,
+    ) -> None:
         if window_s <= 0.0:
             raise ValueError("window_s must be positive")
         self.window_s = float(window_s)
         self._warning_sensitivity = _validate_sensitivity(warning_sensitivity)
+        if min_samples_per_window < 1 or fast_path_min_samples < 2:
+            raise ValueError("risk window sample thresholds are invalid")
+        for name, value in (
+            ("min_complete_scan_ratio", min_complete_scan_ratio),
+            ("min_radar_quality", min_radar_quality),
+            ("fast_path_min_radar_quality", fast_path_min_radar_quality),
+        ):
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be in [0, 1]")
+        if min_observed_duration_s < 0.0 or fast_path_max_distance_m <= 0.0:
+            raise ValueError("risk window duration and distance thresholds are invalid")
+        self.min_samples_per_window = int(min_samples_per_window)
+        self.min_observed_duration_s = float(min_observed_duration_s)
+        self.min_complete_scan_ratio = float(min_complete_scan_ratio)
+        self.min_radar_quality = float(min_radar_quality)
+        self.fast_path_min_samples = int(fast_path_min_samples)
+        self.fast_path_max_distance_m = float(fast_path_max_distance_m)
+        self.fast_path_min_closing_speed_mps = float(fast_path_min_closing_speed_mps)
+        self.fast_path_min_radar_quality = float(fast_path_min_radar_quality)
         self._windows: dict[str, _Window] = {}
         self._lock = threading.RLock()
 
@@ -130,6 +168,26 @@ class MedianRiskWindowAggregator:
         scores = [max(0.0, min(1.0, sample.weighted_score)) for sample in window.samples]
         score_median = float(median(scores))
         effective = max(0.0, min(1.0, score_median * self._warning_sensitivity))
+        timestamps = [sample.timestamp for sample in window.samples]
+        observed_duration_s = max(timestamps) - min(timestamps)
+        complete_scan_ratio = sum(1 for sample in window.samples if sample.scan_complete) / len(window.samples)
+        radar_quality_median = float(median(sample.radar_quality for sample in window.samples))
+        invalid_reasons: list[str] = []
+        if len(window.samples) < self.min_samples_per_window:
+            invalid_reasons.append("insufficient_samples")
+        if observed_duration_s < self.min_observed_duration_s:
+            invalid_reasons.append("insufficient_observed_duration")
+        if complete_scan_ratio < self.min_complete_scan_ratio:
+            invalid_reasons.append("low_complete_scan_ratio")
+        if radar_quality_median < self.min_radar_quality:
+            invalid_reasons.append("low_radar_quality")
+        window_valid = not invalid_reasons
+        fast_path_reason = ""
+        if not window_valid and self._is_fast_path(window.samples, radar_quality_median):
+            fast_path_reason = "two_sample_close_high_quality_closing"
+        final_level = risk_level_from_score(effective)
+        if not window_valid and not fast_path_reason and final_level > RiskLevel.CAUTION:
+            final_level = RiskLevel.CAUTION
         representative = min(
             window.samples,
             key=lambda sample: (abs(max(0.0, min(1.0, sample.weighted_score)) - score_median), -sample.timestamp),
@@ -140,12 +198,34 @@ class MedianRiskWindowAggregator:
             window_start=window.start,
             window_end=window.end if window_end is None else window_end,
             sample_count=len(window.samples),
+            observed_duration_s=observed_duration_s,
+            complete_scan_ratio=complete_scan_ratio,
+            radar_quality_median=radar_quality_median,
+            window_valid=window_valid,
+            invalid_reason=",".join(invalid_reasons),
+            fast_path_reason=fast_path_reason,
             score_min=min(scores),
             score_max=max(scores),
             score_median=score_median,
             effective_score=effective,
-            final_level=risk_level_from_score(effective),
+            final_level=final_level,
             representative_sample=representative,
+        )
+
+    def _is_fast_path(self, samples: list[RadarRiskSample], radar_quality_median: float) -> bool:
+        if len(samples) < self.fast_path_min_samples:
+            return False
+        recent = sorted(samples, key=lambda sample: sample.timestamp)[-self.fast_path_min_samples :]
+        return (
+            radar_quality_median >= self.fast_path_min_radar_quality
+            and all(sample.scan_complete for sample in recent)
+            and all(sample.path_conflict for sample in recent)
+            and all(sample.distance_m <= self.fast_path_max_distance_m for sample in recent)
+            and all(
+                math.isfinite(sample.closing_speed_mps)
+                and sample.closing_speed_mps >= self.fast_path_min_closing_speed_mps
+                for sample in recent
+            )
         )
 
 

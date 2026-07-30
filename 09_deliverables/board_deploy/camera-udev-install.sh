@@ -1,8 +1,9 @@
 #!/bin/sh
 set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+DISCOVERY=${1:-/etc/smartbag/hardware-discovery.json}
 [ "$(id -u)" -eq 0 ] || { echo "run as root" >&2; exit 1; }
-python3 "$SCRIPT_DIR/camera_discovery.py" rules
+python3 "$SCRIPT_DIR/camera_discovery.py" rules --discovery "$DISCOVERY"
 udevadm control --reload-rules
 udevadm trigger --subsystem-match=video4linux
 sleep 1

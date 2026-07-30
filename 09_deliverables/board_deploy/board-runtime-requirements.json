@@ -19,7 +19,7 @@
       "name": "vehicle detector OM",
       "path": "/root/smartbag/models/vehicle-detector.om",
       "probe": "SHA256, ACL descriptor and known-image result comparison",
-      "redistribution": "currently LICENSE_BLOCKED"
+      "redistribution": "bundled under AGPL-3.0-only; board ACL validation remains pending"
     }
   ],
   "hardware": {

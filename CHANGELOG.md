@@ -2,6 +2,18 @@
 
 ## 2026-07-30
 
+- 准备 `smartbag-v1.0.0-rc2`：正式 `vehicle-detector.om`、AArch64 runner/inspector、AGPL-3.0-only License、模型/音频/第三方声明和一键安装入口进入普通 Git clone 与离线包；静态契约通过，板端 ACL 检测仍明确为 `PENDING`。
+- `radar_only` 与 full 模式统一使用 `RadarVisionFusionRuntime`、持久雷达轨迹、共享 RiskModel 和每目标 0.5 秒中位数；旧 MR20 阈值算法只保留为显式 `legacy_mr20_threshold_test`。
+- HTTP API 默认 loopback，安装时生成管理/只读 Token；所有读取接口鉴权，PATCH/reset 仅管理 Token，使用常量时间比较，preflight 拒绝不安全公网监听。
+- 修复雷达/相机高度实际投影、固定 fx 时 FOV 只读推导和参数 requested/effective/source；危险图片增加 frame 缓存和跨帧错配保护。
+- 风险窗口新增样本数、观测时长、完整扫描率和雷达质量门限，以及严格双样本极近 fast path；单样本不再产生正式 L3/L4。
+- 摄像头发现按物理身份去重并交互确认左右，MR20 增加网络/UDP/0x60A/0x60B/完整扫描 live check、worker 健康与指数退避恢复；事件历史增加数量、图片、容量和天数保留策略。
+- 首装增加 SS928/架构/内存/磁盘、OM/runner、相机身份、雷达网络、融合标定与 safe-off 检查；标定记录 RMSE、最大误差、相机身份和雷达名称，硬件变化会阻止 full。
+- 新增 GitHub Actions，覆盖 395 项 Python、12 个 Node 测试文件、5 项 C/C++ native、compileall、44 个 JSON、33 个 Shell、secret、manifest、干净 clone、mock 安装和 release 包。
+- 审计三个远程分支、PR #6/#7、tag/Release、stash/LFS/fsck 和祖先关系；旧分支相对最终候选均无独有提交，归档 tag 与 main-only 收敛按 `00_admin/final-branch-consolidation-plan.*` 执行。
+
+### 同日早期审计记录（已被上述 RC2 结论替代）
+
 - 取消 `08_media/` 的整目录忽略，改为精确排除个人测试视频、检测输出、板端日志、第三方 SDK/runtime、工具链和构建缓存；允许经确认的模型与硬件参考资料进入 Git。
 - 提交两处内容相同的 YOLO11n SS928 OM 候选、转换 manifest 和 SHA256 校验文件；候选 OM 仍为实板验证和正式许可待确认状态，不进入 RC Release，也不会绕过部署 preflight。
 - 对当前仓库、Git 历史、ignored 目录、`08_media`、`10_archive`、同级目录、旧板端记录、模型、runner、SDK 和工具链执行部署资产审计；生成匿名路径的 CSV/JSON/Markdown 清单，共登记 1,495 个候选文件、21 个模型和 524 个 ELF，不复制厂商 SDK、镜像、日志或私密配置。

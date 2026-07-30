@@ -69,7 +69,13 @@ def fit_horizontal_projection(
         fx, cx = fit
         errors = [fx * ratio + cx - pixel for ratio, pixel in zip(ratios, pixels)]
         rmse = math.sqrt(sum(value * value for value in errors) / len(errors))
-        candidate = {"camera_yaw_deg": yaw_deg, "camera_fx": fx, "camera_cx": cx, "horizontal_rmse_px": rmse}
+        candidate = {
+            "camera_yaw_deg": yaw_deg,
+            "camera_fx": fx,
+            "camera_cx": cx,
+            "horizontal_rmse_px": rmse,
+            "max_error_px": max(abs(value) for value in errors),
+        }
         if best is None or rmse < best["horizontal_rmse_px"]:
             best = candidate
     if best is None:
@@ -105,7 +111,7 @@ def main() -> int:
     data.update(
         {
             "side": args.side,
-            "calibration_status": "MEASURED_HORIZONTAL_VERTICAL_PENDING",
+            "calibration_status": "MEASURED_SIMPLIFIED_PROJECTION",
             "camera_mount_x_m": args.camera_x,
             "camera_mount_y_m": args.camera_height,
             "camera_pitch_deg": args.camera_pitch,
@@ -123,6 +129,7 @@ def main() -> int:
                 "image_width": args.image_width,
                 "image_height": args.image_height,
                 "horizontal_rmse_px": fit["horizontal_rmse_px"],
+                "max_error_px": fit["max_error_px"],
                 "observations_file": args.observations.name,
             },
         }

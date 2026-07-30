@@ -1,17 +1,14 @@
-# 第三方来源与分发说明
+# 第三方依赖审计
 
-| 内容 | 来源 | 当前处理 |
-|---|---|---|
-| 板端功能代码 | `sanda-tt/ss928@59071297e5d8f339332a7234406429f94ffe2570` | 逐文件审计迁移；来源仓库未发现覆盖全部内容的根 LICENSE，仍需仓库所有者确认公开再分发许可 |
-| SS928 SDK/MPP Sample | 厂商 SDK | 不复制；只记录外部路径和构建变量 |
-| Bosch BMI270 config blob/头文件 | Bosch 驱动包 | 不复制 `bmi270_config.bin` 和厂商头文件；用户按许可自行安装 |
-| YOLO 权重、ONNX、OpenVINO、OM | Ultralytics/转换产物 | 不提交；部署时单独提供并遵守模型许可 |
-| Ultralytics YOLO11n 候选模型 | `ultralytics/ultralytics`，上游声明 AGPL-3.0 或 Enterprise | PT/ONNX/OM 仅在本地做工程验证；本仓库根许可未确定且未取得独立模型分发依据，状态为 `LICENSE_BLOCKED` |
-| AArch64 detection runner/inspector | 本项目源码，使用 Zig 0.16.0 和 SS928 SDK ACL 头文件/stub 构建 | 仅提交本项目生成 ELF；不提交 Zig 工具链、SDK、stub 或板端 `libascendcl.so` |
-| 来源 AAC/PCM | 来源仓库构建/部署目录 | 仅保留单套部署 AAC，PCM 中间文件删除；素材许可仍待确认，音频默认关闭，可用生成工具替换为自有素材 |
-| 微信/BlueZ/Nordic UART 协议 | 平台和开源生态 | 代码依赖按各自许可安装，不捆绑二进制 |
-| MT5710/板端 sample 工具 | 来源仓库 | 只迁移文本源码，作为可选模块；硬件与厂商工具许可需另核验 |
+| 组件 | 用途 | 仓库处理 | 许可/限制 |
+|---|---|---|---|
+| Ultralytics YOLO11n | PC 检测与 SS928 OM 来源 | 正式 OM、契约和转换记录入库；PT/ONNX 不作为运行依赖 | 项目按 AGPL-3.0-only 分发，或部署方另购 Enterprise License |
+| OpenCV / NumPy | 图像采集、预处理和工具 | 通过系统/包管理器安装 | 遵循各自上游许可 |
+| SS928 ACL/MPP/SDK | NPU 和硬件运行时 | 不入库；来自匹配板端镜像 | 厂商条款，禁止假定可再分发 |
+| BlueZ/dbus/PyGObject | BLE NUS | 通过板端系统安装 | 上游许可 |
+| 微信小程序/CloudBase | 手机端与可选云功能 | 项目源码入库，AppID/secret 不入库 | 平台服务条款 |
+| FFmpeg | 确定性生成 AAC 的构建工具 | 不入库 | 取决于使用者安装的构建选项 |
+| `sanda-tt/ss928` 迁移内容 | GNSS、BMI270、告警、工具和文档 | 文件级选择迁移，保留原头 | 来源无统一根许可，产品化前复核 |
+| 厂商 PDF/SDK/blob/固件/镜像 | 参考或硬件初始化 | 不分发，只在资产审计登记哈希 | 再分发许可未建立 |
 
-本文件是来源登记，不构成法律意见。任何厂商 SDK、模型、音频或二进制对外发布前都应补齐许可证和再分发授权。
-
-仓库自身尚无经权利人确认的根许可证，见 `LICENSE_STATUS.md`。在根许可和来源授权解决前，GitHub 可见性不等于获得再分发授权。
+正式分发边界以根 `THIRD_PARTY_NOTICES.md`、`MODEL_LICENSES.md`、`AUDIO_LICENSES.md` 和 `00_admin/local-deployment-asset-inventory.*` 为准。

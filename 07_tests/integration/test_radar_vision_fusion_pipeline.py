@@ -84,7 +84,7 @@ class RadarVisionFusionPipelineTest(unittest.TestCase):
         records = self.runtime.process_scan(scan(2, 1.51, 7.8))
         self.assertEqual(1, len(records))
         self.assertEqual("unknown", records[0].fused.class_name)
-        self.assertEqual("median_500ms_window", records[0].stabilizer.reason)
+        self.assertTrue(records[0].stabilizer.reason.startswith("median_window_capped:"))
 
     def test_each_visual_frame_atomically_replaces_the_whole_class_map(self) -> None:
         self.runtime.process_scan(scan(1, 2.01, 8.0))

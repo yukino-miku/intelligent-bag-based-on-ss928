@@ -26,6 +26,7 @@ class FusionCalibration:
     camera_flip_horizontal: bool = False
     camera_flip_vertical: bool = False
     camera_horizontal_fov_deg: float = 90.0
+    camera_image_width_px: int = 640
     camera_mount_x_m: float = 0.0
     camera_mount_y_m: float = 1.2
     camera_mount_z_m: float = 0.0
@@ -38,7 +39,9 @@ class FusionCalibration:
     radar_yaw_deg: float = 0.0
     radar_to_camera_rotation: tuple[tuple[float, float, float], ...] | None = None
     radar_to_camera_translation: tuple[float, float, float] | None = None
-    nominal_target_height_m: float = 0.8
+    # MR20 is two-dimensional. This is the assumed target height relative to
+    # the radar plane; radar_mount_y_m then places it in the bag frame.
+    nominal_target_height_m: float = -0.2
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, object]) -> "FusionCalibration":
@@ -62,6 +65,7 @@ class FusionCalibration:
             camera_flip_horizontal=bool(data.get("camera_flip_horizontal", data.get("camera_flip", False))),
             camera_flip_vertical=bool(data.get("camera_flip_vertical", False)),
             camera_horizontal_fov_deg=float(data.get("camera_horizontal_fov_deg", 90.0)),
+            camera_image_width_px=int(data.get("camera_image_width_px", intrinsics.get("image_width_px", 640))),
             camera_mount_x_m=float(data.get("camera_mount_x_m", 0.0)),
             camera_mount_y_m=float(data.get("camera_mount_y_m", 1.2)),
             camera_mount_z_m=float(data.get("camera_mount_z_m", 0.0)),
@@ -74,7 +78,7 @@ class FusionCalibration:
             radar_yaw_deg=float(data.get("radar_yaw_deg", 0.0)),
             radar_to_camera_rotation=rotation,
             radar_to_camera_translation=translation,
-            nominal_target_height_m=float(data.get("nominal_target_height_m", 0.8)),
+            nominal_target_height_m=float(data.get("nominal_target_height_m", -0.2)),
         )
 
     def validate(self) -> tuple[str, ...]:
@@ -89,6 +93,8 @@ class FusionCalibration:
             errors.append("camera_intrinsics.fy must be positive")
         if self.camera_rotation_deg % 90 != 0:
             errors.append("camera_rotation_deg must be a multiple of 90")
+        if self.camera_image_width_px <= 0:
+            errors.append("camera_image_width_px must be positive")
         return tuple(errors)
 
 
@@ -159,9 +165,22 @@ def project_radar_track(
     )
 
 
-def _bag_to_camera(x_m: float, y_m: float, z_m: float, calibration: FusionCalibration) -> tuple[float, float, float]:
+def _bag_to_camera(
+    x_m: float,
+    target_height_above_radar_m: float,
+    z_m: float,
+    calibration: FusionCalibration,
+) -> tuple[float, float, float]:
     if calibration.radar_to_camera_rotation is not None:
-        rotated = _matrix_vector(calibration.radar_to_camera_rotation, (x_m, y_m, z_m))
+        yaw = math.radians(calibration.radar_yaw_deg)
+        dx = x_m - calibration.radar_mount_x_m
+        dz = z_m - calibration.radar_mount_z_m
+        radar_local = (
+            math.cos(yaw) * dx - math.sin(yaw) * dz,
+            target_height_above_radar_m,
+            math.sin(yaw) * dx + math.cos(yaw) * dz,
+        )
+        rotated = _matrix_vector(calibration.radar_to_camera_rotation, radar_local)
         if calibration.radar_to_camera_translation is None:
             return rotated
         return tuple(
@@ -171,7 +190,9 @@ def _bag_to_camera(x_m: float, y_m: float, z_m: float, calibration: FusionCalibr
 
     point = (
         x_m - calibration.camera_mount_x_m,
-        y_m - calibration.camera_mount_y_m,
+        calibration.radar_mount_y_m
+        + target_height_above_radar_m
+        - calibration.camera_mount_y_m,
         z_m - calibration.camera_mount_z_m,
     )
     yaw = math.radians(-calibration.camera_yaw_deg)

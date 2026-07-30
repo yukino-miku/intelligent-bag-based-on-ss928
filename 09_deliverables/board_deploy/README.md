@@ -1,183 +1,133 @@
-# SS928 智能背包板端部署
+# SS928 板端部署说明
 
-正式候选部署默认使用 `radar_primary_visual_classification`：双 MR20 持续提供目标运动数据，一个 YOLO/OM 模型交替处理左右 USB 快照并只绑定车辆类型。任意时刻最多一路 UVC STREAMON，不运行视觉测距、视觉测速或 BoT-SORT。Controller 独占融合运行时、`SS928-SmartBag` BLE、TM6605/LRA、Pin7/Pin32 灯和可选 MAX98357；`legacy_dual_vision` 只保留回归。
+## 1. 正式架构与安全降级
 
-## 1. 准备两路摄像头
+默认 full 模式是 `radar_primary_visual_classification`：双 MR20 持续采集，左右 UVC 只交替 STREAMON，共用一个 `vehicle-detector.om`。视觉只决定车辆类别，距离和速度始终来自雷达。`radar_only` 只关闭 classifier，仍启动 `RadarVisionFusionRuntime -> RadarTrackManager -> 共享 RiskModel -> 0.5 秒中位数 -> Controller`。
 
-两个 UVC 摄像头应固定物理端口，并使用不同 `/dev/v4l/by-path`。新模式不会同时 STREAMON，但物理节点映射仍必须在每次换口后重新确认。
+摄像头、runner 或模型异常时类别退化为 `unknown`；雷达 worker 异常会自动清零该侧输出并指数退避重启。旧 `RadarRiskEvaluator` 只允许显式 `legacy_mr20_threshold_test`。
+
+## 2. 一键安装
 
 ```sh
-sh camera-list.sh
-v4l2-ctl --list-devices
-ls -l /dev/v4l/by-id/
-ls -l /dev/v4l/by-path/
-v4l2-ctl --device /dev/video0 --list-formats-ext
-v4l2-ctl --device /dev/video2 --list-formats-ext
+git clone https://github.com/yukino-miku/intelligent-bag-based-on-ss928.git
+cd intelligent-bag-based-on-ss928
+sudo ./install-on-ss928.sh --interactive
+sudo reboot
 ```
 
-序列号唯一时推荐 `/dev/v4l/by-id/...-video-index0`，避免重启后 `/dev/video0`、`video2` 交换。相同型号摄像头若序列号相同，by-id 会冲突，此时必须改用两个不同的 `/dev/v4l/by-path/...` 并固定物理 USB 口。不要把同一真实设备的两个别名配置为左右相机。
+常用参数：
 
-2026-07-16 的历史实板基线中，两台 `0bda:3035` 序列号相同且共用 USB 2.0 hub，并发时出现 `VIDIOC_STREAMON: ENOSPC`。更换端口后必须重新运行 `camera-list.sh` 和 preflight；历史节点和拓扑不能当作当前接线事实。
+| 参数 | 作用 |
+|---|---|
+| `--interactive` | 交互发现左右相机并引导标定；标定不完整时保持 radar-only |
+| `--full` | 要求当前相机身份绑定的左右实测标定，启用 OM 分类 |
+| `--radar-only` | 关闭视觉分类，但不改变共享风险核心 |
+| `--yes` | 非交互；只允许复用已经验证的 hardware-discovery |
+| `--profile PATH` | 选择硬件 profile |
+| `--model-source PATH` | 使用另一个通过 manifest 的 OM |
+| `--runner-source PATH` | 使用另一个通过 manifest 的 AArch64 runner |
+| `--offline` | 不调用 apt/network，依赖必须已经存在 |
+| `--skip-optional` | 跳过可选依赖 |
+| `--no-start` | 安装并 enable，不立即启动 |
+| `--reset-hardware-discovery` | 丢弃旧相机身份并重新确认 |
+| `--reset-calibration` | 丢弃旧融合标定并回到模板 |
 
-正式安装使用以下脚本逐路采集并生成稳定链接，不使用临时 `/dev/video0`、`/dev/video2`：
+安装器检查 root、AArch64、内存/磁盘、ACL、OM/runner SHA 与契约，复制到统一 `/root/smartbag`，生成 32 字节以上管理/只读 Token，保留 `/etc/smartbag` 和 `/var/lib/smartbag`，安装 systemd，执行 preflight，并在失败、信号或异常时 safe-off。重复运行是升级，不清除配置和事件。
+
+## 3. 首次相机分配
 
 ```sh
 sudo ./camera-discover.sh
-sudo ./camera-assign.sh --left /dev/v4l/by-path/...1.3...-video-index0 \
-  --right /dev/v4l/by-path/...1.4...-video-index0
+sudo ./camera-assign.sh --interactive
+cat /etc/smartbag/hardware-discovery.json
 ls -l /dev/smartbag-camera-left /dev/smartbag-camera-right
 ```
 
-## 2. 依赖和安装
+发现器按物理 `ID_PATH + serial + index0` 去重；没有 `/dev/v4l/by-path` 时才回退 `/dev/video*`。交互流程分别单路抓图，不同时 STREAMON，并要求用户确认候选 A 是左侧还是右侧。保存后安装 udev 规则。摄像头换 USB 口或身份变化后必须重新验证，历史拓扑不会自动套用。
+
+`--yes` 不会猜左右，只能使用已存在且连续单路抓图验证通过的 discovery 文件。
+
+## 4. MR20 网络和健康检查
+
+编辑 `/etc/smartbag/mr20.json`，确认两台雷达 IP、UDP port、side、坐标方向、安装偏移和 yaw。配置静态网卡前先预览：
 
 ```sh
-cd /path/to/intelligent-bag-based-on-ss928
-sudo ./install-on-ss928.sh --radar-only --yes
-
-# 完整模式必须提供 manifest 接受的模型；当前本地候选仍会被拒绝
-# sudo ./install-on-ss928.sh --model-source /合法来源/vehicle-detector.om --yes
+sudo ./mr20-network-setup.sh --interface eth0 --address 192.168.1.168/24 --dry-run
+sudo ./mr20-network-setup.sh --interface eth0 --address 192.168.1.168/24 --apply
+sudo python3 ./mr20-live-check.py --config /etc/smartbag/mr20.json --duration 10
 ```
 
-入口支持 `--profile`、`--model-source`、`--runner-source`、`--no-start`、`--radar-only`、`--skip-optional`、`--offline` 和 `--yes`。安装失败返回非零并请求 safe-off；重复安装保留 `/etc/smartbag`、`/var/lib/smartbag` 和告警历史。
+网络脚本在修改前备份地址、路由和 netplan。live check 要求路由存在、ping 或邻居表可达、UDP 可绑定、收到合法 14 字节 0x60A/0x60B，并在期限内组出完整扫描或合法零目标扫描。运行状态还显示完整率、最新扫描年龄、sequence gap、orphan、worker 存活、错误和重启次数。
 
-首次安装可选硬件 profile；profile 只是对默认配置的递归覆盖，不包含 secret：
+## 5. 融合标定
+
+full 模式不接受 `UNMEASURED_TEMPLATE`。先完成相机分配，再运行：
 
 ```sh
-sudo env SMARTBAG_HARDWARE_PROFILE="$PWD/profiles/dual-usb-base.json" \
-  sh install.sh /path/to/intelligent-bag-based-on-ss928
+sudo ./smartbag-calibrate-fusion.sh --interactive
+sudo ./install-on-ss928.sh --full --yes
 ```
 
-正式 OM 快照后端不需要 Torch/BoT-SORT，但需要板端可用的 OpenCV/NumPy、ACL runtime、编译后的 `ss928_detection_runner` 和合法车辆 OM。PC 回放可以使用 Ultralytics。归档 SDK、模型和 wheel 不会复制进 Git。
+向导逐侧收集至少 4 个已知雷达位置与图像像素，输入相机/雷达安装高度、横向位置和 pitch，拟合水平投影并记录 `sample_count`、`horizontal_rmse_px`、`max_error_px`、时间、`hardware_id`、`camera_by_path`、`radar_name`。验证器要求误差达标且标定身份与当前 discovery 一致。
 
-## 3. 配置雷达、相机和融合标定
+完整外参优先于简化安装参数。若内参有固定 `camera_fx`，FOV 是只读推导值；API 会返回 requested/effective/source/editable，小程序不会让用户保存实际不生效的参数。
 
-编辑 `/etc/smartbag/config.json`：
+## 6. API 与 Token
 
-```json
-{
-  "runtime_mode": "radar_primary_visual_classification",
-  "snapshot_classifier": {
-    "backend": "ss928_om",
-    "model": "/root/smartbag/models/vehicle-detector.om",
-    "imgsz": 640,
-    "inference_timeout_ms": 5000,
-    "target_switch_interval_s": 0.20,
-    "initial_warmup_frames": 2,
-    "switch_warmup_frames": 0,
-    "capture_timeout_ms": 1000,
-    "streamoff_timeout_ms": 1000,
-    "left_device": "/dev/v4l/by-path/LEFT-video-index0",
-    "right_device": "/dev/v4l/by-path/RIGHT-video-index0"
-  },
-  "fusion": {
-    "left_calibration": "/etc/smartbag/fusion-left.json",
-    "right_calibration": "/etc/smartbag/fusion-right.json",
-    "projection_half_width_px": 80,
-    "bbox_expand_ratio": 0.25,
-    "risk_window_s": 0.5,
-    "warning_sensitivity": 1.0,
-    "debug_port": 8080
-  },
-  "radar": {"enabled": true, "config": "/etc/smartbag/mr20.json"}
-}
+首次安装在 `/etc/smartbag/smartbag.env` 生成：
+
+```text
+SMARTBAG_API_TOKEN=<管理Token>
+SMARTBAG_API_READONLY_TOKEN=<只读Token>
 ```
 
-`pwm_channels` 仅保留旧配置兼容。正式 `outputs.haptics_backend=tm6605` 时，TCA9548A 地址默认 0x70，BMI270/左 TM6605/右 TM6605 分别使用 channel 0/1/2；灯使用 Pin7/Pin32。Pin35/Pin37 只在显式选择 legacy PWM backend 时使用。接线以 `04_hardware/ss928/40pin-usage.md` 为唯一事实源。
-
-可选模块：
-
-- MR20 是新模式的运动数据源。编辑 `/etc/smartbag/mr20.json`，逐侧确认 IP、bind port、side、反向标记、安装偏移和 yaw；示例 network 文件不会自动安装。
-- `modules.gnss.enabled=false` 为基线；修复/接入 DX-GP21 并验证 `/dev/ttyAMA4` 后再启用。
-- `modules.imu.enabled=true`；不要另启旧 BMI service。
-- `audio.enabled=false`；确认 MAX98357、I2S pinmux 和素材许可后再启用。
-- `/etc/smartbag/smartbag.env` 必须 root:root 0600；MT5710、Cloud token、告警号码和 WS73 路径均在这里配置。
-
-安装生成的 `fusion-left/right.json` 只是模板，不含实测内外参。必须分别填写相机内参/畸变、FOV、相机位姿、雷达位姿以及 `radar_to_camera_rotation/translation`。安装高度相近不能代替联合标定。
-
-融合模式默认按 640x480 请求每侧 UVC 快照。Linux 原生 V4L2 会预先打开两个 fd 并分配两套 mmap buffer，但任意时刻最多一路 STREAMON；首次丢弃 `initial_warmup_frames`，后续切换默认不丢帧。相邻侧开始时间目标为 0.20 秒，超时不排队而是立即切下一侧并记录 overrun。摄像头描述符中的 FPS 和 0.20 秒目标都不是持续性能保证，必须从状态接口实测。
-
-当前 runner 源码已按 ACL descriptor 自动选择 NV12、RGB_PLANAR UINT8 或 RGB_PLANAR FP32 预处理，AArch64 二进制和 SHA manifest 已进入部署目录。候选 YOLO11n OM 仍因板端 descriptor/同图检测和许可未验收而被 manifest 拒绝；不能仅因为 `.om` 存在就把 `runner_compatible` 改为 true。板端验证使用 `validate-board-model.sh`，结果应写入 `09_deliverables/board_validation` 后再更新正式 manifest。
-
-安装生成的融合 JSON 带 `calibration_status=UNMEASURED_TEMPLATE`。使用 `capture_fusion_calibration.py` 记录已知位置目标，再运行 `smartbag-calibrate-fusion.sh` 拟合水平投影并检查 RMSE；完整外参和实际关联仍须现场验证。未完成时使用 `--radar-only`。
-
-## 4. 部署前检查
-
-停止正在使用摄像头或端口的服务，再执行：
+文件必须 `root:root 0600`。默认绑定 `127.0.0.1`；监听非 loopback 时至少必须配置 Token。GET 状态、目标、事件和图片接受管理或只读 Token；PATCH/reset 只接受管理 Token。Token 通过 `Authorization: Bearer` 或 `X-SmartBag-Token` 传递，不使用 URL query，也不写日志。
 
 ```sh
-sudo systemctl stop smartbag.target 2>/dev/null || true
-sudo sh check-runtime-deps.sh /etc/smartbag/config.json
-sudo sh preflight.sh /etc/smartbag/config.json
+. /etc/smartbag/smartbag.env
+curl -H "Authorization: Bearer $SMARTBAG_API_READONLY_TOKEN" \
+  http://127.0.0.1:8080/api/v1/fusion/status
+curl -H "Authorization: Bearer $SMARTBAG_API_TOKEN" \
+  http://127.0.0.1:8080/api/v1/settings/runtime
 ```
 
-`preflight.sh` 在融合模式检查两个设备不是同一真实节点、左右融合标定、OM runner、模型、MR20 配置、依赖和调试端口，并严格按左后右顺序读取首帧，不会同时 STREAMON。正式 `ss928_om` 模式只要求 `cv2/numpy/dbus/gi`，不会强制安装 `torch/ultralytics/lap`；只有 legacy 视觉或显式选择 Ultralytics snapshot backend 才检查对应 Python 推理栈。旧单目视觉标定只在 `legacy_dual_vision` 中检查。预检不能替代关联准确率和 30 分钟稳定性测试。
+## 7. 风险、图片与保留策略
 
-## 5. 旧双视觉回归
+- 每目标窗口默认 0.5 秒，至少 3 个样本、0.25 秒观测、足够完整率和雷达质量，才允许正式 L3/L4。
+- 极近 fast path 仍要求至少 2 个有效样本、有效 closing speed、完整扫描、路径冲突和高质量。
+- 视觉事件记录 `frame_id/timestamp/detection_id/radar_track_key/association_score`；原帧不存在时保存无错误高亮的 `frame_mismatch` 图片。
+- 默认保留 500 个事件、200 张图片、256 MiB、30 天；先删最旧非活动图片，再清理非活动事件，原子压缩 JSONL。升级和默认卸载保留历史。
 
-```sh
-sudo sh dual-vision-test.sh /path/left.mp4 /path/right.mp4 /etc/smartbag/config.json
-```
-
-该命令只用于 `legacy_dual_vision` 回归，仍启动两个独立 detector，不代表新雷达主模式。新融合链使用 `radar_vision_fusion/fusion_replay.py` 回放 RadarScan 和 ClassificationFrame JSONL。
-
-## 6. 正式启动和日志
+## 8. 启动、状态与验收
 
 ```sh
 sudo systemctl enable --now smartbag.target
-sh status.sh
-sh logs.sh -f
+systemctl status smartbag.target
 journalctl -u smartbag-alert.service -f
+sudo ./status.sh --check
+sudo ./validate-on-ss928.sh --full --duration 30m
 ```
 
-`smartbag-alert.service` 在新模式中启动双 MR20 worker、一个交替快照分类器、当前图片关联、共享 RiskModel 和每轨迹 0.5 秒中位数窗口，不启动两条旧 detector 命令。视觉失败或映射过期时保留雷达并使用 unknown；每张新图都会替换本侧全部车型映射，不使用长期绑定。事件过期、level=0、SIGTERM、异常和 `ExecStopPost` safe-off 都会清振/灯。
-
-`smartbag.target` 默认只必需 alert；旧 `smartbag-video.service` 不再默认启动，避免与融合调试 API 冲突。WS73、MT5710 connectivity 和 temperature 仍按条件启动。
-
-## 7. 融合调试接口
+`validate-on-ss928.sh` 记录静态预检、runner 版本、服务/API 连续健康证据。它不能替代 reboot 和独立供电测试；完成后仍需：
 
 ```sh
-curl http://127.0.0.1:8080/api/v1/fusion/status
-curl http://127.0.0.1:8080/api/v1/fusion/targets
-curl -o left.jpg http://127.0.0.1:8080/api/v1/fusion/left/snapshot.jpg
-curl -o right.jpg http://127.0.0.1:8080/api/v1/fusion/right/snapshot.jpg
-curl http://127.0.0.1:8080/api/v1/settings/runtime
-curl -X PATCH -H 'Content-Type: application/json' -d '{"risk":{"warning_sensitivity":1.2}}' http://127.0.0.1:8080/api/v1/settings/runtime
-curl 'http://127.0.0.1:8080/api/v1/alerts/history?limit=20&min_level=3'
+sudo reboot
+# 重连后检查 smartbag.target，再拔除电脑并独立供电冷启动复查。
 ```
 
-快照会显示 YOLO bbox、扩展框、雷达投影容差区间、重合段、radar target ID、matched/unknown/ambiguous、association cost、中位数和最终 haptic 等级。HTTP 还提供运行参数白名单 PATCH/reset 和三级/四级事件详情/图片；这些接口不参与风险计算，也不提供连续 MJPEG。访问令牌可在 fusion 配置中设置；正式公网仍需 HTTPS、认证和防火墙。
+## 9. 小程序
 
-## 8. 微信小程序
+导入 `06_software/mobile/ssminiprogram`。板端 IP 与 Token 保存在微信本地设置，不进入 Git；CloudBase 不是本地 BLE、状态、风险、参数和事件图片功能的前提。正式 AppID/AppSecret/CloudBase 密钥必须自行配置，`touristappid` 只用于开发工具示例。详见小程序 [DEPLOYMENT](../../06_software/mobile/ssminiprogram/DEPLOYMENT.md)。
 
-在微信开发者工具导入 `06_software/mobile/ssminiprogram`，AppID、局域网/BLE、CloudBase 和云函数步骤见 `06_software/mobile/ssminiprogram/DEPLOYMENT.md`。“系统参数”页实时读写安装参数、关联范围、灵敏度和车型权重；“交通危险事件”页读取板端三级/四级事件并把同侧 JPEG 保存到手机本地。按 `event_id` 去重，离线时先存 BLE 元数据，之后可重试图片；CloudBase 上传失败不会影响本地记录或板端保存。
+## 10. 许可和已知限制
 
-现有“**双摄实时画面**”页面使用旧 `smartbag-video.service` 的连续画面 API，只适用于手动启动的 legacy gateway。新融合调试快照使用 `/api/v1/fusion/...`，默认不启动旧 gateway，也不会同时打开两个摄像头。手机设置通过 `wx.setStorageSync` 保存，不写死设备 IP。
+正式 OM 和 runner 已进入 Git 与 RC2；静态 SHA/架构/I/O 契约可验证，真实 SS928 ACL 加载、同图 OM 对齐和 30 分钟实测仍是 `PENDING`。SS928 SDK、`libascendcl.so`、板端驱动和系统镜像必须来自匹配厂商镜像，不随仓库分发。
 
-开发者工具可临时关闭域名/TLS 校验。正式真机必须使用实际 AppID，并根据微信当前规则验证局域网 IP、合法域名和 HTTPS；游客 AppID 或调试模式成功不代表发布版成功。手机与板端必须处于可互访网络，AP 客户端隔离需要关闭。BLE 仍只传告警、GNSS、IMU 和 `SYS STATUS`。
-
-## 9. 性能降级顺序
-
-先查看 `/api/v1/fusion/status`，记录每侧 `capture_latency_ms`、`inference_latency_ms`、快照年龄、模型错误、雷达频率和 unknown 比例，再逐项调整：
-
-1. 将 `initial_warmup_frames` 从 2 降到 1，并确认首次快照不是旧图或黑帧。
-2. 若 `switch_interval_ms` 持续 overrun，适当增加 `target_switch_interval_s`；这不会降低雷达扫描频率。
-3. 保持 `capture_frames=1`，不要建立旧帧队列。
-4. 在真实车辆数据上调 `confidence`、投影区间、bbox 扩展和歧义间隔，不以强行匹配换取表面命中率。
-5. 若 OM 延迟异常，检查 runner stderr、模型 I/O 合约和 NPU 温度；不要自动退回两个 Torch 进程。
-
-2026-07-16 历史镜像只有约 952 MiB 内存且缺少视觉依赖；部署时必须重新检查当前镜像。PC 的 Ultralytics/BoT-SORT profile 仍在视觉 README 中，仅用于纯视觉回归，不是本模式性能参数。
-
-`vision/ss928_backend` 支持持久 runner：模型初始化一次，Python 逐快照写 BGR24，runner 根据模型 descriptor 生成对应输入并输出 detections JSON。模型发布/实板验收前状态仍是 `LICENSE_BLOCKED` 与 `BOARD_VALIDATION_REQUIRED`。新模式不把 detections 接入 BoT-SORT，而是仅与持续雷达轨迹做当前图片的一一关联。
-
-## 10. 离线包
-
-候选 tag 上可运行 `09_deliverables/releases/build-release.sh` 生成 tar.gz 和 `SHA256SUMS`。当前包明确为 `full_install_ready=false`，只允许 `--offline --radar-only`，不会暗中携带 `08_media` 模型、厂商 SDK 或 secret。
-
-## 11. 停止和卸载
+停止和卸载：
 
 ```sh
-sudo sh stop-all.sh
-sudo sh uninstall.sh
+sudo ./stop-all.sh
+sudo ./uninstall.sh
 ```
 
-卸载不删除 `/etc/smartbag` 和 `/var/lib/smartbag`。升级使用 `upgrade.sh` 和 `migrate_config.py` 保留本地值；需要切换 profile 时先备份配置，再运行 `apply_hardware_profile.py`。BMI270 blob、模型、真实标定、设备身份和 secret 均由用户合法提供。
+默认卸载删除程序和 systemd，但保留 `/etc/smartbag`、`/var/lib/smartbag` 与事件。

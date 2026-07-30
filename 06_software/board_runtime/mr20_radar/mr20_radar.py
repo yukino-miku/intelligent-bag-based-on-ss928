@@ -384,8 +384,17 @@ class MR20RadarWorker:
             max_targets=config.max_targets_per_scan,
         )
         self._scan_queue: "queue.Queue[RadarScan]" = queue.Queue(maxsize=max(1, scan_queue_size))
+        self.started_mono_s = 0.0
+        self.last_packet_mono_s = 0.0
+        self.last_error = ""
+        self.restart_count = 0
 
     def start(self) -> None:
+        if self.is_alive():
+            return
+        self._stop.clear()
+        self.started_mono_s = time.monotonic()
+        self.last_error = ""
         self._thread = threading.Thread(target=self._run, name=f"mr20-{self.config.name}", daemon=True)
         self._thread.start()
 
@@ -396,12 +405,28 @@ class MR20RadarWorker:
         if self._thread is not None:
             self._thread.join(timeout=2.0)
 
+    def is_alive(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def health_status(self, now_s: float | None = None) -> dict[str, object]:
+        now_s = time.monotonic() if now_s is None else float(now_s)
+        return {
+            "worker_alive": self.is_alive(),
+            "worker_last_error": self.last_error,
+            "worker_restart_count": self.restart_count,
+            "worker_uptime_s": max(0.0, now_s - self.started_mono_s) if self.started_mono_s else 0.0,
+            "latest_packet_age_s": (
+                max(0.0, now_s - self.last_packet_mono_s) if self.last_packet_mono_s else None
+            ),
+        }
+
     def _run(self) -> None:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._socket = sock
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.settimeout(0.2)
+        sock: socket.socket | None = None
         try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self._socket = sock
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.settimeout(0.2)
             sock.bind((self.config.bind_host, self.config.port))
             while not self._stop.is_set():
                 try:
@@ -410,7 +435,9 @@ class MR20RadarWorker:
                     for scan in self.assembler.flush_timeout(time.monotonic()):
                         self._publish_scan(scan, self.config.radar_ip)
                     continue
-                except OSError:
+                except OSError as exc:
+                    if not self._stop.is_set():
+                        self.last_error = f"{type(exc).__name__}: {exc}"
                     break
                 if not self.accepts_source(source[0]):
                     continue
@@ -418,9 +445,14 @@ class MR20RadarWorker:
                     message = parse_mr20_frame(payload)
                 except MR20FrameError:
                     continue
+                self.last_packet_mono_s = time.monotonic()
                 self._handle_message(message, source[0])
+        except Exception as exc:
+            if not self._stop.is_set():
+                self.last_error = f"{type(exc).__name__}: {exc}"
         finally:
-            sock.close()
+            if sock is not None:
+                sock.close()
             self._socket = None
 
     def _handle_message(self, message: MR20ObjectListStatus | MR20Target, source_ip: str) -> None:

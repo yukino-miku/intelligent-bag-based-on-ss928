@@ -40,6 +40,8 @@ RIGHT_FUSION_CALIBRATION=""
 VIDEO_PORT=""
 FUSION_DEBUG_PORT=""
 FUSION_DEBUG_ENABLED="False"
+FUSION_DEBUG_BIND="127.0.0.1"
+CONFIG_API_TOKEN=""
 LEFT_STREAM_PORT=""
 RIGHT_STREAM_PORT=""
 if [ "$RUNTIME_MODE" = "radar_primary_visual_classification" ]; then
@@ -51,6 +53,13 @@ if [ "$RUNTIME_MODE" = "radar_primary_visual_classification" ]; then
     RIGHT_FUSION_CALIBRATION=$(config_value fusion.right_calibration)
     FUSION_DEBUG_PORT=$(config_value fusion.debug_port)
     FUSION_DEBUG_ENABLED=$(config_value fusion.debug_http_enabled)
+    FUSION_DEBUG_BIND=$(config_value fusion.debug_bind)
+    CONFIG_API_TOKEN=$(config_value fusion.debug_access_token)
+elif [ "$RUNTIME_MODE" = "radar_only" ]; then
+    FUSION_DEBUG_PORT=$(config_value fusion.debug_port)
+    FUSION_DEBUG_ENABLED=$(config_value fusion.debug_http_enabled)
+    FUSION_DEBUG_BIND=$(config_value fusion.debug_bind)
+    CONFIG_API_TOKEN=$(config_value fusion.debug_access_token)
 elif [ "$RUNTIME_MODE" = "legacy_dual_vision" ]; then
     LEFT_DEVICE=$(config_value cameras.left.camera_device)
     RIGHT_DEVICE=$(config_value cameras.right.camera_device)
@@ -98,16 +107,28 @@ if [ "$RUNTIME_MODE" = "radar_primary_visual_classification" ]; then
         else
             fail=1
         fi
+        EXPECTED_RUNNER_VERSION=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["runner"]["contract_version"])' "$RUNNER_MANIFEST")
+        ACTUAL_RUNNER_VERSION=$($OM_RUNNER --version 2>/dev/null || true)
+        if [ "$ACTUAL_RUNNER_VERSION" = "$EXPECTED_RUNNER_VERSION" ]; then
+            echo "OK   runner contract version $ACTUAL_RUNNER_VERSION"
+        else
+            echo "FAIL runner --version mismatch: expected $EXPECTED_RUNNER_VERSION got ${ACTUAL_RUNNER_VERSION:-unavailable}" >&2
+            fail=1
+        fi
     fi
     check_path "$LEFT_FUSION_CALIBRATION"
     check_path "$RIGHT_FUSION_CALIBRATION"
     if [ -f "$LEFT_FUSION_CALIBRATION" ]; then
         python3 /root/smartbag/radar_vision_fusion/validate_radar_camera_calibration.py \
-            "$LEFT_FUSION_CALIBRATION" --require-measured || fail=1
+            "$LEFT_FUSION_CALIBRATION" --require-measured \
+            --hardware-discovery /etc/smartbag/hardware-discovery.json \
+            --radar-config /etc/smartbag/mr20.json || fail=1
     fi
     if [ -f "$RIGHT_FUSION_CALIBRATION" ]; then
         python3 /root/smartbag/radar_vision_fusion/validate_radar_camera_calibration.py \
-            "$RIGHT_FUSION_CALIBRATION" --require-measured || fail=1
+            "$RIGHT_FUSION_CALIBRATION" --require-measured \
+            --hardware-discovery /etc/smartbag/hardware-discovery.json \
+            --radar-config /etc/smartbag/mr20.json || fail=1
     fi
 elif [ "$RUNTIME_MODE" = "legacy_dual_vision" ]; then
     for path in "$LEFT_DEVICE" "$RIGHT_DEVICE" "$LEFT_CALIBRATION" "$RIGHT_CALIBRATION" "$MODEL"; do
@@ -125,6 +146,9 @@ if [ "$LIGHTS_ENABLED" = "True" ] || [ "$HAPTICS_BACKEND" = "pwm_legacy" ]; then
 fi
 if [ "$RADAR_ENABLED" = "True" ]; then
     check_path /etc/smartbag/mr20.json
+    if [ -f /etc/smartbag/mr20.json ]; then
+        python3 "$SCRIPT_DIR/mr20-live-check.py" --config /etc/smartbag/mr20.json --duration 5 || fail=1
+    fi
 fi
 
 if [ -r /sys/class/pwm/pwmchip0/npwm ] && { [ "$LIGHTS_ENABLED" = "True" ] || [ "$HAPTICS_BACKEND" = "pwm_legacy" ]; }; then
@@ -133,7 +157,7 @@ if [ -r /sys/class/pwm/pwmchip0/npwm ] && { [ "$LIGHTS_ENABLED" = "True" ] || [ 
 fi
 
 PORTS=""
-if [ "$RUNTIME_MODE" = "radar_primary_visual_classification" ] && [ "$FUSION_DEBUG_ENABLED" = "True" ]; then
+if { [ "$RUNTIME_MODE" = "radar_primary_visual_classification" ] || [ "$RUNTIME_MODE" = "radar_only" ]; } && [ "$FUSION_DEBUG_ENABLED" = "True" ]; then
     PORTS="$FUSION_DEBUG_PORT"
 elif [ "$RUNTIME_MODE" = "legacy_dual_vision" ]; then
     PORTS="$VIDEO_PORT $LEFT_STREAM_PORT $RIGHT_STREAM_PORT"
@@ -156,6 +180,32 @@ PY
         fail=1
     fi
 done
+
+if [ "$FUSION_DEBUG_ENABLED" = "True" ]; then
+    ENV_FILE=$(dirname "$CONFIG")/smartbag.env
+    ADMIN_TOKEN=""
+    READONLY_TOKEN=""
+    if [ -f "$ENV_FILE" ]; then
+        ADMIN_TOKEN=$(sed -n 's/^SMARTBAG_API_TOKEN=//p' "$ENV_FILE" | tail -n 1)
+        READONLY_TOKEN=$(sed -n 's/^SMARTBAG_API_READONLY_TOKEN=//p' "$ENV_FILE" | tail -n 1)
+    fi
+    [ -n "$ADMIN_TOKEN" ] || ADMIN_TOKEN=$CONFIG_API_TOKEN
+    if [ ${#ADMIN_TOKEN} -lt 32 ]; then
+        echo "FAIL fusion API admin token is missing or shorter than 32 characters" >&2
+        fail=1
+    else
+        echo "OK   fusion API admin token configured"
+    fi
+    case "$FUSION_DEBUG_BIND" in
+        127.0.0.1|::1|localhost) ;;
+        *)
+            if [ -z "$ADMIN_TOKEN" ] && [ -z "$READONLY_TOKEN" ]; then
+                echo "FAIL non-loopback fusion API bind requires authentication" >&2
+                fail=1
+            fi
+            ;;
+    esac
+fi
 
 if [ -z "$LEFT_DEVICE" ] && [ -z "$RIGHT_DEVICE" ]; then
     echo "OK   no camera is required by runtime mode $RUNTIME_MODE"

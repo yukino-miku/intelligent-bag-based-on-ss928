@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import socket
 import sys
 import tempfile
+import time
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -140,6 +142,23 @@ class MR20RiskEvaluatorTest(unittest.TestCase):
             self.assertEqual(1, len(scans))
             self.assertEqual([0], [event.level for event in events])
             self.assertFalse(record["legacy_evaluation_enabled"])
+
+    def test_worker_reports_udp_bind_failure_in_health_status(self) -> None:
+        blocker = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        blocker.bind(("127.0.0.1", 0))
+        port = blocker.getsockname()[1]
+        worker = MR20RadarWorker(replace(self.config, port=port), self.risk, evaluate_legacy_risk=False)
+        try:
+            worker.start()
+            deadline = time.monotonic() + 1.0
+            while worker.is_alive() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            health = worker.health_status()
+            self.assertFalse(health["worker_alive"])
+            self.assertIn("Error", health["worker_last_error"])
+        finally:
+            worker.stop()
+            blocker.close()
 
 
 class MR20ScanAssemblerTest(unittest.TestCase):

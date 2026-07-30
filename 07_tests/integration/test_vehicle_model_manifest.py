@@ -18,14 +18,14 @@ class VehicleModelManifestTest(unittest.TestCase):
         self.assertEqual(selected["path"], manifest["candidate_source"])
         self.assertEqual(["bicycle", "motorcycle", "car", "truck", "bus"], manifest["target_classes"])
 
-    def test_manifest_does_not_claim_current_runner_compatibility(self) -> None:
+    def test_manifest_claims_static_contract_but_not_board_validation(self) -> None:
         manifest = json.loads(
             (ROOT / "09_deliverables" / "board_deploy" / "models" / "vehicle-detector.manifest.json").read_text(encoding="utf-8")
         )
         self.assertTrue(manifest["runner_source_contract_compatible"])
-        self.assertFalse(manifest["runner_compatible"])
-        self.assertFalse(manifest["current_runner_compatible"])
-        self.assertFalse(manifest["direct_deployment"])
+        self.assertTrue(manifest["runner_compatible"])
+        self.assertTrue(manifest["current_runner_compatible"])
+        self.assertTrue(manifest["direct_deployment"])
         self.assertEqual("PENDING", manifest["board_acl_validation"])
 
     def test_runner_manifest_has_aarch64_hash_and_no_bundled_acl_runtime(self) -> None:
@@ -50,11 +50,11 @@ class VehicleModelManifestTest(unittest.TestCase):
         for path in paths:
             self.assertIn("vehicle-detector", path.read_text(encoding="utf-8"), str(path))
 
-    def test_install_never_implicitly_overwrites_model_from_ignored_media(self) -> None:
+    def test_install_uses_formal_release_model_not_ignored_media(self) -> None:
         install = (ROOT / "09_deliverables" / "board_deploy" / "install.sh").read_text(encoding="utf-8")
         self.assertNotIn("08_media/models/ss928_yolo11n/yolo11n_ss928.om", install)
-        self.assertIn("MODEL_SOURCE=${SMARTBAG_MODEL_SOURCE:-}", install)
-        self.assertIn('elif [ -f "$MODEL_DEST" ]', install)
+        self.assertIn("MODEL_SOURCE=${SMARTBAG_MODEL_SOURCE:-$SCRIPT_DIR/models/vehicle-detector.om}", install)
+        self.assertIn('--model "$MODEL_SOURCE"', install)
 
     def test_inventory_accounts_for_every_local_ai_model_path(self) -> None:
         inventory = json.loads((ROOT / "00_admin" / "local-model-inventory.json").read_text(encoding="utf-8"))

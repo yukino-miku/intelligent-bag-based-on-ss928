@@ -34,7 +34,10 @@ Page({
     sideFields: SIDE_FIELDS,
     associationFields: ASSOCIATION_FIELDS,
     riskFields: RISK_FIELDS,
-    settings: { left: {}, right: {}, association: {}, risk: {} },
+    settings: {
+      left: {}, right: {}, association: {}, risk: {},
+      effective_parameters: { left: {}, right: {} }
+    },
     version: "--",
     loading: false,
     statusText: "等待读取板端参数",

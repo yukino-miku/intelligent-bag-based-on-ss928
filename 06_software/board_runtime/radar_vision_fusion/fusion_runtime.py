@@ -6,6 +6,7 @@ import math
 import sys
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, replace
 from enum import IntEnum
 from pathlib import Path
@@ -89,9 +90,26 @@ class FusionRuntimeSettings:
     visual_class_max_age_s: float = 1.5
     risk_window_s: float = 0.5
     warning_sensitivity: float = 1.0
+    min_samples_per_window: int = 3
+    min_observed_duration_s: float = 0.25
+    min_complete_scan_ratio: float = 0.67
+    min_radar_quality: float = 0.5
+    fast_path_min_samples: int = 2
+    fast_path_max_distance_m: float = 0.8
+    fast_path_min_closing_speed_mps: float = 1.5
+    fast_path_min_radar_quality: float = 0.75
     runtime_tuning_path: str = "/etc/smartbag/runtime-tuning.json"
     alert_history_root: str = "/var/lib/smartbag/alarm-events"
     max_alarm_snapshot_age_s: float = 2.0
+    frame_cache_per_side: int = 12
+    max_board_events: int = 500
+    max_board_images: int = 200
+    max_board_storage_mb: float = 256.0
+    retention_days: float = 30.0
+    worker_monitor_interval_s: float = 0.5
+    worker_restart_initial_backoff_s: float = 0.5
+    worker_restart_max_backoff_s: float = 8.0
+    runtime_mode: str = "radar_primary_visual_classification"
 
 
 class FusionJsonlRecorder:
@@ -143,14 +161,30 @@ class RadarVisionFusionRuntime:
         self.risk_windows = MedianRiskWindowAggregator(
             self.settings.risk_window_s,
             self.settings.warning_sensitivity,
+            min_samples_per_window=self.settings.min_samples_per_window,
+            min_observed_duration_s=self.settings.min_observed_duration_s,
+            min_complete_scan_ratio=self.settings.min_complete_scan_ratio,
+            min_radar_quality=self.settings.min_radar_quality,
+            fast_path_min_samples=self.settings.fast_path_min_samples,
+            fast_path_max_distance_m=self.settings.fast_path_max_distance_m,
+            fast_path_min_closing_speed_mps=self.settings.fast_path_min_closing_speed_mps,
+            fast_path_min_radar_quality=self.settings.fast_path_min_radar_quality,
         )
         self.recorder = FusionJsonlRecorder(self.settings.record_dir)
         self._stop = threading.Event()
         self._started = False
         self._workers: list[MR20RadarWorker] = []
         self._workers_by_name: dict[str, MR20RadarWorker] = {}
+        self._worker_monitor: threading.Thread | None = None
+        self._worker_restart_count: dict[str, int] = {name: 0 for name in self.radar_configs}
+        self._worker_next_restart_s: dict[str, float] = {name: 0.0 for name in self.radar_configs}
+        self._worker_offline_notified: set[str] = set()
         self._latest_risks: dict[str, FusionTargetRisk] = {}
         self._latest_frames: dict[str, ClassificationFrame] = {}
+        self._frame_cache: dict[str, OrderedDict[int, ClassificationFrame]] = {
+            "left": OrderedDict(),
+            "right": OrderedDict(),
+        }
         self._latest_associations: dict[str, AssociationResult] = {}
         self._latest_class_maps: dict[str, LatestVisualClassMap] = {}
         self._latest_scans: dict[str, RadarScan] = {}
@@ -173,6 +207,10 @@ class RadarVisionFusionRuntime:
             self.settings.alert_history_root,
             max_snapshot_age_s=self.settings.max_alarm_snapshot_age_s,
             snapshot_provider=self.latest_frame,
+            max_events=self.settings.max_board_events,
+            max_images=self.settings.max_board_images,
+            max_storage_mb=self.settings.max_board_storage_mb,
+            retention_days=self.settings.retention_days,
         )
 
     def start(self) -> None:
@@ -182,16 +220,13 @@ class RadarVisionFusionRuntime:
             self._started = True
         self._stop.clear()
         for config in self.radar_configs.values():
-            worker = MR20RadarWorker(
-                config,
-                self.legacy_risk_config,
-                emit=None,
-                on_scan=self.submit_scan,
-                evaluate_legacy_risk=False,
-            )
-            worker.start()
-            self._workers.append(worker)
-            self._workers_by_name[config.name] = worker
+            self._start_worker(config)
+        self._worker_monitor = threading.Thread(
+            target=self._monitor_workers,
+            name="mr20-worker-monitor",
+            daemon=True,
+        )
+        self._worker_monitor.start()
         if self.classifier is not None:
             self.classifier.on_frame = self.submit_classification
             self.classifier.start()
@@ -200,6 +235,9 @@ class RadarVisionFusionRuntime:
         self._stop.set()
         for worker in self._workers:
             worker.stop()
+        if self._worker_monitor is not None:
+            self._worker_monitor.join(timeout=2.0)
+            self._worker_monitor = None
         self._workers.clear()
         self._workers_by_name.clear()
         if self.classifier is not None:
@@ -289,6 +327,11 @@ class RadarVisionFusionRuntime:
                 mapping=entries,
             )
             self._latest_frames[frame.side] = updated_frame
+            cache = self._frame_cache.setdefault(frame.side, OrderedDict())
+            cache[frame.frame_id] = updated_frame
+            cache.move_to_end(frame.frame_id)
+            while len(cache) > max(1, self.settings.frame_cache_per_side):
+                cache.popitem(last=False)
             self._latest_associations[frame.side] = result
             self._latest_class_maps[frame.side] = class_map
             if self.classifier is not None:
@@ -311,8 +354,12 @@ class RadarVisionFusionRuntime:
         with self._lock:
             return tuple(self._latest_risks.values())
 
-    def latest_frame(self, side: str) -> ClassificationFrame | None:
+    def latest_frame(self, side: str, frame_id: int | None = None) -> ClassificationFrame | None:
         with self._lock:
+            if frame_id is not None:
+                exact = self._frame_cache.get(side, {}).get(int(frame_id))
+                if exact is not None:
+                    return exact
             return self._latest_frames.get(side)
 
     def latest_association(self, side: str) -> AssociationResult | None:
@@ -364,9 +411,20 @@ class RadarVisionFusionRuntime:
                     "latest_scan_complete": latest_scan.complete if latest_scan is not None else None,
                     "latest_scan_completion_reason": latest_scan.completion_reason if latest_scan is not None else None,
                     **scan_stats[name],
+                    **(
+                        self._workers_by_name[name].health_status(now_s)
+                        if name in self._workers_by_name
+                        else {
+                            "worker_alive": False,
+                            "worker_last_error": "worker missing",
+                            "worker_restart_count": self._worker_restart_count.get(name, 0),
+                            "worker_uptime_s": 0.0,
+                            "latest_packet_age_s": None,
+                        }
+                    ),
                 }
         return {
-            "runtime_mode": "radar_primary_visual_classification",
+            "runtime_mode": self.settings.runtime_mode,
             "radars": radar_status,
             "active_tracks": len(active_tracks),
             "risk_window_s": self.settings.risk_window_s,
@@ -378,6 +436,7 @@ class RadarVisionFusionRuntime:
             "classifier": self.classifier.status() if self.classifier is not None else {"state": "BLOCKED", "error": self.classifier_error},
             "targets": [_risk_record_dict(item, self.risk_model.config) for item in records],
             "recent_level_3_4_events": self.alert_history.recent(5),
+            "alert_history_storage": self.alert_history.storage_status(),
         }
 
     def _risk_sample(self, track: RadarTrack, scan: RadarScan) -> RadarRiskSample:
@@ -434,6 +493,12 @@ class RadarVisionFusionRuntime:
             projected_u_px=projection,
             timestamp=track.last_seen_mono_s,
             detection_id=entry.detection_id,
+            visual_frame_id=visual_map.frame_id if visual_map is not None and entry.detection_id is not None else None,
+            visual_frame_timestamp=(
+                visual_map.captured_mono_s
+                if visual_map is not None and entry.detection_id is not None
+                else None
+            ),
         )
         quality = track.radar_quality
         target = KinematicRiskTarget(
@@ -480,7 +545,15 @@ class RadarVisionFusionRuntime:
                 target=_target_from_sample(sample),
                 raw=sample.assessment,
                 stable=stable,
-                stabilizer=StabilizerDebugInfo(reason="median_500ms_window"),
+                stabilizer=StabilizerDebugInfo(
+                    reason=(
+                        f"median_fast_path:{window.fast_path_reason}"
+                        if window.fast_path_reason
+                        else "median_500ms_window"
+                        if window.window_valid
+                        else f"median_window_capped:{window.invalid_reason}"
+                    )
+                ),
                 window=window,
             )
             self._latest_risks[record.fused.track_key] = record
@@ -498,6 +571,12 @@ class RadarVisionFusionRuntime:
                 "effective_score": selected.stable.score,
                 "final_level": int(selected.stable.haptic_level),
                 "sample_count": selected.window.sample_count if selected.window else 0,
+                "observed_duration_s": selected.window.observed_duration_s if selected.window else 0.0,
+                "complete_scan_ratio": selected.window.complete_scan_ratio if selected.window else 0.0,
+                "radar_quality_median": selected.window.radar_quality_median if selected.window else 0.0,
+                "window_valid": selected.window.window_valid if selected.window else False,
+                "invalid_reason": selected.window.invalid_reason if selected.window else "no_window",
+                "fast_path_reason": selected.window.fast_path_reason if selected.window else "",
                 "window_start": selected.window.window_start if selected.window else None,
                 "window_end": selected.window.window_end if selected.window else None,
             }
@@ -532,6 +611,8 @@ class RadarVisionFusionRuntime:
             "cpa_distance_m": assessment.cpa_distance_m,
             "association_score": fused.association_score,
             "detection_id": fused.detection_id,
+            "visual_frame_id": fused.visual_frame_id,
+            "visual_frame_timestamp": fused.visual_frame_timestamp,
             "scan_complete_ratio": self._scan_stats[fused.radar_name].as_dict(now_s)["complete_scan_ratio"],
             "settings_version": self._settings_version,
         }
@@ -623,6 +704,7 @@ class RadarVisionFusionRuntime:
                 new_config = replace(
                     old_config,
                     mount_x_m=calibration.radar_mount_x_m,
+                    mount_z_m=calibration.radar_mount_z_m,
                     mount_yaw_deg=calibration.radar_yaw_deg,
                 )
                 self.track_manager.retune_mount(name, old_config, new_config)
@@ -634,12 +716,59 @@ class RadarVisionFusionRuntime:
             self.risk_windows.set_warning_sensitivity(state.warning_sensitivity)
             self._settings_version = state.version
 
+    def _start_worker(self, config: RadarConfig) -> None:
+        worker = MR20RadarWorker(
+            config,
+            self.legacy_risk_config,
+            emit=None,
+            on_scan=self.submit_scan,
+            evaluate_legacy_risk=False,
+        )
+        worker.restart_count = self._worker_restart_count.get(config.name, 0)
+        worker.start()
+        old = self._workers_by_name.get(config.name)
+        if old in self._workers:
+            self._workers.remove(old)
+        self._workers.append(worker)
+        self._workers_by_name[config.name] = worker
 
-def build_fusion_runtime(config: Mapping[str, object], emit: Callable[[AlertEvent], None]) -> RadarVisionFusionRuntime:
+    def _monitor_workers(self) -> None:
+        interval = max(0.05, self.settings.worker_monitor_interval_s)
+        while not self._stop.wait(interval):
+            now_s = time.monotonic()
+            for name, config in self.radar_configs.items():
+                worker = self._workers_by_name.get(name)
+                if worker is not None and worker.is_alive():
+                    self._worker_offline_notified.discard(name)
+                    continue
+                if name not in self._worker_offline_notified:
+                    self._worker_offline_notified.add(name)
+                    with self._lock:
+                        self._clear_side(config.side, now_s, "radar_worker_offline")
+                if now_s < self._worker_next_restart_s.get(name, 0.0):
+                    continue
+                if worker is not None:
+                    worker.stop()
+                count = self._worker_restart_count.get(name, 0) + 1
+                self._worker_restart_count[name] = count
+                backoff = min(
+                    self.settings.worker_restart_max_backoff_s,
+                    self.settings.worker_restart_initial_backoff_s * (2 ** max(0, count - 1)),
+                )
+                self._worker_next_restart_s[name] = now_s + max(0.05, backoff)
+                self._start_worker(config)
+
+
+def build_fusion_runtime(
+    config: Mapping[str, object],
+    emit: Callable[[AlertEvent], None],
+    *,
+    enable_classifier: bool | None = None,
+) -> RadarVisionFusionRuntime:
     radar_section = _mapping(config.get("radar"))
     radar_path = str(radar_section.get("config", ""))
     if not radar_path:
-        raise ValueError("radar_primary_visual_classification requires radar.config")
+        raise ValueError("radar fusion runtime requires radar.config")
     radar_configs, legacy_risk = load_radar_configs(radar_path)
     fusion_section = _mapping(config.get("fusion"))
     snapshot_section = _mapping(config.get("snapshot_classifier"))
@@ -664,7 +793,10 @@ def build_fusion_runtime(config: Mapping[str, object], emit: Callable[[AlertEven
 
     classifier = None
     classifier_error = "snapshot classifier disabled"
-    if bool(snapshot_section.get("enabled", True)):
+    classifier_requested = bool(snapshot_section.get("enabled", True))
+    if enable_classifier is not None:
+        classifier_requested = bool(enable_classifier)
+    if classifier_requested:
         try:
             backend_name = str(snapshot_section.get("backend", "ss928_om"))
             model_path = str(snapshot_section.get("model", _mapping(config.get("paths")).get("model", "")))
@@ -768,9 +900,30 @@ def build_fusion_runtime(config: Mapping[str, object], emit: Callable[[AlertEven
             visual_class_max_age_s=float(fusion_section.get("visual_class_max_age_s", 1.5)),
             risk_window_s=float(fusion_section.get("risk_window_s", 0.5)),
             warning_sensitivity=float(fusion_section.get("warning_sensitivity", 1.0)),
+            min_samples_per_window=int(fusion_section.get("min_samples_per_window", 3)),
+            min_observed_duration_s=float(fusion_section.get("min_observed_duration_s", 0.25)),
+            min_complete_scan_ratio=float(fusion_section.get("min_complete_scan_ratio", 0.67)),
+            min_radar_quality=float(fusion_section.get("min_radar_quality", 0.5)),
+            fast_path_min_samples=int(fusion_section.get("fast_path_min_samples", 2)),
+            fast_path_max_distance_m=float(fusion_section.get("fast_path_max_distance_m", 0.8)),
+            fast_path_min_closing_speed_mps=float(
+                fusion_section.get("fast_path_min_closing_speed_mps", 1.5)
+            ),
+            fast_path_min_radar_quality=float(fusion_section.get("fast_path_min_radar_quality", 0.75)),
             runtime_tuning_path=str(fusion_section.get("runtime_tuning_path", "/etc/smartbag/runtime-tuning.json")),
             alert_history_root=str(fusion_section.get("alert_history_root", "/var/lib/smartbag/alarm-events")),
             max_alarm_snapshot_age_s=float(fusion_section.get("max_alarm_snapshot_age_s", 2.0)),
+            frame_cache_per_side=int(fusion_section.get("frame_cache_per_side", 12)),
+            max_board_events=int(fusion_section.get("max_board_events", 500)),
+            max_board_images=int(fusion_section.get("max_board_images", 200)),
+            max_board_storage_mb=float(fusion_section.get("max_board_storage_mb", 256.0)),
+            retention_days=float(fusion_section.get("retention_days", 30.0)),
+            worker_monitor_interval_s=float(fusion_section.get("worker_monitor_interval_s", 0.5)),
+            worker_restart_initial_backoff_s=float(
+                fusion_section.get("worker_restart_initial_backoff_s", 0.5)
+            ),
+            worker_restart_max_backoff_s=float(fusion_section.get("worker_restart_max_backoff_s", 8.0)),
+            runtime_mode=str(config.get("runtime_mode", "radar_primary_visual_classification")),
         ),
     )
 
@@ -842,6 +995,12 @@ def _risk_record_dict(record: FusionTargetRisk, risk_config: RiskModelConfig | N
         "window_start": window.window_start if window else None,
         "window_end": window.window_end if window else None,
         "sample_count": window.sample_count if window else 0,
+        "observed_duration_s": window.observed_duration_s if window else 0.0,
+        "complete_scan_ratio": window.complete_scan_ratio if window else 0.0,
+        "radar_quality_median": window.radar_quality_median if window else 0.0,
+        "window_valid": window.window_valid if window else False,
+        "invalid_reason": window.invalid_reason if window else "no_window",
+        "fast_path_reason": window.fast_path_reason if window else "",
         "score_min": window.score_min if window else raw.score,
         "score_max": window.score_max if window else raw.score,
         "score_median": window.score_median if window else raw.score,

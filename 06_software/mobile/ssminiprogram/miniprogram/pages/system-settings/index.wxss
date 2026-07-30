@@ -4,9 +4,12 @@
 .header__meta { margin-top: 8rpx; color: #65717d; font-size: 24rpx; }
 .section { padding: 20rpx 0; border-top: 1rpx solid #d8dee4; }
 .section__title { margin-bottom: 12rpx; font-size: 30rpx; font-weight: 650; }
-.field { display: grid; grid-template-columns: 1fr 220rpx; align-items: center; min-height: 72rpx; gap: 18rpx; }
+.field { display: grid; grid-template-columns: 1fr 260rpx; align-items: center; min-height: 92rpx; gap: 18rpx; }
 .field__label { font-size: 26rpx; }
+.field__control { min-width: 0; }
 .field__input { height: 58rpx; padding: 0 14rpx; border: 1rpx solid #b8c2cc; border-radius: 6rpx; background: #fff; text-align: right; box-sizing: border-box; }
+.field__input[disabled] { color: #66717b; background: #e7ebee; }
+.field__source { display: block; margin-top: 4rpx; color: #687681; font-size: 19rpx; text-align: right; word-break: break-all; }
 .actions { display: flex; gap: 16rpx; padding: 24rpx 0 48rpx; }
 .actions button { flex: 1; border-radius: 6rpx; font-size: 27rpx; }
 .actions__primary { color: #fff; background: #1769aa; }

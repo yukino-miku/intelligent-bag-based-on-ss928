@@ -53,7 +53,7 @@ class ReleaseAssetTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "architecture mismatch"):
                 ASSETS.verify_elf_aarch64(wrong)
 
-    def test_model_hash_and_unvalidated_contract_are_rejected(self) -> None:
+    def test_model_hash_contract_and_board_validation_state(self) -> None:
         manifest = DEPLOY / "models" / "vehicle-detector.manifest.json"
         with tempfile.TemporaryDirectory() as temp:
             model = Path(temp) / "vehicle-detector.om"
@@ -61,15 +61,14 @@ class ReleaseAssetTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "SHA256 mismatch"):
                 ASSETS.verify_model(model, manifest, require_compatible=True)
         data = json.loads(manifest.read_text(encoding="utf-8"))
-        self.assertFalse(data["runner_compatible"])
-        self.assertIn(
-            "FORMAL_RELEASE_LICENSE_REVIEW_PENDING",
-            data["license_source"]["distribution_status"],
-        )
+        self.assertTrue(data["runner_compatible"])
+        self.assertTrue(data["current_runner_compatible"])
+        self.assertEqual("AGPL-3.0-only", data["license"])
+        self.assertEqual("PENDING", data["board_acl_validation"])
 
-    def test_full_installer_requires_model_but_radar_only_is_explicit(self) -> None:
+    def test_installer_uses_bundled_model_and_radar_only_is_explicit(self) -> None:
         installer = (ROOT / "install-on-ss928.sh").read_text(encoding="utf-8")
-        self.assertIn("full mode requires --model-source", installer)
+        self.assertIn('MODEL_SOURCE="$DEPLOY/models/vehicle-detector.om"', installer)
         self.assertIn("--radar-only", installer)
         self.assertIn("SMARTBAG_RUNTIME_MODE=radar_only", installer)
         self.assertNotIn("08_media", installer)
@@ -232,7 +231,7 @@ class MockInstallTest(unittest.TestCase):
             self.assertTrue(config_path.is_file())
             self.assertTrue(event.is_file())
 
-    def test_mock_full_install_without_model_fails_but_radar_only_succeeds(self) -> None:
+    def test_mock_full_and_radar_only_install_with_bundled_assets(self) -> None:
         bash = self.bash_path()
         if bash is None:
             self.skipTest("POSIX shell unavailable")
@@ -248,8 +247,9 @@ class MockInstallTest(unittest.TestCase):
             env["PATH"] = str(shim_dir) + os.pathsep + env.get("PATH", "")
             base = [str(bash), self.msys_path(ROOT / "install-on-ss928.sh"), "--offline", "--skip-optional", "--no-start", "--yes"]
             full = subprocess.run(base, cwd=ROOT, env=env, capture_output=True, text=True)
-            self.assertNotEqual(0, full.returncode)
-            self.assertIn("full mode requires --model-source", full.stderr)
+            self.assertEqual(0, full.returncode, full.stderr)
+            installed_model = root / "root" / "smartbag" / "models" / "vehicle-detector.om"
+            self.assertTrue(installed_model.is_file())
             radar = subprocess.run(base + ["--radar-only"], cwd=ROOT, env=env, capture_output=True, text=True)
             self.assertEqual(0, radar.returncode, radar.stderr)
 

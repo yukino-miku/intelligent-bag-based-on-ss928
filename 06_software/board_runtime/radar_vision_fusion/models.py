@@ -136,3 +136,5 @@ class FusedRadarTarget:
     projected_u_px: float | None
     timestamp: float
     detection_id: int | None = None
+    visual_frame_id: int | None = None
+    visual_frame_timestamp: float | None = None
