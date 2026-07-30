@@ -45,4 +45,28 @@ bool bgr_letterbox_to_nv12(
     LetterboxInfo *info,
     std::string *error);
 
+bool bgr_letterbox_to_rgb_planar_u8(
+    const unsigned char *source_bgr,
+    std::size_t source_bytes,
+    int source_width,
+    int source_height,
+    int source_stride,
+    int model_width,
+    int model_height,
+    std::vector<unsigned char> *rgb_planar,
+    LetterboxInfo *info,
+    std::string *error);
+
+bool bgr_letterbox_to_rgb_planar_f32(
+    const unsigned char *source_bgr,
+    std::size_t source_bytes,
+    int source_width,
+    int source_height,
+    int source_stride,
+    int model_width,
+    int model_height,
+    std::vector<float> *rgb_planar,
+    LetterboxInfo *info,
+    std::string *error);
+
 #endif

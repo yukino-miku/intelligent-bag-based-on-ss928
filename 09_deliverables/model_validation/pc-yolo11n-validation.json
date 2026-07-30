@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "executed_at": "2026-07-30",
+  "privacy": "Three frames from a private local traffic video were used; image/video content and absolute path are not distributed.",
+  "software": {
+    "ultralytics": "8.4.60",
+    "onnx": "1.21.0",
+    "onnxruntime": "1.24.4",
+    "opencv": "4.13.0"
+  },
+  "pt": {
+    "sha256": "0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1",
+    "size_bytes": 5613764,
+    "vehicle_detection_status": "PASS"
+  },
+  "onnx": {
+    "sha256": "aa916c427ea520e2e4db5a61e9074e1570715c655302895db4f575500ab51116",
+    "size_bytes": 10701765,
+    "checker_status": "PASS",
+    "input": {"name": "images", "dtype": "FLOAT32", "shape": [1, 3, 640, 640]},
+    "output": {"name": "output0", "dtype": "FLOAT32", "shape": [1, 84, 8400]},
+    "vehicle_detection_status": "PASS"
+  },
+  "comparison": {
+    "confidence": 0.25,
+    "target_class_ids": [1, 2, 3, 5, 7],
+    "frames": [
+      {"sample": 1, "pt_count": 4, "onnx_count": 4, "matched": 4, "mean_iou": 0.964133, "max_confidence_delta": 0.025763},
+      {"sample": 2, "pt_count": 4, "onnx_count": 4, "matched": 4, "mean_iou": 0.994156, "max_confidence_delta": 0.029756},
+      {"sample": 3, "pt_count": 5, "onnx_count": 5, "matched": 5, "mean_iou": 0.991852, "max_confidence_delta": 0.033962}
+    ],
+    "status": "PASS"
+  },
+  "om": {
+    "sha256": "9e3c448ab7309428ea78cfdc509926404220fa74dd56c89e4995366f5f16af95",
+    "atc_compile": "PASS",
+    "board_descriptor": "PENDING",
+    "board_detection_parity": "PENDING"
+  }
+}

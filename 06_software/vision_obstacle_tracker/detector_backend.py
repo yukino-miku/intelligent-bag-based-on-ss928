@@ -90,6 +90,7 @@ class Ss928OmBackend(DetectorBackend):
             "--nms", str(float(nms)),
             "--max-det", str(int(max_det)),
             "--target-classes", target_classes,
+            "--input-format", "bgr24",
             "--server",
         ]
         self._process = None
@@ -136,11 +137,10 @@ class Ss928OmBackend(DetectorBackend):
         if self._closed:
             raise RuntimeError("SS928 OM runner is closed")
         source_height, source_width = frame.shape[:2]  # type: ignore[attr-defined]
-        nv12 = _bgr_letterbox_to_nv12(frame, self.imgsz)
         frame_index = self._frame_index
         self._frame_index += 1
-        input_path = Path(self._temp_dir.name) / f"frame-{frame_index}.nv12"
-        input_path.write_bytes(nv12)
+        input_path = Path(self._temp_dir.name) / f"frame-{frame_index}.bgr"
+        input_path.write_bytes(frame.tobytes())  # type: ignore[attr-defined]
         try:
             with self._request_lock:
                 try:

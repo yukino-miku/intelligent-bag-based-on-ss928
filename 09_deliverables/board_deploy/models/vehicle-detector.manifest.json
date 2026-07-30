@@ -1,17 +1,52 @@
 {
+  "schema_version": 2,
+  "name": "vehicle-detector.om",
   "deployment_name": "vehicle-detector.om",
   "candidate_source": "08_media/models/ss928_yolo11n/yolo11n_ss928.om",
   "sha256": "9e3c448ab7309428ea78cfdc509926404220fa74dd56c89e4995366f5f16af95",
+  "size": 3426459,
   "size_bytes": 3426459,
   "model_family": "Ultralytics YOLO11n detect, COCO 80 classes",
+  "classes": ["bicycle", "motorcycle", "car", "truck", "bus"],
   "target_classes": ["bicycle", "motorcycle", "car", "truck", "bus"],
-  "network_input": "FP32 1x3x640x640",
-  "aipp_input": "RGB_PLANAR static AIPP, scale 1/255",
-  "output": "FP32 1x84x8400",
-  "atc_compile": "PASS",
-  "current_runner_contract": "NV12/YUV420SP UINT8 [1,960,640,1] -> FP32 [1,84,8400]",
+  "class_table": "COCO80",
+  "class_ids": {"bicycle": 1, "car": 2, "motorcycle": 3, "bus": 5, "truck": 7},
+  "input_dtype": "FLOAT32 network input; board descriptor pending static-AIPP inspection",
+  "input_shape": [1, 3, 640, 640],
+  "input_layout": "NCHW / RGB_PLANAR",
+  "aipp_format": "static RGB_PLANAR, RGB, mean 0, var_reci 1/255",
+  "output_dtype": "FLOAT32",
+  "output_shape": [1, 84, 8400],
+  "confidence_default": 0.25,
+  "nms_iou_default": 0.45,
+  "atc_version": "SVP_NNN_PC_V1.0.6.0 Mapper 1.0.0.0_B010",
+  "sdk_version": "SS928V100 SDK V2.0.2.2 target; board runtime match pending",
+  "runner_contract": {
+    "descriptor_selected_inputs": [
+      "NV12 UINT8 [1,960,640,1]",
+      "RGB_PLANAR UINT8 [1,3,640,640]",
+      "RGB_PLANAR FLOAT32 [1,3,640,640]"
+    ],
+    "output": "FLOAT32 [1,84,8400]",
+    "python_transport": "raw BGR24 frame; runner selects preprocessing from ACL descriptor"
+  },
+  "runner_source_contract_compatible": true,
+  "runner_compatible": false,
   "current_runner_compatible": false,
+  "board_validation_status": "PENDING",
   "board_acl_validation": "PENDING",
-  "known_image_parity": "PENDING",
-  "direct_deployment": false
+  "known_image_parity": "PT_ONNX_PASS; OM_PENDING",
+  "atc_compile": "PASS",
+  "direct_deployment": false,
+  "license_source": {
+    "upstream": "https://github.com/ultralytics/ultralytics",
+    "declared_license": "AGPL-3.0 or Ultralytics Enterprise License",
+    "repository_license_compatibility": "UNRESOLVED: this repository has no root LICENSE",
+    "distribution_status": "LICENSE_BLOCKED"
+  },
+  "blocking_reasons": [
+    "Actual OM ACL input descriptor has not been captured on SS928",
+    "OM detections have not been compared with the accepted PT/ONNX reference on the board",
+    "Model redistribution terms are unresolved because the repository has no root license"
+  ]
 }

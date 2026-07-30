@@ -172,7 +172,7 @@ std::vector<BackendDetection> BackendSimpleTracker::update(const std::vector<Bac
         }
     }
     tracks_.erase(
-        std::remove_if(tracks_.begin(), tracks_.end(), [kMaxMissed](const Track &track) {
+        std::remove_if(tracks_.begin(), tracks_.end(), [](const Track &track) {
             return track.missed > kMaxMissed;
         }),
         tracks_.end()

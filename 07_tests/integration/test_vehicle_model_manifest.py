@@ -22,9 +22,23 @@ class VehicleModelManifestTest(unittest.TestCase):
         manifest = json.loads(
             (ROOT / "09_deliverables" / "board_deploy" / "models" / "vehicle-detector.manifest.json").read_text(encoding="utf-8")
         )
+        self.assertTrue(manifest["runner_source_contract_compatible"])
+        self.assertFalse(manifest["runner_compatible"])
         self.assertFalse(manifest["current_runner_compatible"])
         self.assertFalse(manifest["direct_deployment"])
         self.assertEqual("PENDING", manifest["board_acl_validation"])
+
+    def test_runner_manifest_has_aarch64_hash_and_no_bundled_acl_runtime(self) -> None:
+        manifest = json.loads(
+            (ROOT / "09_deliverables" / "board_deploy" / "bin" / "aarch64" / "runner-manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        runner = manifest["runner"]
+        self.assertEqual("AArch64", runner["architecture"])
+        self.assertEqual(64, len(runner["sha256"]))
+        self.assertIn("libascendcl.so", runner["dynamic_dependencies"])
+        self.assertNotIn("libsmartbag_ss928_acl.so", runner["dynamic_dependencies"])
 
     def test_install_preflight_and_configs_use_formal_model_name(self) -> None:
         paths = [

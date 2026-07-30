@@ -111,6 +111,29 @@ void test_rejects_bad_buffer_and_odd_model() {
     expect_true(!bgr_letterbox_to_nv12(source.data(), source.size(), 2, 2, 6, 3, 4, &nv12, &preview, &info, &error), "odd model rejected");
 }
 
+void test_rgb_planar_order_and_normalization() {
+    const std::vector<unsigned char> source = {10, 20, 30, 40, 50, 60};
+    LetterboxInfo info{};
+    std::string error;
+    std::vector<unsigned char> u8;
+    expect_true(bgr_letterbox_to_rgb_planar_u8(
+        source.data(), source.size(), 2, 1, 6, 2, 1, &u8, &info, &error), "rgb u8 conversion");
+    expect_equal(6, static_cast<long long>(u8.size()), "rgb u8 size");
+    expect_equal(30, u8[0], "red pixel 0");
+    expect_equal(60, u8[1], "red pixel 1");
+    expect_equal(20, u8[2], "green pixel 0");
+    expect_equal(50, u8[3], "green pixel 1");
+    expect_equal(10, u8[4], "blue pixel 0");
+    expect_equal(40, u8[5], "blue pixel 1");
+
+    std::vector<float> f32;
+    expect_true(bgr_letterbox_to_rgb_planar_f32(
+        source.data(), source.size(), 2, 1, 6, 2, 1, &f32, &info, &error), "rgb f32 conversion");
+    expect_equal(6, static_cast<long long>(f32.size()), "rgb f32 size");
+    expect_near(30.0 / 255.0, f32[0], 1e-6, "normalized red");
+    expect_near(40.0 / 255.0, f32[5], 1e-6, "normalized blue");
+}
+
 }  // namespace
 
 int main() {
@@ -119,6 +142,7 @@ int main() {
     test_black_and_white_nv12();
     test_horizontal_padding_uses_gray_114();
     test_rejects_bad_buffer_and_odd_model();
+    test_rgb_planar_order_and_normalization();
     if (failures != 0) {
         std::fprintf(stderr, "%d preprocess test failure(s)\n", failures);
         return 1;

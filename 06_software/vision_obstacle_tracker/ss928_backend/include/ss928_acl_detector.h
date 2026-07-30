@@ -8,9 +8,18 @@
 #include <string>
 #include <vector>
 
-bool validate_factory_yolov8_contract(
+enum class ModelInputKind {
+    NV12_UINT8,
+    RGB_PLANAR_UINT8,
+    RGB_PLANAR_FLOAT32,
+};
+
+const char *model_input_kind_name(ModelInputKind kind);
+
+bool validate_yolo_detection_contract(
     const std::vector<ModelTensorInfo> &inputs,
     const std::vector<ModelTensorInfo> &outputs,
+    ModelInputKind *input_kind,
     std::string *error);
 
 struct AclInferenceResult {
@@ -28,10 +37,11 @@ public:
     Ss928AclDetector &operator=(const Ss928AclDetector &) = delete;
 
     bool initialize(const std::string &model_path, int device_id, std::string *error);
-    bool infer(const unsigned char *nv12, std::size_t bytes, AclInferenceResult *result, std::string *error);
+    bool infer(const void *input, std::size_t bytes, AclInferenceResult *result, std::string *error);
     void shutdown();
     bool initialized() const;
     std::size_t input_bytes() const;
+    ModelInputKind input_kind() const;
     const std::vector<ModelTensorInfo> &inputs() const;
     const std::vector<ModelTensorInfo> &outputs() const;
 

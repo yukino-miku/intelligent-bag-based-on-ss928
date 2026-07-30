@@ -60,6 +60,44 @@ void set_error(std::string *error, const char *message) {
     }
 }
 
+bool make_letterbox_bgr(
+    const unsigned char *source_bgr,
+    std::size_t source_bytes,
+    int source_width,
+    int source_height,
+    int source_stride,
+    int model_width,
+    int model_height,
+    std::vector<unsigned char> *letterbox_bgr,
+    LetterboxInfo *info,
+    std::string *error) {
+    if (source_bgr == nullptr || letterbox_bgr == nullptr || info == nullptr) {
+        set_error(error, "source and output pointers must be non-null");
+        return false;
+    }
+    if (source_stride < source_width * 3 || source_bytes < static_cast<std::size_t>(source_stride) * source_height) {
+        set_error(error, "source BGR buffer is smaller than dimensions and stride require");
+        return false;
+    }
+    if (!compute_letterbox(source_width, source_height, model_width, model_height, info, error)) {
+        return false;
+    }
+
+    letterbox_bgr->assign(static_cast<std::size_t>(model_width) * model_height * 3, 114);
+    const int offset_x = static_cast<int>(std::floor(info->pad_x));
+    const int offset_y = static_cast<int>(std::floor(info->pad_y));
+    for (int y = 0; y < info->resized_height; ++y) {
+        const double source_y = (y + 0.5) / info->scale - 0.5;
+        for (int x = 0; x < info->resized_width; ++x) {
+            const double source_x = (x + 0.5) / info->scale - 0.5;
+            unsigned char *destination = &(*letterbox_bgr)[
+                (static_cast<std::size_t>(y + offset_y) * model_width + x + offset_x) * 3];
+            sample_bilinear_bgr(source_bgr, source_width, source_height, source_stride, source_x, source_y, destination);
+        }
+    }
+    return true;
+}
+
 }  // namespace
 
 bool compute_letterbox(
@@ -118,7 +156,7 @@ bool bgr_letterbox_to_nv12(
     std::vector<unsigned char> *letterbox_bgr,
     LetterboxInfo *info,
     std::string *error) {
-    if (source_bgr == nullptr || nv12 == nullptr || letterbox_bgr == nullptr || info == nullptr) {
+    if (nv12 == nullptr) {
         set_error(error, "source and output pointers must be non-null");
         return false;
     }
@@ -126,25 +164,10 @@ bool bgr_letterbox_to_nv12(
         set_error(error, "NV12 model dimensions must be even");
         return false;
     }
-    if (source_stride < source_width * 3 || source_bytes < static_cast<std::size_t>(source_stride) * source_height) {
-        set_error(error, "source BGR buffer is smaller than dimensions and stride require");
+    if (!make_letterbox_bgr(
+            source_bgr, source_bytes, source_width, source_height, source_stride,
+            model_width, model_height, letterbox_bgr, info, error)) {
         return false;
-    }
-    if (!compute_letterbox(source_width, source_height, model_width, model_height, info, error)) {
-        return false;
-    }
-
-    letterbox_bgr->assign(static_cast<std::size_t>(model_width) * model_height * 3, 114);
-    const int offset_x = static_cast<int>(std::floor(info->pad_x));
-    const int offset_y = static_cast<int>(std::floor(info->pad_y));
-    for (int y = 0; y < info->resized_height; ++y) {
-        const double source_y = (y + 0.5) / info->scale - 0.5;
-        for (int x = 0; x < info->resized_width; ++x) {
-            const double source_x = (x + 0.5) / info->scale - 0.5;
-            unsigned char *destination = &(*letterbox_bgr)[
-                (static_cast<std::size_t>(y + offset_y) * model_width + x + offset_x) * 3];
-            sample_bilinear_bgr(source_bgr, source_width, source_height, source_stride, source_x, source_y, destination);
-        }
     }
 
     const std::size_t y_bytes = static_cast<std::size_t>(model_width) * model_height;
@@ -176,6 +199,67 @@ bool bgr_letterbox_to_nv12(
             (*nv12)[uv] = bgr_to_u(b, g, r);
             (*nv12)[uv + 1] = bgr_to_v(b, g, r);
         }
+    }
+    if (error != nullptr) error->clear();
+    return true;
+}
+
+bool bgr_letterbox_to_rgb_planar_u8(
+    const unsigned char *source_bgr,
+    std::size_t source_bytes,
+    int source_width,
+    int source_height,
+    int source_stride,
+    int model_width,
+    int model_height,
+    std::vector<unsigned char> *rgb_planar,
+    LetterboxInfo *info,
+    std::string *error) {
+    if (rgb_planar == nullptr) {
+        set_error(error, "RGB planar output pointer must be non-null");
+        return false;
+    }
+    std::vector<unsigned char> letterbox_bgr;
+    if (!make_letterbox_bgr(
+            source_bgr, source_bytes, source_width, source_height, source_stride,
+            model_width, model_height, &letterbox_bgr, info, error)) {
+        return false;
+    }
+    const std::size_t plane_size = static_cast<std::size_t>(model_width) * model_height;
+    rgb_planar->assign(plane_size * 3, 0);
+    for (std::size_t pixel = 0; pixel < plane_size; ++pixel) {
+        (*rgb_planar)[pixel] = letterbox_bgr[pixel * 3 + 2];
+        (*rgb_planar)[plane_size + pixel] = letterbox_bgr[pixel * 3 + 1];
+        (*rgb_planar)[plane_size * 2 + pixel] = letterbox_bgr[pixel * 3];
+    }
+    if (error != nullptr) error->clear();
+    return true;
+}
+
+bool bgr_letterbox_to_rgb_planar_f32(
+    const unsigned char *source_bgr,
+    std::size_t source_bytes,
+    int source_width,
+    int source_height,
+    int source_stride,
+    int model_width,
+    int model_height,
+    std::vector<float> *rgb_planar,
+    LetterboxInfo *info,
+    std::string *error) {
+    if (rgb_planar == nullptr) {
+        set_error(error, "RGB planar output pointer must be non-null");
+        return false;
+    }
+    std::vector<unsigned char> rgb_u8;
+    if (!bgr_letterbox_to_rgb_planar_u8(
+            source_bgr, source_bytes, source_width, source_height, source_stride,
+            model_width, model_height, &rgb_u8, info, error)) {
+        return false;
+    }
+    rgb_planar->resize(rgb_u8.size());
+    for (std::size_t index = 0; index < rgb_u8.size(); ++index) {
+        (*rgb_planar)[index] = static_cast<float>(rgb_u8[index]) / 255.0f;
     }
     if (error != nullptr) error->clear();
     return true;

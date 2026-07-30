@@ -11,9 +11,19 @@ bool fail_contract(const std::string &message, std::string *error) {
 
 }  // namespace
 
-bool validate_factory_yolov8_contract(
+const char *model_input_kind_name(ModelInputKind kind) {
+    switch (kind) {
+        case ModelInputKind::NV12_UINT8: return "NV12_UINT8";
+        case ModelInputKind::RGB_PLANAR_UINT8: return "RGB_PLANAR_UINT8";
+        case ModelInputKind::RGB_PLANAR_FLOAT32: return "RGB_PLANAR_FLOAT32";
+    }
+    return "UNKNOWN";
+}
+
+bool validate_yolo_detection_contract(
     const std::vector<ModelTensorInfo> &inputs,
     const std::vector<ModelTensorInfo> &outputs,
+    ModelInputKind *input_kind,
     std::string *error) {
     if (inputs.size() != 1) {
         return fail_contract("factory model must have exactly one input", error);
@@ -21,9 +31,18 @@ bool validate_factory_yolov8_contract(
     if (outputs.size() != 1) {
         return fail_contract("factory model must have exactly one output", error);
     }
+    if (input_kind == nullptr) return fail_contract("input kind output pointer must be non-null", error);
     const ModelTensorInfo &input = inputs[0];
-    if (input.dtype != 4 || input.bytes != 614400 || input.dims != std::vector<long long>({1, 960, 640, 1})) {
-        return fail_contract("factory input must be UINT8 [1,960,640,1], 614400-byte NV12 with static AIPP", error);
+    if (input.dtype == 4 && input.bytes == 614400 && input.dims == std::vector<long long>({1, 960, 640, 1})) {
+        *input_kind = ModelInputKind::NV12_UINT8;
+    } else if (input.dtype == 4 && input.bytes == 1228800 && input.dims == std::vector<long long>({1, 3, 640, 640})) {
+        *input_kind = ModelInputKind::RGB_PLANAR_UINT8;
+    } else if (input.dtype == 0 && input.bytes == 4915200 && input.dims == std::vector<long long>({1, 3, 640, 640})) {
+        *input_kind = ModelInputKind::RGB_PLANAR_FLOAT32;
+    } else {
+        return fail_contract(
+            "input must be NV12 UINT8 [1,960,640,1], RGB_PLANAR UINT8 [1,3,640,640], "
+            "or RGB_PLANAR FLOAT32 [1,3,640,640]", error);
     }
     const ModelTensorInfo &output = outputs[0];
     if (output.dtype != 0 || output.bytes != 2822400 || output.dims != std::vector<long long>({1, 84, 8400})) {
@@ -89,6 +108,7 @@ struct Ss928AclDetector::Impl {
     void *output_buffer = nullptr;
     std::size_t input_size = 0;
     std::size_t output_size = 0;
+    ModelInputKind input_kind = ModelInputKind::NV12_UINT8;
     std::vector<ModelTensorInfo> input_info;
     std::vector<ModelTensorInfo> output_info;
 };
@@ -199,7 +219,7 @@ bool Ss928AclDetector::initialize(const std::string &model_path, int device_id, 
         info.bytes = aclmdlGetOutputSizeByIndex(impl_->desc, i);
         impl_->output_info.push_back(info);
     }
-    if (!validate_factory_yolov8_contract(impl_->input_info, impl_->output_info, error)) {
+    if (!validate_yolo_detection_contract(impl_->input_info, impl_->output_info, &impl_->input_kind, error)) {
         shutdown();
         return false;
     }
@@ -249,9 +269,9 @@ bool Ss928AclDetector::initialize(const std::string &model_path, int device_id, 
     return true;
 }
 
-bool Ss928AclDetector::infer(const unsigned char *nv12, std::size_t bytes,
+bool Ss928AclDetector::infer(const void *input, std::size_t bytes,
                             AclInferenceResult *result, std::string *error) {
-    if (!impl_->ready || nv12 == nullptr || result == nullptr) {
+    if (!impl_->ready || input == nullptr || result == nullptr) {
         if (error != nullptr) *error = "infer called with invalid state or argument";
         return false;
     }
@@ -261,7 +281,7 @@ bool Ss928AclDetector::infer(const unsigned char *nv12, std::size_t bytes,
         if (error != nullptr) *error = stream.str();
         return false;
     }
-    std::memcpy(impl_->input_buffer, nv12, bytes);
+    std::memcpy(impl_->input_buffer, input, bytes);
     aclError ret = aclrtMemFlush(impl_->input_buffer, impl_->input_size);
     if (ret != ACL_ERROR_NONE) {
         return acl_failure("execute", "aclrtMemFlush(input)", ret, impl_->model_path, 0, impl_->input_size, error);
@@ -343,6 +363,7 @@ void Ss928AclDetector::shutdown() {
 
 bool Ss928AclDetector::initialized() const { return impl_->ready; }
 std::size_t Ss928AclDetector::input_bytes() const { return impl_->input_size; }
+ModelInputKind Ss928AclDetector::input_kind() const { return impl_->input_kind; }
 const std::vector<ModelTensorInfo> &Ss928AclDetector::inputs() const { return impl_->input_info; }
 const std::vector<ModelTensorInfo> &Ss928AclDetector::outputs() const { return impl_->output_info; }
 
@@ -352,10 +373,11 @@ struct Ss928AclDetector::Impl {};
 Ss928AclDetector::Ss928AclDetector() : impl_(new Impl) {}
 Ss928AclDetector::~Ss928AclDetector() = default;
 bool Ss928AclDetector::initialize(const std::string &, int, std::string *) { return false; }
-bool Ss928AclDetector::infer(const unsigned char *, std::size_t, AclInferenceResult *, std::string *) { return false; }
+bool Ss928AclDetector::infer(const void *, std::size_t, AclInferenceResult *, std::string *) { return false; }
 void Ss928AclDetector::shutdown() {}
 bool Ss928AclDetector::initialized() const { return false; }
 std::size_t Ss928AclDetector::input_bytes() const { return 0; }
+ModelInputKind Ss928AclDetector::input_kind() const { return ModelInputKind::NV12_UINT8; }
 const std::vector<ModelTensorInfo> &Ss928AclDetector::inputs() const { static const std::vector<ModelTensorInfo> empty; return empty; }
 const std::vector<ModelTensorInfo> &Ss928AclDetector::outputs() const { static const std::vector<ModelTensorInfo> empty; return empty; }
 

@@ -24,6 +24,7 @@ struct Options {
     float nms = 0.45f;
     int max_detections = 50;
     bool server = false;
+    std::string input_format = "model";
 };
 
 bool parse_number(const char *text, int *value) {
@@ -60,9 +61,11 @@ bool parse_options(int argc, char **argv, Options *options) {
         else if (key == "--nms") { if (!parse_number(value, &options->nms)) return false; }
         else if (key == "--max-det") { if (!parse_number(value, &options->max_detections)) return false; }
         else if (key == "--target-classes") options->target_classes = value;
+        else if (key == "--input-format") options->input_format = value;
         else return false;
     }
-    return !options->model.empty() && !options->input.empty() && options->repeat > 0;
+    return !options->model.empty() && !options->input.empty() && options->repeat > 0
+        && (options->input_format == "model" || options->input_format == "bgr24");
 }
 
 bool read_file(const std::string &path, std::vector<unsigned char> *data) {
@@ -106,8 +109,8 @@ bool infer_file(
     int source_height,
     int frame_index) {
     std::vector<unsigned char> input;
-    if (!read_file(input_path, &input) || input.size() != detector->input_bytes()) {
-        std::cerr << "input must be an exact model-sized NV12 frame; expected " << detector->input_bytes() << " bytes\n";
+    if (!read_file(input_path, &input)) {
+        std::cerr << "cannot read input file: " << input_path << '\n';
         return false;
     }
     LetterboxInfo letterbox;
@@ -116,8 +119,51 @@ bool infer_file(
         std::cerr << error << '\n';
         return false;
     }
+    const void *model_input = input.data();
+    std::size_t model_input_bytes = input.size();
+    std::vector<unsigned char> prepared_u8;
+    std::vector<unsigned char> preview;
+    std::vector<float> prepared_f32;
+    if (options.input_format == "bgr24") {
+        const std::size_t expected = static_cast<std::size_t>(source_width) * source_height * 3;
+        if (input.size() != expected) {
+            std::cerr << "BGR24 input size mismatch: expected " << expected << " bytes, got " << input.size() << '\n';
+            return false;
+        }
+        const ModelInputKind kind = detector->input_kind();
+        bool prepared = false;
+        if (kind == ModelInputKind::NV12_UINT8) {
+            prepared = bgr_letterbox_to_nv12(
+                input.data(), input.size(), source_width, source_height, source_width * 3,
+                640, 640, &prepared_u8, &preview, &letterbox, &error);
+        } else if (kind == ModelInputKind::RGB_PLANAR_UINT8) {
+            prepared = bgr_letterbox_to_rgb_planar_u8(
+                input.data(), input.size(), source_width, source_height, source_width * 3,
+                640, 640, &prepared_u8, &letterbox, &error);
+        } else {
+            prepared = bgr_letterbox_to_rgb_planar_f32(
+                input.data(), input.size(), source_width, source_height, source_width * 3,
+                640, 640, &prepared_f32, &letterbox, &error);
+        }
+        if (!prepared) {
+            std::cerr << error << '\n';
+            return false;
+        }
+        if (!prepared_f32.empty()) {
+            model_input = prepared_f32.data();
+            model_input_bytes = prepared_f32.size() * sizeof(float);
+        } else {
+            model_input = prepared_u8.data();
+            model_input_bytes = prepared_u8.size();
+        }
+    }
+    if (model_input_bytes != detector->input_bytes()) {
+        std::cerr << "model input size mismatch: expected " << detector->input_bytes()
+                  << " bytes, got " << model_input_bytes << '\n';
+        return false;
+    }
     AclInferenceResult inference;
-    if (!detector->infer(input.data(), input.size(), &inference, &error)) {
+    if (!detector->infer(model_input, model_input_bytes, &inference, &error)) {
         std::cerr << error << '\n';
         return false;
     }
@@ -142,7 +188,8 @@ int main(int argc, char **argv) {
     Options options;
     if (!parse_options(argc, argv, &options)) {
         std::cerr << "usage: ss928_detection_runner --model MODEL.om --input FRAME.nv12 "
-                     "--source-width W --source-height H [--repeat N --conf F --nms F --max-det N --server]\n";
+                     "--source-width W --source-height H [--input-format model|bgr24 "
+                     "--repeat N --conf F --nms F --max-det N --server]\n";
         return 2;
     }
     std::string error;
@@ -151,6 +198,8 @@ int main(int argc, char **argv) {
         std::cerr << error << '\n';
         return 1;
     }
+    std::cerr << "model_input_kind=" << model_input_kind_name(detector.input_kind())
+              << " input_bytes=" << detector.input_bytes() << '\n';
     if (options.server) {
         std::string line;
         while (std::getline(std::cin, line)) {
