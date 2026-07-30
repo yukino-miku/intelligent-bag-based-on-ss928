@@ -1,9 +1,41 @@
-# User-requested exclusions
-08_media/
+# User-requested archive exclusion
 10_archive/*
 !10_archive/sanda_ss928/
 10_archive/sanda_ss928/*
 !10_archive/sanda_ss928/README.md
+
+# 08_media is publishable, but local captures, board logs, downloaded SDKs,
+# toolchains, runtime libraries, dependency clones, and build trees stay local.
+/08_media/camera_data/
+/08_media/vision_results/
+/08_media/alternating_camera_runs/
+/08_media/board-deploy-staging/
+/08_media/board-live/
+/08_media/board-npu-validation/
+/08_media/board-wheelhouse-npu/
+/08_media/host-tools/
+/08_media/mix210-toolchain/
+/08_media/HiEuler_PI_ModelZoo-live/
+/08_media/ascend-pytorch-headers/
+/08_media/ascend-real/
+/08_media/ascend-stub/
+/08_media/runner-build-zig/
+/08_media/ss928-acl-adapter-build*/
+/08_media/ss928-mpp-sample-min/
+/08_media/ss928-sdk-min/
+/08_media/ss928-yolo11s-runtime/
+/08_media/toolinspect/
+/08_media/Ultralytics/
+/08_media/yolo11s-build-*/
+/08_media/zig-libc-after/
+/08_media/board-libascendcl.so
+/08_media/zig-*.cmd
+/08_media/zig-*.cmake
+
+# Keep the deployable OM and its hashes; omit verbose mapper intermediates.
+/08_media/models/ss928_yolo11n/om-artifact/*
+!/08_media/models/ss928_yolo11n/om-artifact/SHA256SUMS
+!/08_media/models/ss928_yolo11n/om-artifact/yolo11n_ss928.om
 
 # Video/test capture data
 *.mp4
@@ -79,7 +111,6 @@ Thumbs.db
 yolo*.pt
 yolo*.onnx
 *_openvino_model/
-*.om
 /06_software/board_runtime/bmi270_backpack/calibration_data/*.csv
 /06_software/board_runtime/bmi270_backpack/bmi270_config.bin
 *.local.json

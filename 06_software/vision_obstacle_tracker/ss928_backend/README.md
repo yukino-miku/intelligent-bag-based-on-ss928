@@ -12,7 +12,7 @@
 - 未验收：候选 OM 的板端 descriptor/车辆检测正确性、真实双 USB 切换频率、雷达-相机标定/关联正确性和长时间 NPU 性能。
 - 不得声称正式板端链已通过硬件验收，也不得用 OpenVINO 冒充 SS928 NPU。
 
-详细旧模型失败证据见 [diagnostics/STAGE_G_EVIDENCE.md](diagnostics/STAGE_G_EVIDENCE.md)。合法模型不在仓库；项目源码构建的 runner 二进制进入 Git，厂商 ACL runtime/SDK 不进入 Git。
+详细旧模型失败证据见 [diagnostics/STAGE_G_EVIDENCE.md](diagnostics/STAGE_G_EVIDENCE.md)。仓库中的 `08_media/models/ss928_yolo11n/yolo11n_ss928.om` 只是未验收候选，不能等同于合法且可正式部署的模型；项目源码构建的 runner 二进制进入 Git，厂商 ACL runtime/SDK 不进入 Git。
 
 ## 本机单元测试
 

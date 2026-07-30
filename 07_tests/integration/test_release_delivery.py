@@ -62,7 +62,10 @@ class ReleaseAssetTest(unittest.TestCase):
                 ASSETS.verify_model(model, manifest, require_compatible=True)
         data = json.loads(manifest.read_text(encoding="utf-8"))
         self.assertFalse(data["runner_compatible"])
-        self.assertEqual("LICENSE_BLOCKED", data["license_source"]["distribution_status"])
+        self.assertIn(
+            "FORMAL_RELEASE_LICENSE_REVIEW_PENDING",
+            data["license_source"]["distribution_status"],
+        )
 
     def test_full_installer_requires_model_but_radar_only_is_explicit(self) -> None:
         installer = (ROOT / "install-on-ss928.sh").read_text(encoding="utf-8")

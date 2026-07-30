@@ -42,11 +42,11 @@
     "upstream": "https://github.com/ultralytics/ultralytics",
     "declared_license": "AGPL-3.0 or Ultralytics Enterprise License",
     "repository_license_compatibility": "UNRESOLVED: this repository has no root LICENSE",
-    "distribution_status": "LICENSE_BLOCKED"
+    "distribution_status": "PUBLISHED_TO_GIT_AT_OWNER_REQUEST; FORMAL_RELEASE_LICENSE_REVIEW_PENDING"
   },
   "blocking_reasons": [
     "Actual OM ACL input descriptor has not been captured on SS928",
     "OM detections have not been compared with the accepted PT/ONNX reference on the board",
-    "Model redistribution terms are unresolved because the repository has no root license"
+    "Formal release and reuse terms remain unresolved because the repository has no root license"
   ]
 }

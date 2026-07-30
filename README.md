@@ -26,7 +26,7 @@
 | 来源逐文件审计 | [整合计划](00_admin/sanda-full-integration-plan.md)、[24,421 文件 manifest](00_admin/sanda-full-file-manifest.csv) |
 | 当前完成/未验证项 | [integration-status](00_admin/integration-status.md) |
 | 雷达主导融合设计与边界 | [设计审计](02_research/radar-primary-vision-fusion-design.md)、[模块 README](06_software/board_runtime/radar_vision_fusion/README.md) |
-| 本地 PT/ONNX/OM 审计与部署阻塞 | [模型清单](00_admin/local-model-inventory.md)、[部署 manifest](09_deliverables/board_deploy/models/vehicle-detector.manifest.json) |
+| 本地 PT/ONNX/OM 审计与部署阻塞 | [已提交的 OM 候选](08_media/models/README.md)、[模型清单](00_admin/local-model-inventory.md)、[部署 manifest](09_deliverables/board_deploy/models/vehicle-detector.manifest.json) |
 | 克隆安装就绪度与本机资产 | [readiness](00_admin/clone-install-readiness.md)、[资产清单](00_admin/local-deployment-asset-inventory.md) |
 | RC1 发布审计 | [release-candidate-audit](00_admin/release-candidate-audit.md) |
 | 微信小程序导入与 CloudBase | [小程序部署](06_software/mobile/ssminiprogram/DEPLOYMENT.md) |
@@ -69,7 +69,7 @@ sudo ./install-on-ss928.sh --radar-only --yes
 
 ## NPU/OM 当前状态
 
-本地完整审计找到 YOLO11n 的 `.pt`、`.onnx` 和已由 ATC 生成的 `.om`，详见 [模型清单](00_admin/local-model-inventory.md)。候选 OM SHA256 为 `9e3c448ab7309428ea78cfdc509926404220fa74dd56c89e4995366f5f16af95`。当前 AArch64 runner 已根据 ACL descriptor 支持 NV12 UINT8、RGB_PLANAR UINT8 和 RGB_PLANAR FP32，并由 Python 统一传 BGR24 帧；PT/ONNX 三帧同图车辆结果已通过。但候选 OM 的真实板端 descriptor、检测结果和 Ultralytics AGPL/仓库根许可兼容性仍未通过，因此模型不进 Git，`runner_compatible=false`。正式文件名统一为 `/root/smartbag/models/vehicle-detector.om`，manifest/preflight 会阻止错误兼容声明；OpenVINO 只代表 CPU 优化，不等于 SS928 NPU。
+本地完整审计找到 YOLO11n 的 `.pt`、`.onnx` 和已由 ATC 生成的 `.om`，详见 [模型清单](00_admin/local-model-inventory.md)。候选 OM 已按项目所有者要求提交到 [08_media/models](08_media/models/README.md)，SHA256 为 `9e3c448ab7309428ea78cfdc509926404220fa74dd56c89e4995366f5f16af95`。当前 AArch64 runner 已根据 ACL descriptor 支持 NV12 UINT8、RGB_PLANAR UINT8 和 RGB_PLANAR FP32，并由 Python 统一传 BGR24 帧；PT/ONNX 三帧同图车辆结果已通过。但候选 OM 的真实板端 descriptor、检测结果和 Ultralytics AGPL/仓库根许可兼容性仍未通过，因此它仍不进入 RC Release，`runner_compatible=false`。正式文件名统一为 `/root/smartbag/models/vehicle-detector.om`，manifest/preflight 会阻止错误兼容声明；OpenVINO 只代表 CPU 优化，不等于 SS928 NPU。
 
 ## 已验证与限制
 
@@ -78,4 +78,4 @@ sudo ./install-on-ss928.sh --radar-only --yes
 - 本分支 2026-07-28 收尾时电脑物理以太网接口断开，板端私网地址不可达，因此没有执行上传、服务启动或 reboot 验证。
 - TM6605、灯、MR20、BMI270、DX-GP21、MAX98357、MT5710、WS73、Tsensor 和 reboot 自启都必须以当前实际接线再验收，文档中的历史结果不能替代本轮实板测试。
 - 单目避障与跌倒判断不是安全认证系统；真实使用前必须做标定、硬件在环、误报/漏报、端到端时延、热稳定和断电恢复测试。
-- 模型、SDK、真实标定、设备密码/IP、Cloud token、手机号、`08_media` 和大体积来源归档不提交 Git。
+- `08_media` 不再整目录排除；其中经确认的 OM 候选、转换清单、校验文件和硬件参考图片可以提交。个人测试视频、检测输出、板端日志、SDK/runtime、工具链、构建缓存、真实标定、设备密码/IP、Cloud token、手机号和大体积来源归档仍不提交 Git。

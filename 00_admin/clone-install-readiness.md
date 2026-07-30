@@ -4,7 +4,7 @@
 
 ## 当前结论
 
-- `CLONE_INSTALL_READY=false`：全新克隆尚不能获得合法、实板验证过的 `vehicle-detector.om`。
+- `CLONE_INSTALL_READY=false`：全新克隆可以获得候选 `vehicle-detector.om`，但该候选尚未完成正式许可确认、SS928 descriptor 和检测结果验收，不能视为可部署模型。
 - `RADAR_ONLY_CLONE_INSTALL_STATIC_READY=true`：从 GitHub HTTPS 浅克隆 `d2efcff85e91f300373776ce94e6414915422c26` 后，源码、AArch64 runner、双 MR20 配置、执行器配置、systemd 和安装脚本齐全；radar-only 离线包 mock 安装通过，仍需在板上做硬件预检。
 - `POWER_ONLY_AUTOSTART_READY=false`：没有完成真实安装、reboot 和拔除电脑后的独立供电测试。
 
@@ -13,7 +13,7 @@
 | # | 项目 | 状态 | 处理结果 |
 |---:|---|---|---|
 | 1 | Python/C/C++/Shell/小程序源码 | READY | 已跟踪，安装器复制正式运行目录。 |
-| 2 | 正式车辆模型 | LICENSE_BLOCKED | 本地 PT/ONNX/OM 已验哈希；PT/ONNX 同图检测通过，OM 不上传。 |
+| 2 | 正式车辆模型 | LICENSE_AND_BOARD_VALIDATION_REQUIRED | PT/ONNX/OM 已验哈希；PT/ONNX 同图检测通过，OM 候选已进入 Git，但正式许可、descriptor 和板端检测对齐仍待完成。 |
 | 3 | SS928 runner | BOARD_VALIDATION_REQUIRED | AArch64 ELF 已打包，支持 descriptor 自动选择三类输入；ACL 实板待测。 |
 | 4 | runner 动态库 | BOARD_VALIDATION_REQUIRED | 只依赖 `libascendcl.so` 和 glibc；ACL 必须来自匹配板端镜像。 |
 | 5 | 左右相机 | BOARD_DISCOVERY_REQUIRED | 已知物理端口 1.3/1.4 仅作提示；安装时逐路采集并生成 udev 链接。 |
@@ -45,7 +45,7 @@ sudo ./install-on-ss928.sh --radar-only --yes
 
 - 来源：GitHub HTTPS，`--depth 1 --filter=blob:none --single-branch`。
 - 远程提交：`d2efcff85e91f300373776ce94e6414915422c26`。
-- clone 中不存在 `08_media` 和 `.om`，runner SHA/架构校验通过。
+- 该次 RC1 clone 中不存在 `08_media` 和 `.om`，runner SHA/架构校验通过；这是候选 OM 入库之前的发布证据。当前分支后续 clone 会包含 `08_media/models`，但 release 构建脚本仍会剔除整个 `08_media`。
 - 385 项 Python、12 个 Node 测试、compileall、38 个 JavaScript、42 个 JSON、30 个 Shell、凭据扫描和 6 个 C/C++ 原生测试通过。
 - 从 clone 生成 tar.gz 后检查 567 个归档条目，不含 `08_media`、`10_archive`、`.om`、私钥或非模板 `.env`；radar-only mock root 安装通过。
 - 这不是 SS928 实板安装、systemd、reboot 或独立供电证据。

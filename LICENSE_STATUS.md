@@ -4,4 +4,4 @@
 
 这不是一个开源许可证。项目所有者需要在正式公开发布前选择并提交适当的根许可证，同时确认队友来源代码、CAD、音频和模型是否有权按该许可证再分发。
 
-第三方内容仍受各自许可证或使用条款约束，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 和 [02_research/third-party-notices.md](02_research/third-party-notices.md)。SS928 SDK/ACL runtime、系统镜像、BMI270 厂商初始化数据和当前 YOLO11n PT/ONNX/OM 候选均不包含在发布包中。
+第三方内容仍受各自许可证或使用条款约束，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 和 [02_research/third-party-notices.md](02_research/third-party-notices.md)。SS928 SDK/ACL runtime、系统镜像和 BMI270 厂商初始化数据不随仓库分发。YOLO11n OM 候选已按项目所有者要求提交到 Git，但仍不包含在 RC 发布包中，也不代表上游许可兼容性或实板验收已经完成。

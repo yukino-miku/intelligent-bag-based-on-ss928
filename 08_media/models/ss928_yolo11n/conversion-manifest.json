@@ -1,0 +1,37 @@
+{
+  "created_at": "2026-07-21T23:45:52+08:00",
+  "model_family": "Ultralytics YOLO11n detect, COCO 80 classes",
+  "source_pt": {
+    "file": "yolo11n_640.pt",
+    "sha256": "0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1"
+  },
+  "source_onnx": {
+    "file": "yolo11n_640.onnx",
+    "sha256": "aa916c427ea520e2e4db5a61e9074e1570715c655302895db4f575500ab51116",
+    "opset": 13,
+    "input": "images FP32 1x3x640x640",
+    "output": "output0 FP32 1x84x8400"
+  },
+  "conversion": {
+    "toolkit": "SVP_NNN_PC_V1.0.6.0",
+    "toolkit_sha256": "bc299b05b20b583f50ad8695502f7f1e30b4cdbd4635b0ba63e19849b071b314",
+    "mapper": "Mapper Version 1.0.0.0_B010 (PICO_1.0) 25082217214ed1745(CPU) (INST_2.0.9)",
+    "soc_version": "SS928V100",
+    "framework": 5,
+    "compile_mode": 6,
+    "calibration_images": 20,
+    "aipp": "static RGB_PLANAR RGB, mean=0, var_reci=1/255",
+    "github_actions_run": 29845414761
+  },
+  "output_om": {
+    "file": "yolo11n_ss928.om",
+    "size_bytes": 3426459,
+    "sha256": "9e3c448ab7309428ea78cfdc509926404220fa74dd56c89e4995366f5f16af95"
+  },
+  "validation": {
+    "onnx_checker": "PASS",
+    "atc_compile": "PASS",
+    "repository_tests": "301 tests, 300 passed, 1 Linux-only skipped",
+    "board_acl": "PENDING: PC Ethernet disconnected and no SS928 USB serial port present"
+  }
+}

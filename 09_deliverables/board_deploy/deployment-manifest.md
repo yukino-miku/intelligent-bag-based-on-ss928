@@ -14,7 +14,7 @@
 | `board_runtime/mt5710_connectivity` | `/root/smartbag/connectivity` | `smartbag-connectivity.service`，只管理 NCM |
 | `board_runtime/temperature` | `/root/smartbag/temperature` | `smartbag-temperature.service`，可选 |
 | audio assets | `/root/smartbag/audio` | 可选，默认关闭 |
-| 模型 | `/root/smartbag/models/vehicle-detector.om` | 用户单独提供，不进入 Git；manifest/preflight 必须确认 runner 输入契约兼容 |
+| 模型 | `/root/smartbag/models/vehicle-detector.om` | Git 中有未验收候选；安装时仍须通过 `--model-source` 显式提供，manifest/preflight 必须确认 runner 输入契约兼容 |
 | 双摄配置 | `/etc/smartbag/config.json` | 左右设备、profile、流、TM6605/灯、MR20、模块、超时和 BLE |
 | root-only 环境 | `/etc/smartbag/smartbag.env` | MT5710、WS73 路径、Cloud token、告警号码 |
 | 视觉标定 | `/etc/smartbag/calibration-left.json`、`calibration-right.json` | 旧纯视觉回归使用 |
@@ -29,4 +29,4 @@
 
 旧路径 `/root/dx_gp21_tracker`、`/root/vision_obstacle_tracker`、`/root/smartbag_alert`、`/opt/bmi270_backpack` 不再由脚本创建。升级时先停止旧服务，迁移持久数据并删除旧 unit，避免重复注册 BLE、重复打开相机或同时控制 PWM。
 
-不随部署包分发：来源镜像、厂商 SDK、系统镜像、`.om`/PyTorch 模型、ARM wheels、原始视频、risk log、设备密码/IP。`ss928_backend` 源码和持久快照 bridge 会随 vision 复制，但合法车辆模型、ACL runtime、真实检测正确性和长期性能仍需单独验收。
+不随 RC 部署包分发：来源镜像、厂商 SDK、系统镜像、仓库中的候选 `.om`、PyTorch 模型、ARM wheels、原始视频、risk log、设备密码/IP。`ss928_backend` 源码和持久快照 bridge 会随 vision 复制，但合法车辆模型、ACL runtime、真实检测正确性和长期性能仍需单独验收。

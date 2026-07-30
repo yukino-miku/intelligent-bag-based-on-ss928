@@ -12,7 +12,7 @@
 
 逐文件清单见 `local-deployment-asset-inventory.csv/json`：共 1,495 个候选文件、8,256,821,071 bytes、21 个模型、524 个 ELF。1,058 个候选因许可证或厂商/备份属性标记为不分发。路径使用匿名 root，不记录电脑用户名和绝对路径。
 
-选中的本地候选为 YOLO11n PT/ONNX/OM。PT 和 ONNX 的车辆检测同图比较通过；OM 仅有 ATC 产物，缺 SS928 descriptor/检测对齐，且模型与仓库根许可未解决，因此不上传。
+选中的本地候选为 YOLO11n PT/ONNX/OM。PT 和 ONNX 的车辆检测同图比较通过；OM 仅有 ATC 产物，缺 SS928 descriptor/检测对齐，且模型与仓库根许可未解决。RC1 构建时未上传；RC1 之后按项目所有者要求将 OM 候选加入 Git，但没有加入该 RC Release。
 
 ## 发布资产
 
@@ -20,7 +20,7 @@
 |---|---:|---|---|
 | `09_deliverables/board_deploy/bin/aarch64/ss928_detection_runner` | 505,464 | `0be03a9772e511a57885731c2d0570071077b638c263af5e0a39f680205e93af` | Git，项目源码构建；ACL runtime 不随仓库分发 |
 | `09_deliverables/board_deploy/bin/aarch64/om_inspect` | 477,224 | `34c944a3c7b2c62042ef2077042e1d0bf3fc5798b8d0932e29ffd497faa2cc0b` | Git，项目源码构建；ACL runtime 不随仓库分发 |
-| `vehicle-detector.om` 候选 | 3,426,459 | `9e3c448ab7309428ea78cfdc509926404220fa74dd56c89e4995366f5f16af95` | 不上传，`LICENSE_BLOCKED`、`BOARD_VALIDATION_PENDING` |
+| `vehicle-detector.om` 候选 | 3,426,459 | `9e3c448ab7309428ea78cfdc509926404220fa74dd56c89e4995366f5f16af95` | RC1 不包含；后续 Git 分支已提交，`FORMAL_RELEASE_LICENSE_REVIEW_PENDING`、`BOARD_VALIDATION_PENDING` |
 
 ## 验证结论
 

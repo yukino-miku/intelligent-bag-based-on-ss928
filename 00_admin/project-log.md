@@ -2,9 +2,11 @@
 
 ## 2026-07-30
 
+- 按项目所有者要求取消 `08_media/` 整目录屏蔽，改为逐项排除测试录像、检测输出、板端运行记录、SDK/runtime、工具链和构建树；将 YOLO11n SS928 OM 候选及转换校验元数据纳入当前分支。两个 OM 路径哈希相同，Git 只存储一个底层 blob。
+- 本次入库只改变 GitHub 可获取性，不把 `board_validation_status=PENDING` 或 `runner_compatible=false` 改成通过；RC 发布脚本继续排除 `08_media`，完整安装仍受 manifest/preflight 阻止。
 - 在 `agent/radar-primary-vision-class-fusion` 和 Draft PR #7 上继续，不新建重复分支。开始基线为 `e2c524b69b1613c47921923c7bf3f4dae68c5980`；审计时远程分支已同步，远程权限为 ADMIN，默认分支仍为 `agent/ss928-board-integration`。
 - 扫描当前 Git、所有分支/历史/stash/LFS、ignored、本地媒体/归档、同级目录、旧板端记录、模型转换目录、SDK、工具链和二进制，建立逐文件匿名资产清单与 18 项 clone-install readiness。
-- 选定本地 YOLO11n PT/ONNX/OM 候选并记录哈希。PT/ONNX 三帧检测比较通过；候选 OM 许可与 SS928 实板结果未通过，因此不上传，也不把完整模式标记为可安装。
+- 选定本地 YOLO11n PT/ONNX/OM 候选并记录哈希。PT/ONNX 三帧检测比较通过；候选 OM 的许可与 SS928 实板结果未通过。审计时原定不上传，后续按项目所有者要求仅将候选文件纳入 Git，仍不把完整模式标记为可安装。
 - 重构 SS928 runner 的 descriptor 驱动输入：支持 NV12 UINT8、RGB_PLANAR UINT8、RGB_PLANAR FP32，并打包由当前源码构建的 AArch64 runner/inspector。ACL runtime 仍是板端镜像外部依赖。
 - 完成一键安装、radar-only 降级、mock root、摄像头稳定映射、融合标定拟合/校验、依赖检查、离线包构建、小程序部署模板、secret 扫描和发布就绪状态。
 - 本机测试通过：Python 385 项、Node 12 个文件、NPU C++ 4 项、C 核心 1 项、C++ backend 1 项、JavaScript 38 个、JSON 42 个、Shell 30 个和 compileall。后续仍需干净远程克隆、最终 tag/Release 和真实 SS928 验收。

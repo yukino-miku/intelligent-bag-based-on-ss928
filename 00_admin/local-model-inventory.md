@@ -1,6 +1,6 @@
 # 本地模型与历史视觉资产清单
 
-审计日期：2026-07-28。机器可读清单见 [local-model-inventory.json](local-model-inventory.json)。本清单覆盖当前 HEAD、未跟踪和忽略文件、Git LFS、全部本地/远程分支、Git 历史、`08_media`、`10_archive`、同级 `备份` 与 `tmp`。当前仓库没有 Git LFS 对象。共发现并逐路径登记 21 个 PT/ONNX/OM 文件；另有 16 个 `.bin` 经核对是 CMake 编译器探测输出、ACT 示例输入张量或第三方雷达固件，不是视觉模型，已在 JSON 的 `excluded_binary_groups` 中分组登记。
+审计日期：2026-07-28，Git 跟踪状态更新于 2026-07-30。机器可读清单见 [local-model-inventory.json](local-model-inventory.json)。本清单覆盖当前 HEAD、未跟踪和忽略文件、Git LFS、全部本地/远程分支、Git 历史、`08_media`、`10_archive`、同级 `备份` 与 `tmp`。当前仓库没有 Git LFS 对象。共发现并逐路径登记 21 个 PT/ONNX/OM 文件；另有 16 个 `.bin` 经核对是 CMake 编译器探测输出、ACT 示例输入张量或第三方雷达固件，不是视觉模型，已在 JSON 的 `excluded_binary_groups` 中分组登记。
 
 ## 结论
 
@@ -25,7 +25,7 @@
 
 ## 审计证据
 
-- `git status --short --ignored`：模型主要位于被忽略的 `08_media/` 和 `10_archive/`。
+- `git status --short --ignored`：两处内容相同的 YOLO11n SS928 OM 候选已在 `08_media/models/` 中纳入 Git；PT/ONNX、其他本地模型和 `10_archive/` 仍按精确规则忽略。
 - `git lfs ls-files`：空；当前没有模型由 LFS 跟踪。
 - `git log --all --name-only -- '*.pt' '*.onnx' '*.om'`：历史包含 YOLO11n PT/ONNX、多个 SDK 示例 OM 和来源仓库 YOLOv8n。
 - `08_media/board-live/status.json` 与 `08_media/board-npu-validation/`：证明历史 ACL runner 跑过，不证明识别正确。
