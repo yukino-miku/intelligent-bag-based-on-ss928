@@ -36,7 +36,7 @@
     ]
   },
   "build": {
-    "build_commit": "RC2_SOURCE_COMMIT_RECORDED_IN_RELEASE_MANIFEST",
+    "build_commit": "7c7c828bfd03de65e990890a1d0bf179d7fc864b",
     "compiler": "Zig 0.16.0 c++",
     "target": "aarch64-linux-gnu",
     "script": "06_software/vision_obstacle_tracker/ss928_backend/scripts/build_aarch64_release.sh",

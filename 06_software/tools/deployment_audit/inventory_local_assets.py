@@ -84,6 +84,10 @@ def git_paths(repository: Path) -> tuple[set[str], set[str]]:
 
 def classify(root_id: str, relative: str, tracked: bool) -> tuple[str, str, str, str]:
     lowered = relative.lower()
+    if root_id == "parent_tmp":
+        return "temporary clone/build output", "inherits source terms; not selected", "LOCAL_ONLY", "local discovery only"
+    if root_id in {"repo_archive", "parent_backup"}:
+        return "vendor/archive/local backup", "redistribution not established", "DO_NOT_DISTRIBUTE", "local discovery only"
     if lowered == "09_deliverables/board_deploy/models/vehicle-detector.om":
         return (
             "Ultralytics YOLO11n SS928 release conversion",
@@ -96,7 +100,7 @@ def classify(root_id: str, relative: str, tracked: bool) -> tuple[str, str, str,
     if lowered.endswith("yolo11n_ss928.om") or lowered.endswith("yolo11n_640.pt") or lowered.endswith("yolo11n_640.onnx"):
         decision = "GIT" if tracked else "LOCAL_ONLY"
         return "Ultralytics YOLO11n conversion set", "AGPL-3.0-only or separately licensed enterprise", decision, "PT/ONNX PASS; ATC PASS; board OM PENDING"
-    if root_id in {"repo_archive", "parent_tmp", "parent_backup"} or "sdk" in lowered or "toolchain" in lowered:
+    if "sdk" in lowered or "toolchain" in lowered:
         return "vendor/archive/local backup", "redistribution not established", "DO_NOT_DISTRIBUTE", "local discovery only"
     if tracked:
         return "project repository", "AGPL-3.0-only or documented third-party terms", "GIT", "covered by repository tests where applicable"
