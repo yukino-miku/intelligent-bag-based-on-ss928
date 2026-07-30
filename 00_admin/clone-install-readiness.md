@@ -1,0 +1,42 @@
+# 克隆安装就绪度
+
+评估基线为 `agent/radar-primary-vision-class-fusion` 的 `e2c524b69b1613c47921923c7bf3f4dae68c5980`，最终提交信息会在发布记录中补充。机器扫描的逐文件结果见 `local-deployment-asset-inventory.csv/json`。
+
+## 当前结论
+
+- `CLONE_INSTALL_READY=false`：全新克隆尚不能获得合法、实板验证过的 `vehicle-detector.om`。
+- `RADAR_ONLY_CLONE_INSTALL_STATIC_READY=true`：源码、AArch64 runner、双 MR20 配置、执行器配置、systemd 和安装脚本都可从 Git 获得；仍需在板上做硬件预检。
+- `POWER_ONLY_AUTOSTART_READY=false`：没有完成真实安装、reboot 和拔除电脑后的独立供电测试。
+
+## 18 项缺口
+
+| # | 项目 | 状态 | 处理结果 |
+|---:|---|---|---|
+| 1 | Python/C/C++/Shell/小程序源码 | READY | 已跟踪，安装器复制正式运行目录。 |
+| 2 | 正式车辆模型 | LICENSE_BLOCKED | 本地 PT/ONNX/OM 已验哈希；PT/ONNX 同图检测通过，OM 不上传。 |
+| 3 | SS928 runner | BOARD_VALIDATION_REQUIRED | AArch64 ELF 已打包，支持 descriptor 自动选择三类输入；ACL 实板待测。 |
+| 4 | runner 动态库 | BOARD_VALIDATION_REQUIRED | 只依赖 `libascendcl.so` 和 glibc；ACL 必须来自匹配板端镜像。 |
+| 5 | 左右相机 | BOARD_DISCOVERY_REQUIRED | 已知物理端口 1.3/1.4 仅作提示；安装时逐路采集并生成 udev 链接。 |
+| 6 | 双 MR20 | BOARD_VALIDATION_REQUIRED | `.200:2368`、`.201:2378` 模板已纳入 profile；需验证真实网络和方向。 |
+| 7 | 融合标定 | BOARD_DISCOVERY_REQUIRED | 未找到可证明属于当前安装位姿的外参；提供采样、拟合和 RMSE 校验。 |
+| 8 | BMI270 | BOARD_VALIDATION_REQUIRED | IIO/I2C 配置与测试已跟踪；初始化数据和芯片响应需实板确认。 |
+| 9 | TM6605/TCA/灯/音频 | BOARD_VALIDATION_REQUIRED | 通道、波形、safe-off 和音频资产已跟踪；输出需实测。 |
+| 10 | systemd | READY | units 和 target 路径一致，静态检查后仍需真实启动。 |
+| 11 | 安装/升级/卸载/预检/日志 | READY | 配置和用户数据默认保留；完整模式缺资产会非零退出。 |
+| 12 | 小程序 | READY | 源码、Node 测试、导入/CloudBase 文档与空模板齐全。 |
+| 13 | CloudBase | SECRET_REQUIRED | AppID、环境 ID 和 token 不提交，由部署者本地填写。 |
+| 14 | 默认硬件 profile | READY | 版本化事实与“必须发现/必须标定”字段分开记录。 |
+| 15 | 一键入口 | READY | `sudo ./install-on-ss928.sh`；模型未接受时用 `--radar-only`。 |
+| 16 | 开机启动 | BOARD_VALIDATION_REQUIRED | 安装器执行 enable；没有真实 reboot 证据。 |
+| 17 | safe-off | READY | 安装失败、信号和异常退出均请求清零。 |
+| 18 | 版本/SHA/依赖 | GENERATE | runner/model manifest 已有；最终 tag 和 bundle 在所有离线测试后生成。 |
+
+## 允许的安装路径
+
+当前唯一不掩盖阻塞项的命令是：
+
+```sh
+sudo ./install-on-ss928.sh --radar-only --yes
+```
+
+完整模式必须提供通过许可审查且 manifest/descriptor/板端同图结果均通过的模型。安装器不会从 `08_media`、`10_archive` 或电脑备份目录偷偷复制模型。

@@ -1,12 +1,12 @@
 {
   "generated_at": "2026-07-28T00:00:00+08:00",
   "scope": {
-    "repository": "D:/mywork/code/embedded-contest-project",
+    "repository": "<repository-root>",
     "related_roots": [
-      "D:/mywork/code/embedded-contest-project/08_media",
-      "D:/mywork/code/embedded-contest-project/10_archive",
-      "D:/mywork/code/备份/embedded-contest-project",
-      "D:/mywork/code/tmp"
+      "<repository-root>/08_media",
+      "<repository-root>/10_archive",
+      "<workspace-parent>/备份/embedded-contest-project",
+      "<workspace-parent>/tmp"
     ],
     "git_lfs_files": [],
     "branches_checked": [
@@ -40,11 +40,12 @@
       "real_detection_evidence": false,
       "ultralytics_loadable": false,
       "current_ss928_runner_loadable": false,
+      "current_runner_source_contract_compatible": true,
       "direct_deployment": false,
       "validation_missing": [
-        "Current runner is fixed to NV12/YUV420SP static AIPP",
         "SS928 ACL descriptor inspection",
-        "Known-image PT/ONNX/OM parity",
+        "Known-image OM parity against the accepted PT/ONNX reference",
+        "Model redistribution license approval",
         "Live USB recognition and long-run validation"
       ]
     },

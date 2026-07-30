@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "evaluated_branch": "agent/radar-primary-vision-class-fusion",
+  "baseline_head": "e2c524b69b1613c47921923c7bf3f4dae68c5980",
+  "items": [
+    {"id": 1, "name": "全部源码", "status": "READY", "evidence": "Git tracked Python/C/C++/Shell/miniprogram source"},
+    {"id": 2, "name": "正式车辆检测模型", "status": "LICENSE_BLOCKED", "evidence": "local YOLO11n PT/ONNX/OM found; model is not published"},
+    {"id": 3, "name": "匹配的SS928 runner", "status": "BOARD_VALIDATION_REQUIRED", "evidence": "packaged AArch64 descriptor-selecting runner; board ACL load pending"},
+    {"id": 4, "name": "runner动态依赖", "status": "BOARD_VALIDATION_REQUIRED", "evidence": "libascendcl.so must come from matching board image"},
+    {"id": 5, "name": "左右摄像头配置", "status": "BOARD_DISCOVERY_REQUIRED", "evidence": "known USB topology plus discovery/assignment/udev scripts"},
+    {"id": 6, "name": "双MR20配置", "status": "BOARD_VALIDATION_REQUIRED", "evidence": "two distinct IP/UDP entries are versioned; live packets pending"},
+    {"id": 7, "name": "雷达摄像头融合配置", "status": "BOARD_DISCOVERY_REQUIRED", "evidence": "templates and fit/validation workflow exist; measured extrinsics absent"},
+    {"id": 8, "name": "BMI270配置与初始化", "status": "BOARD_VALIDATION_REQUIRED", "evidence": "config/backends/tests exist; board init blob/physical sensor require matching image"},
+    {"id": 9, "name": "TM6605/TCA9548A/灯光/音频", "status": "BOARD_VALIDATION_REQUIRED", "evidence": "config, controller and assets exist; wiring/output test pending"},
+    {"id": 10, "name": "systemd unit", "status": "READY", "evidence": "versioned target and services with fixed paths"},
+    {"id": 11, "name": "安装升级卸载预检日志", "status": "READY", "evidence": "versioned scripts; board execution pending"},
+    {"id": 12, "name": "小程序源码", "status": "READY", "evidence": "source, tests and deployment guide are tracked"},
+    {"id": 13, "name": "CloudBase部署", "status": "SECRET_REQUIRED", "evidence": "environment template is tracked; AppID/env/token are intentionally absent"},
+    {"id": 14, "name": "默认硬件profile", "status": "READY", "evidence": "euler-pi-ss928-smartbag profile with discovery gates"},
+    {"id": 15, "name": "一键安装入口", "status": "READY", "evidence": "install-on-ss928.sh; full mode intentionally blocked without accepted model"},
+    {"id": 16, "name": "开机自启动", "status": "BOARD_VALIDATION_REQUIRED", "evidence": "installer enables smartbag.target; reboot not tested"},
+    {"id": 17, "name": "safe-off", "status": "READY", "evidence": "failure trap, signal handling and deploy safe-off scripts"},
+    {"id": 18, "name": "版本SHA256依赖清单", "status": "GENERATE", "evidence": "runner/model manifests exist; release tag/bundle generated after final tests"}
+  ],
+  "CLONE_INSTALL_READY": false,
+  "RADAR_ONLY_CLONE_INSTALL_STATIC_READY": true,
+  "blocking_reasons": [
+    "No legally accepted vehicle-detector.om is published",
+    "Candidate OM descriptor and detections are not validated on SS928",
+    "Measured left/right fusion calibration is absent",
+    "Board install, reboot and independent-power tests are not complete"
+  ]
+}
