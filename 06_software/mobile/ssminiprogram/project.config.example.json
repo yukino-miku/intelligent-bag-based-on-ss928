@@ -1,0 +1,15 @@
+{
+  "miniprogramRoot": "miniprogram/",
+  "cloudfunctionRoot": "cloudfunctions/",
+  "appid": "",
+  "projectname": "ss928-smartbag",
+  "compileType": "miniprogram",
+  "libVersion": "2.20.1",
+  "setting": {
+    "urlCheck": true,
+    "es6": true,
+    "enhance": true,
+    "postcss": true,
+    "minified": true
+  }
+}
