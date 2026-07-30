@@ -2,13 +2,13 @@
 
 > 由 `inventory_local_assets.py` 生成。路径使用匿名 root 标识，不写入电脑用户名或绝对路径；清单不复制资产内容。
 
-- `candidate_file_count`: 4056
-- `total_bytes`: 9092276852
-- `model_count`: 22
-- `elf_count`: 680
+- `candidate_file_count`: 4262
+- `total_bytes`: 9121965218
+- `model_count`: 28
+- `elf_count`: 684
 - `tracked_count`: 81
 - `ignored_count`: 2149
-- `license_blocked_or_do_not_distribute`: 3496
+- `license_blocked_or_do_not_distribute`: 2982
 
 ## 处置结论
 

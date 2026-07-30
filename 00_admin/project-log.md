@@ -2,6 +2,8 @@
 
 ## 2026-07-30
 
+- 已从 GitHub HTTPS 在原工作区外建立全新 clone，并在 `36ae2427ee05accdd30626a31ac7d12200a87096` 通过资产 SHA、full/radar-only mock、重复安装、卸载保留数据与离线包验收；据此将 `CLONE_INSTALL_READY` 设为 true。
+- PR #6/#7 已注明内容整合到 `main` 后关闭；三个旧远程分支均先建立精确 archive tag 再删除，本地旧分支也已清理，`origin` 最终仅保留 `main`。实板 ACL、30 分钟、reboot 与独立供电继续记录为 `PENDING/false`。
 - 从远程候选 `3dc04d8fd4f6bd5cbd40fb54d6b0cb4e0497d1ee` 开始最终收尾，重新 fetch 后确认三个 agent 分支均为候选祖先、unique commits 为 0；PR #6/#7 和 rc1 Release 已登记，删除前将建立精确 tip archive tag。
 - 统一 radar-only/full 风险核心，补齐 API 双 Token 认证、投影有效参数、事件原帧缓存、风险窗口质量门、交互相机分配、MR20 live health/worker 恢复和事件保留策略。
 - 由当前源码重建 AArch64 runner，正式 OM SHA256 为 `9e3c448ab7309428ea78cfdc509926404220fa74dd56c89e4995366f5f16af95`，runner SHA256 为 `332c792dc7a64190e182f6260edb455668e1885e883a0e48c794728eed024737`；静态输入/输出契约通过，实板 ACL 仍为 `PENDING`。

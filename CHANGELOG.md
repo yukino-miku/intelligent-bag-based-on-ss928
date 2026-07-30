@@ -2,6 +2,9 @@
 
 ## 2026-07-30
 
+- 完成 `smartbag-v1.0.0-rc2` 收敛：GitHub 默认分支改为 `main`，PR #6/#7 在注明已整合后关闭；三个旧分支均以精确 tip annotated tag 归档并删除，远端只保留 `main`。
+- 从 GitHub HTTPS 全新克隆并在提交 `36ae2427ee05accdd30626a31ac7d12200a87096` 完成正式 OM/runner、full/radar-only mock、重复安装、卸载数据保留和离线包 SHA 验收；`CLONE_INSTALL_READY=true`，实板与独立供电状态继续为 false。
+- 修复 Windows/MSYS 干净克隆验收的执行位判断，以及 Windows Python 生成 `SHA256SUMS` 时的 CRLF 兼容问题；Linux/SS928 的严格执行位检查保持不变。
 - 准备 `smartbag-v1.0.0-rc2`：正式 `vehicle-detector.om`、AArch64 runner/inspector、AGPL-3.0-only License、模型/音频/第三方声明和一键安装入口进入普通 Git clone 与离线包；静态契约通过，板端 ACL 检测仍明确为 `PENDING`。
 - `radar_only` 与 full 模式统一使用 `RadarVisionFusionRuntime`、持久雷达轨迹、共享 RiskModel 和每目标 0.5 秒中位数；旧 MR20 阈值算法只保留为显式 `legacy_mr20_threshold_test`。
 - HTTP API 默认 loopback，安装时生成管理/只读 Token；所有读取接口鉴权，PATCH/reset 仅管理 Token，使用常量时间比较，preflight 拒绝不安全公网监听。

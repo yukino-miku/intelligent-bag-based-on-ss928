@@ -1,35 +1,30 @@
 # Clone 与安装就绪度
 
-当前静态候选已经包含普通 Git clone 所需的源码、正式 OM、AArch64 runner/inspector、manifest、配置、相机发现、MR20 健康检查、标定向导、systemd、安装器和 License。正式模型与 runner 的 SHA/架构/静态 I/O 契约通过；厂商 ACL runtime 由匹配板端镜像提供。
+2026-07-30 使用 GitHub HTTPS 在原工作区之外全新浅克隆 `main`，并从同一远端 fast-forward 到验收提交 `36ae2427ee05accdd30626a31ac7d12200a87096`。验收没有复制 ignored 文件、`08_media`、`10_archive`、本地 SDK、虚拟环境、手工模型或 runner。
 
-## 验收项目
+## 验收结果
 
-| 项目 | 当前状态 | 证据 |
+| 项目 | 状态 | 证据 |
 |---|---|---|
-| 源码、配置、systemd | READY | Git tracked；Python/Node/native/Shell/JSON 测试覆盖 |
-| 正式车辆 OM | READY_STATIC | Git tracked；SHA256 `9e3c448a...f16af95`；AGPL-3.0-only |
-| AArch64 runner/inspector | READY_STATIC | Git tracked；ELF/SHA/contract manifest 通过 |
-| ACL 动态库 | BOARD_IMAGE_REQUIRED | 不允许从仓库分发，preflight 检查 `libascendcl.so` |
-| 左右相机 | FIRST_INSTALL_DISCOVERY | 安装器交互确认，生成 hardware-discovery 和 udev 链接 |
-| 双 MR20 | FIRST_INSTALL_VALIDATION | 配置已跟踪，live check 要求合法帧和完整扫描 |
-| 融合标定 | FIRST_INSTALL_CALIBRATION | 误差与硬件身份合格才启用 full |
-| 安装/升级/卸载 | READY_STATIC | full/radar-only mock、重复安装、配置与事件保留通过 |
-| API 安全 | READY_STATIC | 自动生成管理/只读 Token，公网无认证被拒绝 |
-| 离线包 | PENDING_FINAL_COMMIT | 构建脚本已通过本地静态验证，最终 commit 后重建 |
-| 真机 ACL/外设/30 分钟 | PENDING | 不用历史结果冒充 RC2 验收 |
-| reboot/独立供电 | PENDING | 必须在板端另行执行 |
+| 源码、配置、systemd | READY | 全部由 Git 取得；CI 和静态检查通过 |
+| 正式车辆 OM | READY_STATIC | SHA256 `9e3c448ab7309428ea78cfdc509926404220fa74dd56c89e4995366f5f16af95` |
+| AArch64 runner | READY_STATIC | SHA256 `332c792dc7a64190e182f6260edb455668e1885e883a0e48c794728eed024737`；ELF/contract 通过 |
+| full/radar-only mock | PASS | 两种模式均安装成功；radar-only 继续使用共享 RiskModel |
+| 重复安装与卸载 | PASS | 重复安装保留配置；卸载保留配置和事件数据 |
+| 离线发布包 | PASS | SHA256 校验通过，包含正式 OM/runner，不含 `08_media/10_archive` |
+| API 安全 | READY_STATIC | 安装生成管理/只读 Token；公网无认证配置被拒绝 |
+| ACL 与 OM 实板推理 | PENDING | 必须在匹配 SS928 镜像上验证 descriptor 和检测结果 |
+| 相机、双 MR20 与融合标定 | PENDING | 首装发现及标定工具已交付，仍需当前硬件实测 |
+| 30 分钟、reboot、独立供电 | PENDING | 不用历史测试冒充 RC2 实板验收 |
 
-## 状态规则
+## 最终状态
 
-- 最终 GitHub HTTPS 干净 clone 完成资产校验、full/radar-only mock、重复安装、卸载保留和 release 包检查后，设置 `CLONE_INSTALL_READY=true`。
-- `BOARD_INSTALL_VERIFIED` 只有当前 RC2 在真实 SS928 完成安装、相机、双 MR20、OM、标定、输出与 30 分钟长测后才能为 true。
-- `POWER_ONLY_AUTOSTART_READY` 只有 reboot 后拔除电脑并完成独立供电冷启动后才能为 true。
+- `CLONE_INSTALL_READY=true`
+- `BOARD_INSTALL_VERIFIED=false`
+- `POWER_ONLY_AUTOSTART_READY=false`
 
-最终验收命令：
+板端最终验收命令：
 
 ```sh
-git clone https://github.com/yukino-miku/intelligent-bag-based-on-ss928.git
-cd intelligent-bag-based-on-ss928
-sudo ./install-on-ss928.sh --interactive
 sudo ./validate-on-ss928.sh --full --duration 30m
 ```

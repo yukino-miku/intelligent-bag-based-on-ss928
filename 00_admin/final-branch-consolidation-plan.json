@@ -1,9 +1,10 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "audit_date": "2026-07-30",
   "initial_default_branch": "agent/ss928-board-integration",
   "starting_candidate_head": "3dc04d8fd4f6bd5cbd40fb54d6b0cb4e0497d1ee",
-  "final_main_head": "PENDING_FINAL_COMMIT",
+  "main_head_at_branch_deletion": "36ae2427ee05accdd30626a31ac7d12200a87096",
+  "final_release_ref": "smartbag-v1.0.0-rc2",
   "branches": [
     {
       "branch": "agent/ss928-board-integration",
@@ -11,8 +12,9 @@
       "merged_into_final": true,
       "unique_commits": 0,
       "archive_tag": "archive/agent-ss928-board-integration-20260730",
-      "associated_pr": 6,
-      "deletion_status": "PENDING_ARCHIVE_AND_DELETE"
+      "associated_pr": [6],
+      "pr_status": "CLOSED_INTEGRATED_TO_MAIN",
+      "deletion_status": "ARCHIVED_AND_DELETED"
     },
     {
       "branch": "agent/full-sanda-integration",
@@ -21,23 +23,27 @@
       "unique_commits": 0,
       "archive_tag": "archive/agent-full-sanda-integration-20260730",
       "associated_pr": [6, 7],
-      "deletion_status": "PENDING_ARCHIVE_AND_DELETE"
+      "pr_status": "CLOSED_INTEGRATED_TO_MAIN",
+      "deletion_status": "ARCHIVED_AND_DELETED"
     },
     {
       "branch": "agent/radar-primary-vision-class-fusion",
-      "tip_sha": "PENDING_FINAL_COMMIT",
+      "tip_sha": "33665efb06d0eccd765e254685dce564010597e4",
       "merged_into_final": true,
       "unique_commits": 0,
       "archive_tag": "archive/agent-radar-primary-vision-class-fusion-20260730",
-      "associated_pr": 7,
-      "deletion_status": "PENDING_ARCHIVE_AND_DELETE"
+      "associated_pr": [7],
+      "pr_status": "CLOSED_INTEGRATED_TO_MAIN",
+      "deletion_status": "ARCHIVED_AND_DELETED"
     }
   ],
+  "archive_tags_verified": true,
   "initial_open_prs": [6, 7],
-  "initial_release_tags": ["smartbag-v1.0.0-rc1"],
+  "final_open_prs": [],
   "stash_empty": true,
   "lfs_object_count": 0,
   "fsck_unreachable_commits": 0,
-  "final_default_branch": "PENDING_MAIN",
-  "final_remote_branch_count": 3
+  "final_default_branch": "main",
+  "final_remote_branches": ["main"],
+  "final_remote_branch_count": 1
 }

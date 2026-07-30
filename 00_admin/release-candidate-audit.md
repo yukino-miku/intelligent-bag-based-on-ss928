@@ -1,5 +1,7 @@
 # SmartBag v1.0.0 RC1 发布审计
 
+> 历史记录：本文件只描述 RC1 当时的资产和结论，不代表 RC2 当前状态。RC2 以 `clone-install-readiness.*`、`release-readiness.json` 和 `smartbag-v1.0.0-rc2` tag 为准。
+
 ## Git 基线
 
 - 开始提交：`e2c524b69b1613c47921923c7bf3f4dae68c5980`。
