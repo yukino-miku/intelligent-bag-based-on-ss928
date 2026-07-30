@@ -8,6 +8,7 @@
 - 重构 SS928 runner 的 descriptor 驱动输入：支持 NV12 UINT8、RGB_PLANAR UINT8、RGB_PLANAR FP32，并打包由当前源码构建的 AArch64 runner/inspector。ACL runtime 仍是板端镜像外部依赖。
 - 完成一键安装、radar-only 降级、mock root、摄像头稳定映射、融合标定拟合/校验、依赖检查、离线包构建、小程序部署模板、secret 扫描和发布就绪状态。
 - 本机测试通过：Python 385 项、Node 12 个文件、NPU C++ 4 项、C 核心 1 项、C++ backend 1 项、JavaScript 38 个、JSON 42 个、Shell 30 个和 compileall。后续仍需干净远程克隆、最终 tag/Release 和真实 SS928 验收。
+- 随后从 GitHub HTTPS 全新浅克隆提交 `d2efcff85e91f300373776ce94e6414915422c26`，重复通过全部测试、runner 校验和 secret 扫描；生成不含媒体/归档/OM 的 RC tar.gz，并从该包完成 radar-only mock root 安装。该结果不替代 SS928 实板 systemd/reboot 验收。
 
 ## 2026-07-28
 

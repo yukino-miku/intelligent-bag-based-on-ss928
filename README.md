@@ -28,6 +28,7 @@
 | 雷达主导融合设计与边界 | [设计审计](02_research/radar-primary-vision-fusion-design.md)、[模块 README](06_software/board_runtime/radar_vision_fusion/README.md) |
 | 本地 PT/ONNX/OM 审计与部署阻塞 | [模型清单](00_admin/local-model-inventory.md)、[部署 manifest](09_deliverables/board_deploy/models/vehicle-detector.manifest.json) |
 | 克隆安装就绪度与本机资产 | [readiness](00_admin/clone-install-readiness.md)、[资产清单](00_admin/local-deployment-asset-inventory.md) |
+| RC1 发布审计 | [release-candidate-audit](00_admin/release-candidate-audit.md) |
 | 微信小程序导入与 CloudBase | [小程序部署](06_software/mobile/ssminiprogram/DEPLOYMENT.md) |
 | 第三方来源和许可边界 | [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES.md) |
 | 仓库根许可状态 | [LICENSE_STATUS](LICENSE_STATUS.md) |
