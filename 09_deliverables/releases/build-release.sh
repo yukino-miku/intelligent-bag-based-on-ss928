@@ -12,6 +12,7 @@ trap 'rm -rf "$STAGING"' EXIT INT TERM
 
 mkdir -p "$OUTPUT_DIR" "$STAGING/$PACKAGE_NAME"
 git -C "$REPO_ROOT" archive "$REF" | tar -xf - -C "$STAGING/$PACKAGE_NAME"
+rm -rf "$STAGING/$PACKAGE_NAME/08_media" "$STAGING/$PACKAGE_NAME/10_archive"
 
 python3 "$STAGING/$PACKAGE_NAME/09_deliverables/board_deploy/verify_release_assets.py" \
     --runner "$STAGING/$PACKAGE_NAME/09_deliverables/board_deploy/bin/aarch64/ss928_detection_runner" \

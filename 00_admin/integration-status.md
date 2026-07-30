@@ -11,7 +11,7 @@
 
 ## 本分支本机验证
 
-- 384 项 Python 测试通过：视觉 148、板端模块与录像工具 160、跨模块集成 76。
+- 385 项 Python 测试通过：视觉 148、板端模块与录像工具 160、跨模块集成 77。
 - 12 个小程序/CloudBase Node 测试文件通过；38 个 JavaScript 文件通过 `node --check`。
 - 4 个 SS928 NPU native C++ tests、1 个 C 兼容核心测试和 1 个 C++ backend 测试通过。
 - `compileall`、42 个 JSON、30 个 Shell、凭据扫描和 `git diff --check` 通过。

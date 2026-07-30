@@ -10,7 +10,7 @@
 - 新增左右 UVC 物理端口发现/顺序抓帧/udev 稳定链接流程，新增双 MR20 硬件 profile；历史端口仅作候选，安装时必须重新确认。
 - 融合标定模板明确标为 `UNMEASURED_TEMPLATE`，新增采样字段、水平 yaw/fx/cx 拟合、RMSE 校验和板端脚本；没有把占位外参冒充当前安装位姿。
 - 新增小程序部署说明、空 AppID/CloudBase 模板、离线 radar-only 发布包构建、依赖 manifest、发布就绪 JSON、凭据扫描器和克隆安装缺口清单。
-- 本机通过 384 项 Python、12 个 Node 测试文件、4 个 NPU native C++、C 核心与 C++ backend 测试，以及 compileall、38 个 JavaScript、42 个 JSON、30 个 Shell 和 `git diff --check`。真实板端安装、模型识别、标定、reboot 和独立供电仍未验证。
+- 本机通过 385 项 Python、12 个 Node 测试文件、4 个 NPU native C++、C 核心与 C++ backend 测试，以及 compileall、38 个 JavaScript、42 个 JSON、30 个 Shell 和 `git diff --check`。真实板端安装、模型识别、标定、reboot 和独立供电仍未验证。
 
 ## 2026-07-28
 

@@ -72,7 +72,7 @@ sudo ./install-on-ss928.sh --radar-only --yes
 
 ## 已验证与限制
 
-- Windows 本地已通过 384 项 Python、12 个小程序/CloudBase Node 测试文件、4 个 NPU native C++ tests、1 个 C 兼容核心测试和 1 个 C++ backend 测试，并完成 compileall、38 个 JavaScript、42 个 JSON、30 个 Shell、凭据扫描和 `git diff --check`；命令口径和限制见 [integration-status](00_admin/integration-status.md)。
+- Windows 本地已通过 385 项 Python、12 个小程序/CloudBase Node 测试文件、4 个 NPU native C++ tests、1 个 C 兼容核心测试和 1 个 C++ backend 测试，并完成 compileall、38 个 JavaScript、42 个 JSON、30 个 Shell、凭据扫描和 `git diff --check`；命令口径和限制见 [integration-status](00_admin/integration-status.md)。
 - 既有实板记录确认 SS928 Ubuntu/aarch64、两台 UVC 枚举和单路出帧；当时两相机共用 USB 2.0 hub，双路出现 `ENOSPC`。更换端口后的持续双路采集、正式 detector FPS/内存/温度仍须复测。
 - 本分支 2026-07-28 收尾时电脑物理以太网接口断开，板端私网地址不可达，因此没有执行上传、服务启动或 reboot 验证。
 - TM6605、灯、MR20、BMI270、DX-GP21、MAX98357、MT5710、WS73、Tsensor 和 reboot 自启都必须以当前实际接线再验收，文档中的历史结果不能替代本轮实板测试。

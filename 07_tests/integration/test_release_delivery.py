@@ -89,6 +89,11 @@ class ReleaseAssetTest(unittest.TestCase):
         ]
         self.assertEqual([], [str(path.relative_to(ROOT)) for path in required if not path.is_file()])
 
+    def test_release_bundle_excludes_local_media_and_archive(self) -> None:
+        builder = (ROOT / "09_deliverables" / "releases" / "build-release.sh").read_text(encoding="utf-8")
+        self.assertIn('"$STAGING/$PACKAGE_NAME/08_media"', builder)
+        self.assertIn('"$STAGING/$PACKAGE_NAME/10_archive"', builder)
+
     def test_tracked_repository_passes_secret_scan(self) -> None:
         scanner = ROOT / "06_software" / "tools" / "deployment_audit" / "check_repository_secrets.py"
         result = subprocess.run(
