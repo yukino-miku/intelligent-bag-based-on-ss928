@@ -61,7 +61,7 @@ from pathlib import Path
 import sys
 artifact = Path(sys.argv[1])
 digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
-Path(sys.argv[2]).write_text(f"{digest}  {artifact.name}\n", encoding="ascii")
+Path(sys.argv[2]).write_bytes(f"{digest}  {artifact.name}\n".encode("ascii"))
 print(f"{digest}  {artifact}")
 PY
 echo "Release bundle created with model and runner. Full mode still requires measured board calibration."

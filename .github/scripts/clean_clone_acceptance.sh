@@ -10,7 +10,18 @@ CLONE="$WORK/clone"
 cd "$CLONE"
 
 test -f 09_deliverables/board_deploy/models/vehicle-detector.om
-test -x 09_deliverables/board_deploy/bin/aarch64/ss928_detection_runner
+RUNNER=09_deliverables/board_deploy/bin/aarch64/ss928_detection_runner
+if ! test -x "$RUNNER"; then
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      git ls-files --stage -- "$RUNNER" | grep -Eq '^100755 '
+      ;;
+    *)
+      echo "runner is not executable: $RUNNER" >&2
+      exit 1
+      ;;
+  esac
+fi
 python3 09_deliverables/board_deploy/verify_release_assets.py \
   --model 09_deliverables/board_deploy/models/vehicle-detector.om \
   --model-manifest 09_deliverables/board_deploy/models/vehicle-detector.manifest.json \
